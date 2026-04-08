@@ -1,0 +1,16 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: tempo
+  namespace: tempo
+spec:
+  template:
+    spec:
+      containers:
+        - name: tempo
+          resources:
+            requests:
+              cpu: "15m"
+              memory: "528Mi"
+            limits:
+              memory: "792Mi"

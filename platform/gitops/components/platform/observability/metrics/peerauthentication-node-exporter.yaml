@@ -1,0 +1,15 @@
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: node-exporter-port-permissive
+  namespace: observability
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: prometheus-node-exporter
+      app.kubernetes.io/instance: prometheus-node-exporter
+  mtls:
+    mode: STRICT
+  portLevelMtls:
+    "9100":
+      mode: PERMISSIVE

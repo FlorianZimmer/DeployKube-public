@@ -1,0 +1,15 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: vault-system
+resources:
+  - rbac.yaml
+  - job-bootstrap.yaml
+  - cronjob-reconcile.yaml
+
+configMapGenerator:
+  - name: vault-pki-external-config-script
+    files:
+      - scripts/configure.sh
+
+generatorOptions:
+  disableNameSuffixHash: true

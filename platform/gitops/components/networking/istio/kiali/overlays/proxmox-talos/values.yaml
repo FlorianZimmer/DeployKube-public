@@ -1,0 +1,44 @@
+auth:
+  strategy: openid
+  openid:
+    client_id: kiali
+    issuer_uri: https://keycloak.prod.internal.example.com/realms/deploykube-admin
+    disable_rbac: false
+    insecure_skip_verify_tls: false
+    username_claim: email
+    scopes:
+      - openid
+      - profile
+      - email
+      - groups
+
+deployment:
+  ingress:
+    enabled: false
+  pod_annotations:
+    sidecar.istio.io/inject: "true"
+  replicas: 2
+  view_only_mode: true
+  service_type: ClusterIP
+
+external_services:
+  istio:
+    component_status:
+      enabled: true
+  prometheus:
+    url: http://prometheus.istio-system:9090
+  tracing:
+    enabled: false
+  grafana:
+    enabled: false
+
+login_token:
+  # Kiali Helm chart defaults this to randAlphaNum(32) when empty, which makes Argo re-sync and
+  # triggers a Deployment rollout on every reconciliation loop. Keep this stable and inject the
+  # real signing key at runtime via an initContainer patch.
+  signing_key: __DK_KIALI_LOGIN_TOKEN_SIGNING_KEY__
+
+server:
+  web_fqdn: kiali.prod.internal.example.com
+  web_port: 443
+  web_schema: https

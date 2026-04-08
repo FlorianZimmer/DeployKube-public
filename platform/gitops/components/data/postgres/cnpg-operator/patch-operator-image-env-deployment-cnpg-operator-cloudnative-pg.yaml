@@ -1,0 +1,13 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cnpg-operator-cloudnative-pg
+  namespace: cnpg-system
+spec:
+  template:
+    spec:
+      containers:
+        - name: manager
+          env:
+            - name: OPERATOR_IMAGE_NAME
+              value: "registry.example.internal/cloudnative-pg/cloudnative-pg:1.27.1@sha256:cfa380de51377fa61122d43c1214d43d3268c3c17da57612ee8fea1d46b61856"

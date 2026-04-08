@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../shared/bootstrap-scripts/istio-native-exit
+  - step-ca-root-secret-bootstrap.yaml
+  - keycloak-oidc-ca-sync.yaml
+
+configMapGenerator:
+  - name: step-ca-root-secret-bootstrap-script
+    namespace: step-system
+    files:
+      - scripts/step-ca-root-secret-bootstrap.sh
+  - name: keycloak-oidc-ca-sync-script
+    namespace: step-system
+    files:
+      - scripts/keycloak-oidc-ca-sync.sh
+
+generatorOptions:
+  disableNameSuffixHash: true

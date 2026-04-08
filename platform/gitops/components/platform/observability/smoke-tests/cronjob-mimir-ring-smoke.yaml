@@ -1,0 +1,116 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: observability-mimir-ring-smoke
+  namespace: observability
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  # Intentionally offset from :00 to avoid top-of-hour kube-apiserver contention.
+  schedule: "5,35 * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 240
+      ttlSecondsAfterFinished: 900
+      template:
+        metadata:
+          annotations:
+            sidecar.istio.io/nativeSidecar: "true"
+            proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}'
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          volumes:
+            - name: istio-native-exit
+              configMap:
+                name: istio-native-exit-script
+                defaultMode: 0444
+          containers:
+            - name: mimir-ring-smoke
+              image: curlimages/curl:8.6.0
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  memory: 256Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+              volumeMounts:
+                - name: istio-native-exit
+                  mountPath: /helpers
+                  readOnly: true
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -euo pipefail
+                  ISTIO_HELPER="/helpers/istio-native-exit.sh"
+                  [ -f "${ISTIO_HELPER}" ] || { echo "missing istio-native-exit helper" >&2; exit 1; }
+                  . "${ISTIO_HELPER}"
+                  trap deploykube_istio_quit_sidecar EXIT INT TERM
+
+                  # Prefer the memberlist health summary page. It is present on multiple components (e.g. distributor, querier)
+                  # and includes an explicit healthy/unhealthy banner.
+                  #
+                  # Note: don't grep for words like "Dead"/"Left" here; they appear in tooltips even when the cluster is healthy.
+                  url="http://mimir-distributor.mimir.svc.cluster.local:8080/memberlist"
+                  echo "[mimir-ring-smoke] GET ${url}"
+                  code="$(curl -sS -o /tmp/mimir-memberlist.html -w '%{http_code}' --max-time 20 "${url}" || true)"
+                  if [ "${code}" != "200" ]; then
+                    echo "[mimir-ring-smoke] FAIL: expected HTTP 200, got ${code}" >&2
+                    cat /tmp/mimir-memberlist.html 2>/dev/null | head -n 120 || true
+                    exit 1
+                  fi
+
+                  resp="$(cat /tmp/mimir-memberlist.html)"
+                  echo "${resp}" | head -n 80
+
+                  if echo "${resp}" | grep -q "alert alert-danger"; then
+                    echo "[mimir-ring-smoke] FAIL: memberlist reports unhealthy cluster" >&2
+                    exit 1
+                  fi
+
+                  if echo "${resp}" | grep -q "alert alert-success"; then
+                    echo "[mimir-ring-smoke] ok"
+                    exit 0
+                  fi
+
+                  # Some environments can temporarily show a warning health score even when all members are Alive.
+                  # In that case, require that no members are Suspect/Dead/Left.
+                  if echo "${resp}" | grep -q "alert alert-warning"; then
+                    if echo "${resp}" | grep -Eq 'badge bg-(warning|danger|secondary)'; then
+                      echo "[mimir-ring-smoke] FAIL: memberlist warning with non-alive members" >&2
+                      exit 1
+                    fi
+
+                    score="$(
+                      echo "${resp}" \
+                        | tr '\n' ' ' \
+                        | sed -nE 's/.*health score[[:space:]]+is[[:space:]]+([0-9]+).*/\1/p' \
+                        | head -n 1
+                    )"
+                    if [ -n "${score}" ]; then
+                      echo "[mimir-ring-smoke] WARN: memberlist health score=${score} (all members Alive)"
+                    else
+                      echo "[mimir-ring-smoke] WARN: memberlist health score unknown (all members Alive)"
+                    fi
+                    echo "[mimir-ring-smoke] ok"
+                    exit 0
+                  fi
+
+                  echo "[mimir-ring-smoke] FAIL: could not find expected memberlist health banner (success|warning)" >&2
+                  exit 1

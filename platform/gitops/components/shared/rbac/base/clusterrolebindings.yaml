@@ -1,0 +1,53 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: platform-admins-cluster-admin
+  labels:
+    deploykube.gitops/allow-cluster-admin: "true"
+subjects:
+  - kind: Group
+    name: dk-platform-admins
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: platform-operators
+subjects:
+  - kind: Group
+    name: dk-platform-operators
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: platform-operator
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: security-ops-secrets-read
+subjects:
+  - kind: Group
+    name: dk-security-ops
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: platform-secrets-read
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: forgejo-team-sync-forgejo-repo-tls-read
+subjects:
+  - kind: ServiceAccount
+    name: forgejo-team-sync
+    namespace: rbac-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: forgejo-repo-tls-reader

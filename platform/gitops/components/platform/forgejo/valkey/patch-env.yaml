@@ -1,0 +1,27 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: valkey
+spec:
+  template:
+    spec:
+      containers:
+        - name: valkey
+          env:
+            - name: VALKEY_SERVICE_NAME
+              value: forgejo-valkey
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: valkey-sentinel
+spec:
+  template:
+    spec:
+      containers:
+        - name: sentinel
+          env:
+            - name: VALKEY_PRIMARY_SERVICE
+              value: forgejo-valkey
+            - name: VALKEY_SENTINEL_CLUSTER
+              value: forgejo-valkey

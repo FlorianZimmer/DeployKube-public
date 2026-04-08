@@ -1,0 +1,29 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: platform-forgejo-postgres
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "10"
+spec:
+  project: platform
+  destination:
+    name: in-cluster
+    namespace: forgejo
+  ignoreDifferences:
+    - group: postgresql.cnpg.io
+      kind: Cluster
+      jqPathExpressions:
+        - '.metadata.annotations."kubectl.kubernetes.io/last-applied-configuration"'
+      jsonPointers:
+        - /status
+  source:
+    repoURL: https://forgejo-https.forgejo.svc.cluster.local/platform/cluster-config.git
+    targetRevision: main
+    path: components/platform/forgejo/postgres
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false

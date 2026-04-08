@@ -1,0 +1,16 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: prometheus-node-exporter
+  namespace: observability
+spec:
+  template:
+    spec:
+      containers:
+        - name: node-exporter
+          resources:
+            requests:
+              cpu: "15m"
+              memory: "80Mi"
+            limits:
+              memory: "120Mi"

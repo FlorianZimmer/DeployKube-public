@@ -1,0 +1,16 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mimir-ingester-zone-b
+  namespace: mimir
+spec:
+  template:
+    spec:
+      containers:
+        - name: ingester
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "1664Mi"
+            limits:
+              memory: "2496Mi"

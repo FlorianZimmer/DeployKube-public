@@ -1,0 +1,10 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: networking-istio-control-plane
+  namespace: argocd
+spec:
+  source:
+    kustomize:
+      components:
+        - env-components/prod

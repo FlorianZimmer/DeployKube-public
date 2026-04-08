@@ -1,0 +1,1036 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: idlab-seed-ukc
+  namespace: idlab
+  annotations:
+    argocd.argoproj.io/ignore-healthcheck: "true"
+spec:
+  suspend: true
+  backoffLimit: 1
+  activeDeadlineSeconds: 900
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: idlab-smoke
+    spec:
+      serviceAccountName: idlab-smoke
+      restartPolicy: Never
+      containers:
+        - name: seed
+          image: registry.example.internal/deploykube/bootstrap-tools:1.4
+          imagePullPolicy: IfNotPresent
+          command: ["/scripts/seed-ukc.sh"]
+          env:
+            - name: UKC_ADMIN_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-admin-secrets
+                  key: ukcAdminUsername
+            - name: UKC_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-admin-secrets
+                  key: ukcAdminPassword
+            - name: UKC_SYNC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-service-clients
+                  key: ukcClientSecret
+          volumeMounts:
+            - name: script
+              mountPath: /scripts/seed-ukc.sh
+              subPath: seed-ukc.sh
+              readOnly: true
+      volumes:
+        - name: script
+          configMap:
+            name: idlab-test-script-seed-ukc
+            defaultMode: 0555
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: idlab-config-mkc
+  namespace: idlab
+  annotations:
+    argocd.argoproj.io/ignore-healthcheck: "true"
+spec:
+  suspend: true
+  backoffLimit: 1
+  activeDeadlineSeconds: 900
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: idlab-smoke
+    spec:
+      serviceAccountName: idlab-smoke
+      restartPolicy: Never
+      containers:
+        - name: config
+          image: registry.example.internal/deploykube/bootstrap-tools:1.4
+          imagePullPolicy: IfNotPresent
+          command: ["/scripts/config-mkc.sh"]
+          env:
+            - name: MKC_ADMIN_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-admin-secrets
+                  key: mkcAdminUsername
+            - name: MKC_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-admin-secrets
+                  key: mkcAdminPassword
+            - name: MKC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-service-clients
+                  key: mkcClientSecret
+          volumeMounts:
+            - name: script
+              mountPath: /scripts/config-mkc.sh
+              subPath: config-mkc.sh
+              readOnly: true
+      volumes:
+        - name: script
+          configMap:
+            name: idlab-test-script-config-mkc
+            defaultMode: 0555
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: idlab-config-btp
+  namespace: idlab
+  annotations:
+    argocd.argoproj.io/ignore-healthcheck: "true"
+spec:
+  suspend: true
+  backoffLimit: 1
+  activeDeadlineSeconds: 900
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: idlab-smoke
+    spec:
+      serviceAccountName: idlab-smoke
+      restartPolicy: Never
+      containers:
+        - name: config
+          image: registry.example.internal/deploykube/bootstrap-tools:1.4
+          imagePullPolicy: IfNotPresent
+          command: ["/scripts/config-btp.sh"]
+          env:
+            - name: BTP_ADMIN_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-admin-secrets
+                  key: btpAdminUsername
+            - name: BTP_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-admin-secrets
+                  key: btpAdminPassword
+            - name: BTP_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-service-clients
+                  key: btpClientSecret
+          volumeMounts:
+            - name: script
+              mountPath: /scripts/config-btp.sh
+              subPath: config-btp.sh
+              readOnly: true
+      volumes:
+        - name: script
+          configMap:
+            name: idlab-test-script-config-btp
+            defaultMode: 0555
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: idlab-smoke-provisioning
+  namespace: idlab
+  annotations:
+    argocd.argoproj.io/ignore-healthcheck: "true"
+spec:
+  suspend: true
+  backoffLimit: 1
+  activeDeadlineSeconds: 1200
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: idlab-smoke
+    spec:
+      serviceAccountName: idlab-smoke
+      restartPolicy: Never
+      containers:
+        - name: smoke
+          image: registry.example.internal/deploykube/bootstrap-tools:1.4
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "/scripts/smoke-api.sh"]
+          env:
+            - name: MODE
+              value: provisioning
+            - name: UKC_ADMIN_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-admin-secrets
+                  key: ukcAdminUsername
+            - name: UKC_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-admin-secrets
+                  key: ukcAdminPassword
+            - name: MKC_ADMIN_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-admin-secrets
+                  key: mkcAdminUsername
+            - name: MKC_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-admin-secrets
+                  key: mkcAdminPassword
+            - name: BTP_ADMIN_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-admin-secrets
+                  key: btpAdminUsername
+            - name: BTP_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-admin-secrets
+                  key: btpAdminPassword
+          volumeMounts:
+            - name: script
+              mountPath: /scripts/smoke-api.sh
+              subPath: smoke-api.sh
+              readOnly: true
+            - name: proofs
+              mountPath: /proofs
+      volumes:
+        - name: script
+          configMap:
+            name: idlab-test-script-smoke
+            defaultMode: 0555
+        - name: proofs
+          persistentVolumeClaim:
+            claimName: proofs-pvc
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: idlab-smoke-provisioning-guardrail
+  namespace: idlab
+  annotations:
+    argocd.argoproj.io/ignore-healthcheck: "true"
+spec:
+  suspend: true
+  backoffLimit: 1
+  activeDeadlineSeconds: 900
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: idlab-smoke
+    spec:
+      serviceAccountName: idlab-smoke
+      restartPolicy: Never
+      containers:
+        - name: smoke
+          image: registry.example.internal/deploykube/bootstrap-tools:1.4
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "/scripts/smoke-api.sh"]
+          env:
+            - name: MODE
+              value: provisioning-guardrail
+            - name: SCIM_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-service-clients
+                  key: scimBearerToken
+          volumeMounts:
+            - name: script
+              mountPath: /scripts/smoke-api.sh
+              subPath: smoke-api.sh
+              readOnly: true
+            - name: proofs
+              mountPath: /proofs
+      volumes:
+        - name: script
+          configMap:
+            name: idlab-test-script-smoke
+            defaultMode: 0555
+        - name: proofs
+          persistentVolumeClaim:
+            claimName: proofs-pvc
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: idlab-smoke-auth-online
+  namespace: idlab
+  annotations:
+    argocd.argoproj.io/ignore-healthcheck: "true"
+spec:
+  suspend: true
+  backoffLimit: 1
+  activeDeadlineSeconds: 1200
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: idlab-smoke
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: playwright
+          image: mcr.microsoft.com/playwright:v1.52.0-jammy
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              export npm_config_cache=/tmp/npm-cache
+              export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+              export PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+              npm install --prefix /tmp/idlab-playwright playwright@1.52.0
+              export NODE_PATH=/tmp/idlab-playwright/node_modules
+              node /scripts/auth-online.js
+          env:
+            - name: BTP_BASE_URL
+              value: http://btp-keycloak:8080
+            - name: UKC_USERNAME
+              value: alice
+            - name: UKC_PASSWORD
+              value: Alice-UKC-123!
+          volumeMounts:
+            - name: script
+              mountPath: /scripts/auth-online.js
+              subPath: auth-online.js
+              readOnly: true
+            - name: proofs
+              mountPath: /proofs
+      volumes:
+        - name: script
+          configMap:
+            name: idlab-test-script-playwright-online
+            defaultMode: 0555
+        - name: proofs
+          persistentVolumeClaim:
+            claimName: proofs-pvc
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: idlab-offline-enroll
+  namespace: idlab
+  annotations:
+    argocd.argoproj.io/ignore-healthcheck: "true"
+spec:
+  suspend: true
+  backoffLimit: 1
+  activeDeadlineSeconds: 900
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: idlab-smoke
+    spec:
+      serviceAccountName: idlab-smoke
+      restartPolicy: Never
+      containers:
+        - name: smoke
+          image: registry.example.internal/deploykube/bootstrap-tools:1.4
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "/scripts/smoke-api.sh"]
+          env:
+            - name: MODE
+              value: offline-enroll
+            - name: MKC_ADMIN_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-admin-secrets
+                  key: mkcAdminUsername
+            - name: MKC_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-admin-secrets
+                  key: mkcAdminPassword
+            - name: ALICE_OFFLINE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-offline-passwords
+                  key: aliceOfflinePassword
+          volumeMounts:
+            - name: script
+              mountPath: /scripts/smoke-api.sh
+              subPath: smoke-api.sh
+              readOnly: true
+            - name: proofs
+              mountPath: /proofs
+      volumes:
+        - name: script
+          configMap:
+            name: idlab-test-script-smoke
+            defaultMode: 0555
+        - name: proofs
+          persistentVolumeClaim:
+            claimName: proofs-pvc
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: idlab-smoke-failover-manual
+  namespace: idlab
+  annotations:
+    argocd.argoproj.io/ignore-healthcheck: "true"
+spec:
+  suspend: true
+  backoffLimit: 1
+  activeDeadlineSeconds: 900
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: idlab-smoke
+    spec:
+      serviceAccountName: idlab-smoke
+      restartPolicy: Never
+      containers:
+        - name: smoke
+          image: registry.example.internal/deploykube/bootstrap-tools:1.4
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "/scripts/smoke-api.sh"]
+          env:
+            - name: MODE
+              value: failover-manual
+          volumeMounts:
+            - name: script
+              mountPath: /scripts/smoke-api.sh
+              subPath: smoke-api.sh
+              readOnly: true
+            - name: proofs
+              mountPath: /proofs
+      volumes:
+        - name: script
+          configMap:
+            name: idlab-test-script-smoke
+            defaultMode: 0555
+        - name: proofs
+          persistentVolumeClaim:
+            claimName: proofs-pvc
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: idlab-smoke-auth-manual-offline
+  namespace: idlab
+  annotations:
+    argocd.argoproj.io/ignore-healthcheck: "true"
+spec:
+  suspend: true
+  backoffLimit: 1
+  activeDeadlineSeconds: 1200
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: idlab-smoke
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: playwright
+          image: mcr.microsoft.com/playwright:v1.52.0-jammy
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              export npm_config_cache=/tmp/npm-cache
+              export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+              export PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+              npm install --prefix /tmp/idlab-playwright playwright@1.52.0
+              export NODE_PATH=/tmp/idlab-playwright/node_modules
+              node /scripts/auth-offline.js
+          env:
+            - name: BTP_BASE_URL
+              value: http://btp-keycloak:8080
+            - name: MKC_USERNAME
+              value: alice
+            - name: MKC_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-offline-passwords
+                  key: aliceOfflinePassword
+            - name: EXPECT_NO_UKC_BROKER
+              value: "yes"
+          volumeMounts:
+            - name: script
+              mountPath: /scripts/auth-offline.js
+              subPath: auth-offline.js
+              readOnly: true
+            - name: proofs
+              mountPath: /proofs
+      volumes:
+        - name: script
+          configMap:
+            name: idlab-test-script-playwright-offline
+            defaultMode: 0555
+        - name: proofs
+          persistentVolumeClaim:
+            claimName: proofs-pvc
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: idlab-smoke-auth-offline
+  namespace: idlab
+  annotations:
+    argocd.argoproj.io/ignore-healthcheck: "true"
+spec:
+  suspend: true
+  backoffLimit: 1
+  activeDeadlineSeconds: 1200
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: idlab-smoke
+    spec:
+      serviceAccountName: idlab-smoke
+      restartPolicy: Never
+      initContainers:
+        - name: scale-ukc
+          image: registry.example.internal/deploykube/bootstrap-tools:1.4
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-ceu"]
+          args:
+            - |
+              kubectl -n idlab scale deployment/ukc-keycloak --replicas=0
+              while true; do
+                ready="$(kubectl -n idlab get deployment ukc-keycloak -o jsonpath='{.status.readyReplicas}' 2>/dev/null || true)"
+                if [ "${ready:-0}" = "0" ]; then
+                  break
+                fi
+                sleep 2
+              done
+      containers:
+        - name: playwright
+          image: mcr.microsoft.com/playwright:v1.52.0-jammy
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              export npm_config_cache=/tmp/npm-cache
+              export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+              export PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+              npm install --prefix /tmp/idlab-playwright playwright@1.52.0
+              export NODE_PATH=/tmp/idlab-playwright/node_modules
+              node /scripts/auth-offline.js
+          env:
+            - name: BTP_BASE_URL
+              value: http://btp-keycloak:8080
+            - name: MKC_USERNAME
+              value: alice
+            - name: MKC_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-offline-passwords
+                  key: aliceOfflinePassword
+            - name: EXPECT_NO_UKC_BROKER
+              value: "yes"
+          volumeMounts:
+            - name: script
+              mountPath: /scripts/auth-offline.js
+              subPath: auth-offline.js
+              readOnly: true
+            - name: proofs
+              mountPath: /proofs
+      volumes:
+        - name: script
+          configMap:
+            name: idlab-test-script-playwright-offline
+            defaultMode: 0555
+        - name: proofs
+          persistentVolumeClaim:
+            claimName: proofs-pvc
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: idlab-smoke-offline-write
+  namespace: idlab
+  annotations:
+    argocd.argoproj.io/ignore-healthcheck: "true"
+spec:
+  suspend: true
+  backoffLimit: 1
+  activeDeadlineSeconds: 1200
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: idlab-smoke
+    spec:
+      serviceAccountName: idlab-smoke
+      restartPolicy: Never
+      containers:
+        - name: smoke
+          image: registry.example.internal/deploykube/bootstrap-tools:1.4
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "/scripts/smoke-api.sh"]
+          env:
+            - name: MODE
+              value: offline-write
+            - name: MKC_ADMIN_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-admin-secrets
+                  key: mkcAdminUsername
+            - name: MKC_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-admin-secrets
+                  key: mkcAdminPassword
+            - name: BTP_ADMIN_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-admin-secrets
+                  key: btpAdminUsername
+            - name: BTP_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-admin-secrets
+                  key: btpAdminPassword
+            - name: CAROL_OFFLINE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-offline-passwords
+                  key: carolOfflinePassword
+          volumeMounts:
+            - name: script
+              mountPath: /scripts/smoke-api.sh
+              subPath: smoke-api.sh
+              readOnly: true
+            - name: proofs
+              mountPath: /proofs
+      volumes:
+        - name: script
+          configMap:
+            name: idlab-test-script-smoke
+            defaultMode: 0555
+        - name: proofs
+          persistentVolumeClaim:
+            claimName: proofs-pvc
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: idlab-smoke-auth-offline-write
+  namespace: idlab
+  annotations:
+    argocd.argoproj.io/ignore-healthcheck: "true"
+spec:
+  suspend: true
+  backoffLimit: 1
+  activeDeadlineSeconds: 1200
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: idlab-smoke
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: playwright
+          image: mcr.microsoft.com/playwright:v1.52.0-jammy
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              export npm_config_cache=/tmp/npm-cache
+              export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+              export PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+              npm install --prefix /tmp/idlab-playwright playwright@1.52.0
+              export NODE_PATH=/tmp/idlab-playwright/node_modules
+              node /scripts/auth-offline.js
+          env:
+            - name: BTP_BASE_URL
+              value: http://btp-keycloak:8080
+            - name: MKC_USERNAME
+              value: carol
+            - name: MKC_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-offline-passwords
+                  key: carolOfflinePassword
+            - name: EXPECT_NO_UKC_BROKER
+              value: "yes"
+            - name: EXPECTED_GROUPS_JSON
+              value: '["grp_local_ops"]'
+          volumeMounts:
+            - name: script
+              mountPath: /scripts/auth-offline.js
+              subPath: auth-offline.js
+              readOnly: true
+            - name: proofs
+              mountPath: /proofs
+      volumes:
+        - name: script
+          configMap:
+            name: idlab-test-script-playwright-offline
+            defaultMode: 0555
+        - name: proofs
+          persistentVolumeClaim:
+            claimName: proofs-pvc
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: idlab-smoke-failover-auto
+  namespace: idlab
+  annotations:
+    argocd.argoproj.io/ignore-healthcheck: "true"
+spec:
+  suspend: true
+  backoffLimit: 1
+  activeDeadlineSeconds: 1200
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: idlab-smoke
+    spec:
+      serviceAccountName: idlab-smoke
+      restartPolicy: Never
+      containers:
+        - name: smoke
+          image: registry.example.internal/deploykube/bootstrap-tools:1.4
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "/scripts/smoke-api.sh"]
+          env:
+            - name: MODE
+              value: failover-auto
+          volumeMounts:
+            - name: script
+              mountPath: /scripts/smoke-api.sh
+              subPath: smoke-api.sh
+              readOnly: true
+            - name: proofs
+              mountPath: /proofs
+      volumes:
+        - name: script
+          configMap:
+            name: idlab-test-script-smoke
+            defaultMode: 0555
+        - name: proofs
+          persistentVolumeClaim:
+            claimName: proofs-pvc
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: idlab-smoke-failover-auto-manual-return
+  namespace: idlab
+  annotations:
+    argocd.argoproj.io/ignore-healthcheck: "true"
+spec:
+  suspend: true
+  backoffLimit: 1
+  activeDeadlineSeconds: 1200
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: idlab-smoke
+    spec:
+      serviceAccountName: idlab-smoke
+      restartPolicy: Never
+      containers:
+        - name: smoke
+          image: registry.example.internal/deploykube/bootstrap-tools:1.4
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "/scripts/smoke-api.sh"]
+          env:
+            - name: MODE
+              value: failover-auto-manual-return
+            - name: MKC_ADMIN_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-admin-secrets
+                  key: mkcAdminUsername
+            - name: MKC_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-admin-secrets
+                  key: mkcAdminPassword
+            - name: BTP_ADMIN_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-admin-secrets
+                  key: btpAdminUsername
+            - name: BTP_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-admin-secrets
+                  key: btpAdminPassword
+          volumeMounts:
+            - name: script
+              mountPath: /scripts/smoke-api.sh
+              subPath: smoke-api.sh
+              readOnly: true
+            - name: proofs
+              mountPath: /proofs
+      volumes:
+        - name: script
+          configMap:
+            name: idlab-test-script-smoke
+            defaultMode: 0555
+        - name: proofs
+          persistentVolumeClaim:
+            claimName: proofs-pvc
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: idlab-smoke-convergence
+  namespace: idlab
+  annotations:
+    argocd.argoproj.io/ignore-healthcheck: "true"
+spec:
+  suspend: true
+  backoffLimit: 1
+  activeDeadlineSeconds: 1200
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: idlab-smoke
+    spec:
+      serviceAccountName: idlab-smoke
+      restartPolicy: Never
+      containers:
+        - name: smoke
+          image: registry.example.internal/deploykube/bootstrap-tools:1.4
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "/scripts/smoke-api.sh"]
+          env:
+            - name: MODE
+              value: convergence
+            - name: UKC_ADMIN_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-admin-secrets
+                  key: ukcAdminUsername
+            - name: UKC_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-admin-secrets
+                  key: ukcAdminPassword
+            - name: MKC_ADMIN_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-admin-secrets
+                  key: mkcAdminUsername
+            - name: MKC_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-admin-secrets
+                  key: mkcAdminPassword
+            - name: BTP_ADMIN_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-admin-secrets
+                  key: btpAdminUsername
+            - name: BTP_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-admin-secrets
+                  key: btpAdminPassword
+          volumeMounts:
+            - name: script
+              mountPath: /scripts/smoke-api.sh
+              subPath: smoke-api.sh
+              readOnly: true
+            - name: proofs
+              mountPath: /proofs
+      volumes:
+        - name: script
+          configMap:
+            name: idlab-test-script-smoke
+            defaultMode: 0555
+        - name: proofs
+          persistentVolumeClaim:
+            claimName: proofs-pvc
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: idlab-smoke-negative-mkc-link-only
+  namespace: idlab
+  annotations:
+    argocd.argoproj.io/ignore-healthcheck: "true"
+spec:
+  suspend: true
+  backoffLimit: 1
+  activeDeadlineSeconds: 1200
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: idlab-smoke
+    spec:
+      serviceAccountName: idlab-smoke
+      restartPolicy: Never
+      containers:
+        - name: playwright
+          image: mcr.microsoft.com/playwright:v1.52.0-jammy
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              export npm_config_cache=/tmp/npm-cache
+              export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+              export PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+              npm install --prefix /tmp/idlab-playwright playwright@1.52.0
+              export NODE_PATH=/tmp/idlab-playwright/node_modules
+              node /scripts/auth-negative-mkc-link-only.js
+          env:
+            - name: NODE_EXTRA_CA_CERTS
+              value: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+            - name: K8S_NAMESPACE
+              value: idlab
+            - name: PROOFS_DIR
+              value: /proofs
+            - name: UKC_BASE_URL
+              value: http://ukc-keycloak:8080
+            - name: MKC_BASE_URL
+              value: http://mkc-keycloak:8080
+            - name: BTP_BASE_URL
+              value: http://btp-keycloak:8080
+            - name: UKC_ADMIN_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-admin-secrets
+                  key: ukcAdminUsername
+            - name: UKC_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-admin-secrets
+                  key: ukcAdminPassword
+            - name: MKC_ADMIN_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-admin-secrets
+                  key: mkcAdminUsername
+            - name: MKC_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-admin-secrets
+                  key: mkcAdminPassword
+            - name: BTP_ADMIN_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-admin-secrets
+                  key: btpAdminUsername
+            - name: BTP_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-admin-secrets
+                  key: btpAdminPassword
+          volumeMounts:
+            - name: script
+              mountPath: /scripts/auth-negative-mkc-link-only.js
+              subPath: auth-negative-mkc-link-only.js
+              readOnly: true
+            - name: proofs
+              mountPath: /proofs
+      volumes:
+        - name: script
+          configMap:
+            name: idlab-test-script-playwright-negative-mkc
+            defaultMode: 0555
+        - name: proofs
+          persistentVolumeClaim:
+            claimName: proofs-pvc
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: idlab-smoke-negative-btp-link-only
+  namespace: idlab
+  annotations:
+    argocd.argoproj.io/ignore-healthcheck: "true"
+spec:
+  suspend: true
+  backoffLimit: 1
+  activeDeadlineSeconds: 1200
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: idlab-smoke
+    spec:
+      serviceAccountName: idlab-smoke
+      restartPolicy: Never
+      containers:
+        - name: playwright
+          image: mcr.microsoft.com/playwright:v1.52.0-jammy
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              export npm_config_cache=/tmp/npm-cache
+              export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+              export PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+              npm install --prefix /tmp/idlab-playwright playwright@1.52.0
+              export NODE_PATH=/tmp/idlab-playwright/node_modules
+              node /scripts/auth-negative-btp-link-only.js
+          env:
+            - name: PROOFS_DIR
+              value: /proofs
+            - name: MKC_BASE_URL
+              value: http://mkc-keycloak:8080
+            - name: BTP_BASE_URL
+              value: http://btp-keycloak:8080
+            - name: MKC_ADMIN_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-admin-secrets
+                  key: mkcAdminUsername
+            - name: MKC_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-admin-secrets
+                  key: mkcAdminPassword
+            - name: BTP_ADMIN_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-admin-secrets
+                  key: btpAdminUsername
+            - name: BTP_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-admin-secrets
+                  key: btpAdminPassword
+          volumeMounts:
+            - name: script
+              mountPath: /scripts/auth-negative-btp-link-only.js
+              subPath: auth-negative-btp-link-only.js
+              readOnly: true
+            - name: proofs
+              mountPath: /proofs
+      volumes:
+        - name: script
+          configMap:
+            name: idlab-test-script-playwright-negative-btp
+            defaultMode: 0555
+        - name: proofs
+          persistentVolumeClaim:
+            claimName: proofs-pvc

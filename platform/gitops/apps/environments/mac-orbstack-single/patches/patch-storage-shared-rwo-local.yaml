@@ -1,0 +1,9 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: storage-shared-rwo
+  namespace: argocd
+spec:
+  source:
+    path: components/storage/local-path-provisioner
+

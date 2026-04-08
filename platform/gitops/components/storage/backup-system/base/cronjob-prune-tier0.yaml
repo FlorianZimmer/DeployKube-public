@@ -1,0 +1,289 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: storage-prune-tier0
+spec:
+  # Default: run daily. This is intentionally conservative; retention windows are time-based.
+  schedule: "15 3 * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 1800
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 1800
+      ttlSecondsAfterFinished: 21600
+      template:
+        metadata:
+          annotations:
+            sidecar.istio.io/inject: "false"
+        spec:
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          securityContext:
+            runAsUser: 65532
+            runAsGroup: 65532
+            runAsNonRoot: true
+            fsGroup: 65532
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile:
+              type: RuntimeDefault
+          affinity:
+            nodeAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+                # Prefer non-control-plane nodes when present, but remain schedulable on single-node clusters.
+                - weight: 100
+                  preference:
+                    matchExpressions:
+                      - key: node-role.kubernetes.io/control-plane
+                        operator: DoesNotExist
+                - weight: 50
+                  preference:
+                    matchExpressions:
+                      - key: node-role.kubernetes.io/master
+                        operator: DoesNotExist
+          containers:
+            - name: prune
+              image: registry.example.internal/deploykube/bootstrap-tools@sha256:e7be47a69e3a11bc58c857f2d690a71246ada91ac3a60bdfb0a547f091f6485a
+              imagePullPolicy: IfNotPresent
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  memory: 512Mi
+              env:
+                - name: DEPLOYMENT_ID
+                  value: proxmox-talos
+                - name: HOME
+                  value: /tmp
+                - name: TMPDIR
+                  value: /tmp
+                - name: TIER0_HOURLY_WITHIN
+                  value: 24h
+                - name: TIER0_DAILY_WITHIN
+                  value: 7d
+                - name: TIER0_TOTAL_WITHIN
+                  value: 56d
+                - name: DRY_RUN
+                  value: "false"
+              volumeMounts:
+                - name: backup
+                  mountPath: /backup
+                - name: deployment-config
+                  mountPath: /config
+                  readOnly: true
+                - name: tmp
+                  mountPath: /tmp
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+                readOnlyRootFilesystem: true
+              command:
+                - /bin/bash
+                - -c
+                - |
+                  set -euo pipefail
+                  command -v yq >/dev/null 2>&1 || { echo "missing dependency: yq" >&2; exit 1; }
+                  command -v python3 >/dev/null 2>&1 || { echo "missing dependency: python3" >&2; exit 1; }
+
+                  cfg="/config/deployment-config.yaml"
+                  if [ -f "${cfg}" ]; then
+                    dep="$(yq -r '.spec.deploymentId // ""' "${cfg}" 2>/dev/null || true)"
+                    [ -n "${dep}" ] && DEPLOYMENT_ID="${dep}"
+
+                    v="$(yq -r '.spec.backup.retention.tier0.hourlyWithin // ""' "${cfg}" 2>/dev/null || true)"
+                    [ -n "${v}" ] && TIER0_HOURLY_WITHIN="${v}"
+                    v="$(yq -r '.spec.backup.retention.tier0.dailyWithin // ""' "${cfg}" 2>/dev/null || true)"
+                    [ -n "${v}" ] && TIER0_DAILY_WITHIN="${v}"
+                    v="$(yq -r '.spec.backup.retention.tier0.totalWithin // ""' "${cfg}" 2>/dev/null || true)"
+                    [ -n "${v}" ] && TIER0_TOTAL_WITHIN="${v}"
+                  fi
+
+                  export DEPLOYMENT_ID TIER0_HOURLY_WITHIN TIER0_DAILY_WITHIN TIER0_TOTAL_WITHIN DRY_RUN
+
+                  python3 - <<'PY'
+                  import datetime
+                  import os
+                  import re
+                  import sys
+                  from dataclasses import dataclass
+                  from pathlib import Path
+
+                  deployment_id = os.environ.get("DEPLOYMENT_ID", "").strip()
+                  if not deployment_id:
+                    print("missing DEPLOYMENT_ID env", file=sys.stderr)
+                    sys.exit(1)
+
+                  dry_run = os.environ.get("DRY_RUN", "false").strip().lower() in ("1", "true", "yes")
+
+                  def parse_duration(s: str) -> int:
+                    s = (s or "").strip()
+                    m = re.fullmatch(r"([0-9]+)([smhd])", s)
+                    if not m:
+                      raise ValueError(f"invalid duration: {s!r} (expected e.g. 24h, 7d, 56d)")
+                    n = int(m.group(1))
+                    unit = m.group(2)
+                    mult = {"s": 1, "m": 60, "h": 3600, "d": 86400}[unit]
+                    return n * mult
+
+                  hourly_within = parse_duration(os.environ.get("TIER0_HOURLY_WITHIN", "24h"))
+                  daily_within = parse_duration(os.environ.get("TIER0_DAILY_WITHIN", "7d"))
+                  total_within = parse_duration(os.environ.get("TIER0_TOTAL_WITHIN", "56d"))
+
+                  if not (0 < hourly_within <= daily_within <= total_within):
+                    raise ValueError("expected hourlyWithin <= dailyWithin <= totalWithin")
+
+                  now = datetime.datetime.now(datetime.timezone.utc)
+
+                  @dataclass(frozen=True)
+                  class Item:
+                    path: Path
+                    ts: datetime.datetime
+
+                  vault_re = re.compile(r"^(?P<prefix>vault-core)-(?P<ts>[0-9]{8}-[0-9]{6})\.snap(?:\.age)?$")
+                  pg_re = re.compile(r"^(?P<ts>[0-9]{8}T[0-9]{6}Z)-dump\.sql(?:\.gz)?(?:\.age)?$")
+
+                  def parse_ts_from_name(name: str) -> datetime.datetime | None:
+                    m = vault_re.match(name)
+                    if m:
+                      ts = datetime.datetime.strptime(m.group("ts"), "%Y%m%d-%H%M%S").replace(tzinfo=datetime.timezone.utc)
+                      return ts
+                    m = pg_re.match(name)
+                    if m:
+                      ts = datetime.datetime.strptime(m.group("ts"), "%Y%m%dT%H%M%SZ").replace(tzinfo=datetime.timezone.utc)
+                      return ts
+                    return None
+
+                  def iso_week_key(dt: datetime.datetime) -> tuple[int, int]:
+                    iso = dt.isocalendar()
+                    return (iso.year, iso.week)
+
+                  def day_key(dt: datetime.datetime) -> tuple[int, int, int]:
+                    return (dt.year, dt.month, dt.day)
+
+                  def keep_policy(items: list[Item]) -> set[Path]:
+                    keep: set[Path] = set()
+                    # Always keep newest per bucket decisions.
+                    for it in items:
+                      age = int((now - it.ts).total_seconds())
+                      if age <= hourly_within:
+                        keep.add(it.path)
+
+                    # daily: (hourly_within, daily_within]
+                    daily_candidates = [it for it in items if hourly_within < int((now - it.ts).total_seconds()) <= daily_within]
+                    newest_per_day: dict[tuple[int, int, int], Item] = {}
+                    for it in daily_candidates:
+                      k = day_key(it.ts)
+                      cur = newest_per_day.get(k)
+                      if cur is None or it.ts > cur.ts:
+                        newest_per_day[k] = it
+                    keep.update(it.path for it in newest_per_day.values())
+
+                    # weekly: (daily_within, total_within]
+                    weekly_candidates = [it for it in items if daily_within < int((now - it.ts).total_seconds()) <= total_within]
+                    newest_per_week: dict[tuple[int, int], Item] = {}
+                    for it in weekly_candidates:
+                      k = iso_week_key(it.ts)
+                      cur = newest_per_week.get(k)
+                      if cur is None or it.ts > cur.ts:
+                        newest_per_week[k] = it
+                    keep.update(it.path for it in newest_per_week.values())
+
+                    return keep
+
+                  def list_items(dir_path: Path) -> list[Item]:
+                    # Clean up abandoned temp files aggressively (best-effort).
+                    if dir_path.is_dir():
+                      for p in dir_path.iterdir():
+                        if not p.is_file():
+                          continue
+                        if not p.name.endswith(".tmp"):
+                          continue
+                        try:
+                          age = int((now - datetime.datetime.fromtimestamp(p.stat().st_mtime, tz=datetime.timezone.utc)).total_seconds())
+                        except Exception:
+                          continue
+                        if age <= 3600:
+                          continue
+                        if dry_run:
+                          print(f"[prune] delete tmp: {p} age={age}s (dry-run)")
+                          continue
+                        try:
+                          p.unlink()
+                          print(f"[prune] delete tmp: {p} age={age}s")
+                        except Exception as e:
+                          print(f"[prune] failed to delete tmp {p}: {e}", file=sys.stderr)
+                          raise
+
+                    items: list[Item] = []
+                    if not dir_path.is_dir():
+                      return items
+                    for p in dir_path.iterdir():
+                      if not p.is_file():
+                        continue
+                      if p.name.endswith(".tmp"):
+                        continue
+                      ts = parse_ts_from_name(p.name)
+                      if ts is None:
+                        continue
+                      items.append(Item(p, ts))
+                    # newest first
+                    items.sort(key=lambda i: i.ts, reverse=True)
+                    return items
+
+                  base = Path("/backup") / deployment_id / "tier0"
+                  targets = [
+                    base / "vault-core",
+                    base / "postgres" / "keycloak",
+                    base / "postgres" / "powerdns",
+                    base / "postgres" / "forgejo",
+                  ]
+
+                  total_deleted = 0
+                  total_kept = 0
+
+                  for t in targets:
+                    items = list_items(t)
+                    if not items:
+                      print(f"[prune] skip (no items): {t}")
+                      continue
+
+                    keep = keep_policy(items)
+                    # Always keep the newest artifact (even if windows are misconfigured).
+                    keep.add(items[0].path)
+
+                    deletions = [it for it in items if it.path not in keep]
+                    total_kept += len(keep)
+                    total_deleted += len(deletions)
+
+                    for it in deletions:
+                      age_s = int((now - it.ts).total_seconds())
+                      msg = f"[prune] delete: {it.path} ts={it.ts.isoformat()} age={age_s}s"
+                      if dry_run:
+                        print(msg + " (dry-run)")
+                        continue
+                      try:
+                        it.path.unlink()
+                        print(msg)
+                      except Exception as e:
+                        print(f"[prune] failed to delete {it.path}: {e}", file=sys.stderr)
+                        raise
+
+                    print(f"[prune] done: {t} kept={len(keep)} deleted={len(deletions)}")
+
+                  print(f"[prune] summary: kept={total_kept} deleted={total_deleted} dry_run={dry_run}")
+                  PY
+          volumes:
+            - name: backup
+              persistentVolumeClaim:
+                claimName: backup-target
+            - name: deployment-config
+              configMap:
+                name: deploykube-deployment-config
+                defaultMode: 0444
+            - name: tmp
+              emptyDir: {}

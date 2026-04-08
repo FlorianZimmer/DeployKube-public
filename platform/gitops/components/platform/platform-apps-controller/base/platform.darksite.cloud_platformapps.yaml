@@ -1,0 +1,99 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: platformapps.platform.darksite.cloud
+spec:
+  group: platform.darksite.cloud
+  names:
+    kind: PlatformApps
+    listKind: PlatformAppsList
+    plural: platformapps
+    singular: platformapp
+    shortNames:
+      - dkpa
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required:
+                - repoURL
+                - targetRevision
+                - overlayMode
+                - deploymentId
+                - apps
+              properties:
+                repoURL:
+                  type: string
+                  minLength: 1
+                targetRevision:
+                  type: string
+                  minLength: 1
+                overlayMode:
+                  type: string
+                  minLength: 1
+                deploymentId:
+                  type: string
+                  minLength: 1
+                enabledApps:
+                  type: array
+                  items:
+                    type: string
+                disabledApps:
+                  type: array
+                  items:
+                    type: string
+                globalKustomizeImages:
+                  type: array
+                  items:
+                    type: string
+                apps:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - name
+                      - path
+                    properties:
+                      name:
+                        type: string
+                        minLength: 1
+                      path:
+                        type: string
+                        minLength: 1
+                      project:
+                        type: string
+                      enabled:
+                        type: boolean
+                      overlay:
+                        type: boolean
+                      overlayPaths:
+                        type: object
+                        additionalProperties:
+                          type: string
+                      destination:
+                        type: object
+                        properties:
+                          cluster:
+                            type: string
+                          namespace:
+                            type: string
+                      syncWave:
+                        type: string
+                      annotations:
+                        type: object
+                        additionalProperties:
+                          type: string
+                      syncPolicy:
+                        x-kubernetes-preserve-unknown-fields: true
+                      ignoreDifferences:
+                        type: array
+                        items:
+                          x-kubernetes-preserve-unknown-fields: true

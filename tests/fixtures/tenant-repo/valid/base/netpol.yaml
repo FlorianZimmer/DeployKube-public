@@ -1,0 +1,59 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: t-acme-p-payments-dev-app
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-same-tenant
+  namespace: t-acme-p-payments-dev-app
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: demo
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              darksite.cloud/tenant-id: acme
+              darksite.cloud/project-id: payments
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: metrics
+      ports:
+        - protocol: TCP
+          port: 9090
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-from-tenant-gateway
+  namespace: t-acme-p-payments-dev-app
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: demo
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: istio-system
+          podSelector:
+            matchLabels:
+              gateway.networking.k8s.io/gateway-name: tenant-acme-gateway
+      ports:
+        - protocol: TCP
+          port: 8080

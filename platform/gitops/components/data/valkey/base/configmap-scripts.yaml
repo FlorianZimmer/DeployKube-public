@@ -1,0 +1,72 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: valkey-scripts
+  labels:
+    app.kubernetes.io/name: valkey
+    app.kubernetes.io/part-of: valkey
+    app.kubernetes.io/component: config
+data:
+  valkey-entrypoint.sh: |
+    #!/bin/sh
+    set -euo pipefail
+
+    ordinal="${HOSTNAME##*-}"
+    cluster_name="${VALKEY_SERVICE_NAME:-valkey}"
+    headless_service="${cluster_name}-headless.${POD_NAMESPACE}.svc.cluster.local"
+    config_dir=/valkey/config
+    data_dir=/valkey/data
+    mkdir -p "${config_dir}"
+    mkdir -p "${data_dir}"
+
+    {
+      printf 'protected-mode yes\n'
+      printf 'port 6379\n'
+      printf 'tcp-keepalive 60\n'
+      printf 'save ""\n'
+      printf 'appendonly no\n'
+      printf 'daemonize no\n'
+      printf 'requirepass %s\n' "${VALKEY_PASSWORD}"
+      printf 'dir %s\n' "${data_dir}"
+    } > "${config_dir}/valkey.conf"
+
+    if [ "${ordinal}" != "0" ]; then
+      printf 'replicaof %s-0.%s 6379\n' "${cluster_name}" "${headless_service}" >> "${config_dir}/valkey.conf"
+      printf 'masterauth %s\n' "${VALKEY_PASSWORD}" >> "${config_dir}/valkey.conf"
+    fi
+
+    exec valkey-server "${config_dir}/valkey.conf"
+  sentinel-entrypoint.sh: |
+    #!/bin/sh
+    set -euo pipefail
+
+    cluster_name="${VALKEY_SENTINEL_CLUSTER:-valkey}"
+    primary_service="${VALKEY_PRIMARY_SERVICE:-valkey}"
+    headless_service="${primary_service}-headless.${POD_NAMESPACE}.svc.cluster.local"
+    config_dir=/valkey-sentinel/config
+    mkdir -p "${config_dir}"
+
+    primary_host="${primary_service}-0.${headless_service}"
+    attempts=0
+    until getent hosts "${primary_host}" >/dev/null 2>&1; do
+      attempts=$((attempts + 1))
+      if [ "${attempts}" -ge 90 ]; then
+        echo "unable to resolve ${primary_host}" >&2
+        exit 1
+      fi
+      sleep 2
+    done
+
+    {
+      printf 'port 26379\n'
+      printf 'protected-mode no\n'
+      printf 'sentinel resolve-hostnames yes\n'
+      printf 'sentinel monitor %s %s 6379 2\n' "${cluster_name}" "${primary_host}"
+      printf 'sentinel auth-pass %s %s\n' "${cluster_name}" "${VALKEY_PASSWORD}"
+      printf 'sentinel down-after-milliseconds %s 5000\n' "${cluster_name}"
+      printf 'sentinel failover-timeout %s 10000\n' "${cluster_name}"
+      printf 'sentinel parallel-syncs %s 1\n' "${cluster_name}"
+      printf 'sentinel announce-hostnames yes\n'
+    } > "${config_dir}/sentinel.conf"
+
+    exec valkey-sentinel "${config_dir}/sentinel.conf"

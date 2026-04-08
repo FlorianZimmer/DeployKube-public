@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: tempo
+commonAnnotations:
+  argocd.argoproj.io/sync-wave: "2.5"
+helmGlobals:
+  # Vendored chart to avoid requiring outbound internet access from Argo CD repo-server
+  # (argocd namespace is Istio-injected and external egress is restricted).
+  chartHome: charts
+helmCharts:
+  - name: tempo
+    version: 1.24.0
+    releaseName: tempo
+    namespace: tempo
+    valuesFile: values.yaml
+patches:
+  - path: patch-vpa-requests-statefulset-tempo.yaml
+  - path: patch-vpa-requests-statefulset-tempo.yaml
+  - path: patch-ha-tier-labels.yaml

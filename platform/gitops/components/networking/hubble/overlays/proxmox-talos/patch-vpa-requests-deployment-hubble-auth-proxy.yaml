@@ -1,0 +1,16 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hubble-auth-proxy
+  namespace: kube-system
+spec:
+  template:
+    spec:
+      containers:
+        - name: oauth2-proxy
+          resources:
+            requests:
+              cpu: "15m"
+              memory: "64Mi"
+            limits:
+              memory: "96Mi"

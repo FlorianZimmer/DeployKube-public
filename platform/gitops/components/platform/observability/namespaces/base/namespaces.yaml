@@ -1,0 +1,86 @@
+# Namespaces for observability stack components.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: observability
+  labels:
+    deploykube.gitops/component: observability
+    deploykube.gitops/owner: platform
+    darksite.cloud/resource-contract: strict
+    istio-injection: enabled
+    observability.grafana.com/tenant: platform
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: privileged
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: privileged
+    pod-security.kubernetes.io/warn-version: latest
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: loki
+  labels:
+    deploykube.gitops/component: loki
+    deploykube.gitops/owner: platform
+    darksite.cloud/resource-contract: strict
+    istio-injection: enabled
+    observability.grafana.com/tenant: platform
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: privileged
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: privileged
+    pod-security.kubernetes.io/warn-version: latest
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tempo
+  labels:
+    deploykube.gitops/component: tempo
+    deploykube.gitops/owner: platform
+    darksite.cloud/resource-contract: strict
+    istio-injection: enabled
+    observability.grafana.com/tenant: platform
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: privileged
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: privileged
+    pod-security.kubernetes.io/warn-version: latest
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mimir
+  labels:
+    deploykube.gitops/component: mimir
+    deploykube.gitops/owner: platform
+    darksite.cloud/resource-contract: strict
+    istio-injection: enabled
+    observability.grafana.com/tenant: platform
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: privileged
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: privileged
+    pod-security.kubernetes.io/warn-version: latest
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: grafana
+  labels:
+    deploykube.gitops/component: grafana
+    deploykube.gitops/owner: platform
+    deploykube.gitops/public-gateway: allowed
+    darksite.cloud/resource-contract: strict
+    istio-injection: enabled
+    observability.grafana.com/tenant: platform
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: privileged
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: privileged
+    pod-security.kubernetes.io/warn-version: latest

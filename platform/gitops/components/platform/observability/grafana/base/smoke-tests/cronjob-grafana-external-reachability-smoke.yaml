@@ -1,0 +1,140 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: grafana-external-reachability-smoke
+  namespace: grafana
+  annotations:
+    argocd.argoproj.io/sync-wave: "3.9"
+spec:
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 240
+      ttlSecondsAfterFinished: 900
+      template:
+        metadata:
+          annotations:
+            sidecar.istio.io/inject: "false"
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          volumes:
+            - name: root-ca
+              configMap:
+                name: grafana-probe-root-ca
+                items:
+                  - key: ca.crt
+                    path: ca.crt
+            - name: deployment-config
+              configMap:
+                name: deploykube-deployment-config
+                defaultMode: 292
+          containers:
+            - name: grafana-external-reachability-smoke
+              image: registry.example.internal/deploykube/bootstrap-tools:1.4
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: GRAFANA_HOST
+                  value: grafana.invalid
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  memory: 256Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+              volumeMounts:
+                - name: root-ca
+                  mountPath: /etc/deploykube/root-ca
+                  readOnly: true
+                - name: deployment-config
+                  mountPath: /config
+                  readOnly: true
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -euo pipefail
+
+                  CA="/etc/deploykube/root-ca/ca.crt"
+                  [ -s "${CA}" ] || { echo "missing probe CA bundle at ${CA}" >&2; exit 1; }
+
+                  host="${GRAFANA_HOST:-}"
+                  if [ -z "${host}" ] || [ "${host}" = "grafana.invalid" ]; then
+                    command -v yq >/dev/null 2>&1 || { echo "missing dependency: yq" >&2; exit 1; }
+                    cfg="/config/deployment-config.yaml"
+                    [ -f "${cfg}" ] || { echo "missing deployment config at ${cfg}" >&2; exit 1; }
+                    base_domain="$(yq -r '.spec.dns.baseDomain // ""' "${cfg}" 2>/dev/null || true)"
+                    [ -n "${base_domain}" ] || { echo "missing .spec.dns.baseDomain in ${cfg}" >&2; exit 1; }
+                    host="grafana.${base_domain}"
+                  fi
+                  test -n "${host}"
+
+                  url="https://${host}"
+
+                  # Avoid in-cluster hairpin to the external LoadBalancer IP (can cause RSTs on some substrates):
+                  # connect to the ingress gateway Service IP while keeping the public hostname for SNI/Host.
+                  gateway=""
+                  gateway_candidates="
+                  public-gateway-istio.istio-system.svc.cluster.local
+                  istio-ingressgateway.istio-system.svc.cluster.local
+                  "
+                  for g in ${gateway_candidates}; do
+                    if getent hosts "${g}" >/dev/null 2>&1; then
+                      gateway="${g}"
+                      break
+                    fi
+                  done
+
+                  if [ -n "${gateway}" ]; then
+                    echo "[grafana-external-smoke] probing ${url} via ${gateway}:443 (TLS verified via probe CA bundle)..."
+                  else
+                    echo "[grafana-external-smoke] probing ${url} directly (no gateway Service resolved; TLS verified via probe CA bundle)..."
+                  fi
+
+                  # Prefer a health endpoint if it is public; fall back to /login if /api/health requires auth.
+                  set -- curl -sS --cacert "${CA}" -o /tmp/health.json -w '%{http_code}' --max-time 20
+                  if [ -n "${gateway}" ]; then
+                    set -- "$@" --connect-to "${host}:443:${gateway}:443"
+                  fi
+                  code="$("$@" "${url}/api/health" || true)"
+                  if [ "${code}" = "200" ]; then
+                    cat /tmp/health.json | jq -e '.database == "ok"' >/dev/null
+                    echo "[grafana-external-smoke] ok: /api/health database=ok"
+                  elif [ "${code}" = "401" ] || [ "${code}" = "403" ]; then
+                    set -- curl -sS --cacert "${CA}" -o /dev/null -w '%{http_code}' --max-time 20
+                    if [ -n "${gateway}" ]; then
+                      set -- "$@" --connect-to "${host}:443:${gateway}:443"
+                    fi
+                    login_code="$("$@" "${url}/login" || true)"
+                    case "${login_code}" in
+                      2*|3*|401|403)
+                        echo "[grafana-external-smoke] ok: /login reachable (health endpoint requires auth: ${code}; /login HTTP ${login_code})"
+                        ;;
+                      *)
+                        echo "[grafana-external-smoke] unexpected /login HTTP ${login_code:-no-response} (health endpoint requires auth: ${code})" >&2
+                        exit 1
+                        ;;
+                    esac
+                  else
+                    echo "[grafana-external-smoke] unexpected /api/health HTTP ${code}" >&2
+                    if [ -s /tmp/health.json ]; then
+                      echo "[grafana-external-smoke] /api/health body:"
+                      cat /tmp/health.json
+                    fi
+                    exit 1
+                  fi

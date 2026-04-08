@@ -1,0 +1,35 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+
+# mac-orbstack-single schedule: every 15 minutes for faster feedback
+patches:
+  - patch: |-
+      - op: replace
+        path: /spec/schedule
+        value: "*/15 * * * *"
+    target:
+      kind: CronJob
+      name: cert-smoke-step-ca-issuance
+  - patch: |-
+      - op: replace
+        path: /spec/schedule
+        value: "*/15 * * * *"
+    target:
+      kind: CronJob
+      name: cert-smoke-vault-external-issuance
+  - patch: |-
+      - op: replace
+        path: /spec/schedule
+        value: "*/15 * * * *"
+    target:
+      kind: CronJob
+      name: cert-smoke-ingress-readiness
+  - patch: |-
+      - op: replace
+        path: /spec/schedule
+        value: "*/15 * * * *"
+    target:
+      kind: CronJob
+      name: cert-smoke-gateway-sni

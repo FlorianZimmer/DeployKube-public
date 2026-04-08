@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-oidc-config-state
+  namespace: argocd
+data:
+  configVersion: ""
+  configSha256: ""
+  lastAppliedAt: ""

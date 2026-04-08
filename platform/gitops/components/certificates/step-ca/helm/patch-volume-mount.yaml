@@ -1,0 +1,15 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: step-ca-step-certificates
+spec:
+  template:
+    spec:
+      containers:
+        - name: step-certificates
+          volumeMounts:
+            - mountPath: /home/step/db
+              name: database
+              $patch: delete
+            - mountPath: /home/step/db
+              name: database

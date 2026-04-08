@@ -1,0 +1,33 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: valkey-sentinel
+  labels:
+    app.kubernetes.io/name: valkey-sentinel
+    app.kubernetes.io/part-of: valkey
+spec:
+  selector:
+    app.kubernetes.io/name: valkey-sentinel
+  ports:
+    - name: sentinel
+      port: 26379
+      targetPort: sentinel
+      protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: valkey-sentinel-headless
+  labels:
+    app.kubernetes.io/name: valkey-sentinel
+    app.kubernetes.io/part-of: valkey
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/name: valkey-sentinel
+  ports:
+    - name: sentinel
+      port: 26379
+      targetPort: sentinel
+      protocol: TCP

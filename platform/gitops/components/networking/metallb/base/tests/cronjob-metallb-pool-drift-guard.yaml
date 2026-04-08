@@ -1,0 +1,87 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: metallb-pool-drift-guard
+  namespace: metallb-system
+  labels:
+    app.kubernetes.io/name: metallb-smoke
+spec:
+  # Dev default: run frequently to catch OrbStack subnet drift quickly (patched to hourly in prod overlay).
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 300
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          annotations:
+            sidecar.istio.io/inject: "false"
+        spec:
+          restartPolicy: Never
+          serviceAccountName: metallb-pool-drift-guard
+          hostNetwork: true
+          dnsPolicy: ClusterFirstWithHostNet
+          containers:
+            - name: guard
+              image: registry.example.internal/deploykube/bootstrap-tools:1.4
+              imagePullPolicy: IfNotPresent
+              command:
+                - /bin/bash
+                - -lc
+                - |
+                  set -euo pipefail
+
+                  dump_on_error() {
+                    echo "[metallb-drift] diagnostics (best-effort)" >&2
+                    kubectl -n metallb-system get ipaddresspool -o yaml >&2 || true
+                    kubectl get nodes -o wide >&2 || true
+                    kubectl -n metallb-system get events --sort-by=.lastTimestamp >&2 || true
+                  }
+                  trap dump_on_error ERR
+
+                  pools="$(kubectl -n metallb-system get ipaddresspool -o json)"
+                  node_ips="$(kubectl get nodes -o json | jq -r '.items[].status.addresses[]? | select(.type=="InternalIP") | .address' | sort -u)"
+                  if [[ -z "${node_ips}" ]]; then
+                    echo "[metallb-drift] could not determine node InternalIP(s)" >&2
+                    exit 1
+                  fi
+
+                  echo "[metallb-drift] node InternalIP(s):"
+                  echo "${node_ips}" | sed 's/^/  - /'
+
+                  pool_prefixes="$(echo "${pools}" | jq -r '
+                    .items[].spec.addresses[]?
+                    | if test("-") then split("-")[0] else . end
+                    | (split(".")[0:3] | join("."))
+                  ' | sort -u)"
+
+                  if [[ -z "${pool_prefixes}" ]]; then
+                    echo "[metallb-drift] no IPAddressPool addresses found" >&2
+                    exit 1
+                  fi
+
+                  echo "[metallb-drift] pool prefix(es) (first 3 octets):"
+                  echo "${pool_prefixes}" | sed 's/^/  - /'
+
+                  node_prefixes="$(echo "${node_ips}" | awk -F. '{print $1"."$2"."$3}' | sort -u)"
+
+                  ok="false"
+                  while read -r pp; do
+                    if echo "${node_prefixes}" | grep -qx "${pp}"; then
+                      ok="true"
+                      break
+                    fi
+                  done <<< "${pool_prefixes}"
+
+                  if [[ "${ok}" != "true" ]]; then
+                    echo "[metallb-drift] IP pool prefixes do not match any node InternalIP prefix" >&2
+                    echo "[metallb-drift] this commonly indicates OrbStack/kind subnet drift; update the dev pool accordingly" >&2
+                    exit 1
+                  fi
+
+                  echo "[metallb-drift] ok"

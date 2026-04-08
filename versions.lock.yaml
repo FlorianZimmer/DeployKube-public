@@ -1,0 +1,345 @@
+schemaVersion: v1alpha1
+
+classes:
+  - id: bootstrap-core
+    title: Bootstrap Core
+    description: Stage 0 and Stage 1 install sources that shape the first boot and first reconcile path.
+    shared_validations:
+      - ./tests/scripts/validate-version-lock.sh
+      - ./tests/scripts/validate-supply-chain-pinning.sh
+      - ./tests/scripts/validate-bootstrap-contract.sh
+      - ./tests/scripts/validate-offline-bootstrap-contract.sh
+      - ./tests/scripts/ci.sh deployment-contracts
+
+  - id: tier0-security
+    title: Tier-0 Security
+    description: Foundational trust, secrets, and policy components that should be proposed in small reviewable changes.
+    shared_validations:
+      - ./tests/scripts/validate-version-lock.sh
+      - ./tests/scripts/validate-supply-chain-pinning.sh
+      - ./tests/scripts/ci.sh deployment-contracts
+      - Proxmox reconcile plus component smoke/evidence before merge
+
+  - id: platform-services
+    title: Platform Services
+    description: Core GitOps and Git service bootstrap components that can be proposed together but should still merge case-by-case.
+    shared_validations:
+      - ./tests/scripts/validate-version-lock.sh
+      - ./tests/scripts/validate-supply-chain-pinning.sh
+      - ./tests/scripts/ci.sh deployment-contracts
+      - ./scripts/release/release-gate.sh --ref main --smoke-profile full before release tagging
+
+components:
+  - id: cilium-stage0-chart
+    class: bootstrap-core
+    title: Cilium Stage 0 chart
+    version: 1.18.5
+    tracks_issue_slugs:
+      - cilium
+    summary: Stage 0 Cilium chart version for macOS and Proxmox bootstrap.
+    proposal_notes:
+      - Keep mac and proxmox Stage 0 pins aligned in the same change.
+      - Recheck offline/bootstrap assumptions before merge.
+    references:
+      - type: literal_fragment
+        path: shared/scripts/bootstrap-mac-orbstack-stage0.sh
+        template: 'CILIUM_CHART_VERSION="${CILIUM_CHART_VERSION:-__VERSION__}"'
+      - type: literal_fragment
+        path: shared/scripts/bootstrap-proxmox-talos-stage0.sh
+        template: 'CILIUM_CHART_VERSION="${CILIUM_CHART_VERSION:-__VERSION__}"'
+      - type: literal_fragment
+        path: target-stack.md
+        template: '**CNI**: Cilium with kube-proxy replacement and Hubble enabled (installed by Stage 0; proxmox and mac Stage 0 pin chart version `__VERSION__`).'
+
+  - id: metallb-stage0-chart
+    class: bootstrap-core
+    title: MetalLB Stage 0 chart
+    version: 0.15.2
+    tracks_issue_slugs:
+      - metallb
+    summary: Stage 0 MetalLB chart version for macOS and Proxmox bootstrap.
+    proposal_notes:
+      - Keep mac and proxmox Stage 0 pins aligned in the same change.
+    references:
+      - type: literal_fragment
+        path: shared/scripts/bootstrap-mac-orbstack-stage0.sh
+        template: 'METALLB_CHART_VERSION="${METALLB_CHART_VERSION:-__VERSION__}"'
+      - type: literal_fragment
+        path: shared/scripts/bootstrap-proxmox-talos-stage0.sh
+        template: 'METALLB_CHART_VERSION="${METALLB_CHART_VERSION:-__VERSION__}"'
+      - type: literal_fragment
+        path: target-stack.md
+        template: '**LoadBalancer**: MetalLB Helm chart `__VERSION__` (app `v0.15.2`) via Argo app `networking-metallb`; address pools via `components/networking/metallb`. Stage 0 pre-installs MetalLB and pins chart version `__VERSION__`.'
+
+  - id: nfs-stage0-chart
+    class: bootstrap-core
+    title: NFS provisioner Stage 0 chart
+    version: 4.0.18
+    tracks_issue_slugs:
+      - storage-nfs-provisioner
+    summary: Stage 0 NFS provisioner chart version for standard bootstrap profiles.
+    proposal_notes:
+      - Keep mac and proxmox Stage 0 pins aligned in the same change.
+    references:
+      - type: literal_fragment
+        path: shared/scripts/bootstrap-mac-orbstack-stage0.sh
+        template: 'NFS_PROVISIONER_CHART_VERSION="${NFS_PROVISIONER_CHART_VERSION:-__VERSION__}"'
+      - type: literal_fragment
+        path: shared/scripts/bootstrap-proxmox-talos-stage0.sh
+        template: 'NFS_PROVISIONER_CHART_VERSION="${NFS_PROVISIONER_CHART_VERSION:-__VERSION__}"'
+      - type: literal_fragment
+        path: target-stack.md
+        template: '**NFS provisioner (standard profiles)**: Argo app `storage-nfs-provisioner` installs `nfs-subdir-external-provisioner` chart `__VERSION__` (app `4.0.2`). Stage 0 may pre-install the provisioner and pins chart version `__VERSION__`.'
+
+  - id: gateway-api-bundle
+    class: bootstrap-core
+    title: Gateway API CRD bundle
+    version: v1.4.0
+    tracks_issue_slugs:
+      - gateway-api
+    summary: Vendored Gateway API CRD bundle marker used by Stage 0 and GitOps.
+    proposal_notes:
+      - Ensure vendored CRD content matches the bundle marker before merge.
+    references:
+      - type: literal_fragment
+        path: platform/gitops/components/networking/gateway-api/standard-install.yaml
+        template: 'gateway.networking.k8s.io/bundle-version: __VERSION__'
+      - type: literal_fragment
+        path: target-stack.md
+        template: '**Gateway API CRDs**: `__VERSION__` via Argo app `networking-gateway-api` (`components/networking/gateway-api/standard-install.yaml`).'
+
+  - id: bootstrap-tools-image-tag
+    class: bootstrap-core
+    title: Bootstrap tools image tag
+    version: 1.4
+    tracks_issue_slugs:
+      - shared-bootstrap-scripts
+    summary: Canonical bootstrap-tools image tag used by Stage 0 and documented as the operator baseline.
+    proposal_notes:
+      - Tag bumps should stay coupled to validation of the affected bootstrap and smoke jobs.
+    references:
+      - type: literal_fragment
+        path: shared/scripts/bootstrap-mac-orbstack-stage0.sh
+        template: 'BOOTSTRAP_TOOLS_IMAGE="${BOOTSTRAP_TOOLS_IMAGE:-registry.example.internal/deploykube/bootstrap-tools:__VERSION__}"'
+      - type: literal_fragment
+        path: shared/scripts/bootstrap-proxmox-talos-stage0.sh
+        template: 'BOOTSTRAP_TOOLS_IMAGE="${BOOTSTRAP_TOOLS_IMAGE:-registry.example.internal/deploykube/bootstrap-tools:__VERSION__}"'
+      - type: literal_fragment
+        path: target-stack.md
+        template: 'Bootstrap tools image (used by bootstrap + many Jobs): `registry.example.internal/deploykube/bootstrap-tools:__VERSION__` (Stage 0/1 defaults).'
+
+  - id: validation-tools-core-image-tag
+    class: bootstrap-core
+    title: Validation tools core image tag
+    version: 0.1.0
+    tracks_issue_slugs:
+      - validation-jobs
+    summary: Narrow utility image tag for low-surface validation and smoke jobs.
+    proposal_notes:
+      - Keep this image intentionally small and scoped to Kubernetes/TLS/HTTP validation tooling.
+      - Validate the first consumer path before migrating more jobs.
+    references:
+      - type: literal_fragment
+        path: shared/scripts/build-validation-tools-core-image.sh
+        template: 'DEFAULT_IMAGE="registry.example.internal/deploykube/validation-tools-core:__VERSION__"'
+      - type: literal_fragment
+        path: shared/scripts/publish-validation-tools-core-image.sh
+        template: 'DEFAULT_IMAGE="registry.example.internal/deploykube/validation-tools-core:__VERSION__"'
+      - type: literal_fragment
+        path: platform/gitops/artifacts/package-index.yaml
+        template: 'source: registry.example.internal/deploykube/validation-tools-core:__VERSION__'
+      - type: literal_fragment
+        path: target-stack.md
+        template: 'Validation tools core image (used by low-surface smoke jobs): `registry.example.internal/deploykube/validation-tools-core:__VERSION__`.'
+
+  - id: tenant-provisioner-image-tag
+    class: bootstrap-core
+    title: Tenant provisioner image tag
+    version: 0.2.24
+    tracks_issue_slugs:
+      - tenant-provisioner
+    summary: Stage 0 tenant-provisioner bootstrap image tag for macOS and Proxmox.
+    proposal_notes:
+      - Keep mac and proxmox Stage 0 pins aligned in the same change.
+    references:
+      - type: literal_fragment
+        path: shared/scripts/bootstrap-mac-orbstack-stage0.sh
+        template: 'TENANT_PROVISIONER_IMAGE="${TENANT_PROVISIONER_IMAGE:-registry.example.internal/deploykube/tenant-provisioner:__VERSION__}"'
+      - type: literal_fragment
+        path: shared/scripts/bootstrap-proxmox-talos-stage0.sh
+        template: 'TENANT_PROVISIONER_IMAGE="${TENANT_PROVISIONER_IMAGE:-registry.example.internal/deploykube/tenant-provisioner:__VERSION__}"'
+
+  - id: cert-manager-chart
+    class: tier0-security
+    title: cert-manager chart
+    version: v1.19.4
+    tracks_issue_slugs:
+      - cert-manager
+    summary: cert-manager chart version and machine-readable metadata pin.
+    proposal_notes:
+      - Refresh vendored chart content, committed render, and digest pins together.
+      - Re-run signed-chart verification, Trivy review, and Proxmox cert-manager smokes.
+    references:
+      - type: yaml_scalar
+        path: platform/gitops/components/certificates/cert-manager/helm/upstream-chart-metadata.yaml
+        selector: .version
+      - type: literal_fragment
+        path: target-stack.md
+        template: '**cert-manager**: Helm chart `__VERSION__` (app `__VERSION__`) via `components/certificates/cert-manager/helm`.'
+    validations:
+      - ./tests/scripts/validate-cert-manager-supply-chain-contract.sh
+      - ./tests/scripts/verify-cert-manager-chart-vendor.sh
+      - ./tests/scripts/scan-cert-manager-images.sh
+
+  - id: step-ca-chart
+    class: tier0-security
+    title: Step CA chart
+    version: 1.28.4
+    tracks_issue_slugs:
+      - step-ca
+    summary: Smallstep step-certificates chart version pin.
+    proposal_notes:
+      - Treat Step CA changes as issuer-path changes; validate trust bootstrap and issuance after bumping.
+    references:
+      - type: yaml_scalar
+        path: platform/gitops/components/certificates/step-ca/helm/kustomization.yaml
+        selector: .helmCharts[0].version
+      - type: literal_fragment
+        path: target-stack.md
+        template: '**Internal CA (current implementation)**: Smallstep “step-certificates” Helm chart `__VERSION__` (app `0.28.4`) via `components/certificates/step-ca/helm`.'
+
+  - id: openbao-chart
+    class: tier0-security
+    title: OpenBao chart
+    version: 0.31.0
+    tracks_issue_slugs:
+      - vault
+    summary: OpenBao Helm chart version pin for the core secret plane.
+    proposal_notes:
+      - Coordinate chart bumps with the secret-plane recovery and upgrade runbooks.
+    references:
+      - type: yaml_scalar
+        path: platform/gitops/components/secrets/vault/helm/kustomization.yaml
+        selector: .helmCharts[0].version
+      - type: literal_fragment
+        path: target-stack.md
+        template: '**OpenBao (core secret plane)**: Helm chart `__VERSION__` with OpenBao image `2.1.0` in `vault-system`, Raft HA enabled (3 replicas)'
+
+  - id: external-secrets-chart
+    class: tier0-security
+    title: External Secrets Operator chart
+    version: 1.0.0
+    tracks_issue_slugs:
+      - external-secrets
+    summary: External Secrets Operator chart version pin.
+    proposal_notes:
+      - Validate webhook/cert wiring after bumping.
+    references:
+      - type: yaml_scalar
+        path: platform/gitops/components/secrets/external-secrets/helm/kustomization.yaml
+        selector: .helmCharts[0].version
+      - type: literal_fragment
+        path: target-stack.md
+        template: '**External Secrets Operator**: Helm chart `__VERSION__` (app `v1.0.0`) and resources use `external-secrets.io/v1` (`components/secrets/external-secrets`).'
+
+  - id: kyverno-chart
+    class: tier0-security
+    title: Kyverno chart
+    version: 3.6.1
+    tracks_issue_slugs:
+      - policy-kyverno
+    summary: Kyverno chart version pin for the policy engine.
+    proposal_notes:
+      - Validate admission policies and tenant guardrails after bumping.
+    references:
+      - type: yaml_scalar
+        path: platform/gitops/components/shared/policy-kyverno/base/helm/kustomization.yaml
+        selector: .helmCharts[0].version
+      - type: literal_fragment
+        path: target-stack.md
+        template: '**Policy engine**: Kyverno Helm chart `__VERSION__` (app `v1.16.1`) with Phase 0 tenant baseline constraints (`components/shared/policy-kyverno`).'
+
+  - id: argocd-stage1-chart
+    class: platform-services
+    title: Argo CD Stage 1 chart
+    version: 9.1.0
+    tracks_issue_slugs:
+      - argocd
+    summary: Bootstrap-installed Argo CD chart version for macOS and Proxmox Stage 1.
+    proposal_notes:
+      - Keep mac and proxmox Stage 1 pins aligned in the same change.
+    references:
+      - type: literal_fragment
+        path: shared/scripts/bootstrap-mac-orbstack-stage1.sh
+        template: 'ARGO_CHART_VERSION="${ARGO_CHART_VERSION:-__VERSION__}"'
+      - type: literal_fragment
+        path: shared/scripts/bootstrap-proxmox-talos-stage1.sh
+        template: 'ARGO_CHART_VERSION="${ARGO_CHART_VERSION:-__VERSION__}"'
+      - type: literal_fragment
+        path: target-stack.md
+        template: '**Argo CD**: bootstrap installs Helm chart `__VERSION__` (app image tag pinned to `v3.2.0`) (`shared/scripts/bootstrap-*-stage1.sh`).'
+
+  - id: forgejo-stage1-chart
+    class: platform-services
+    title: Forgejo Stage 1 chart
+    version: 15.0.2
+    tracks_issue_slugs:
+      - forgejo
+    summary: Bootstrap-installed Forgejo chart version for macOS and Proxmox Stage 1.
+    proposal_notes:
+      - Keep mac and proxmox Stage 1 pins aligned in the same change.
+    references:
+      - type: literal_fragment
+        path: shared/scripts/bootstrap-mac-orbstack-stage1.sh
+        template: 'FORGEJO_CHART_VERSION="${FORGEJO_CHART_VERSION:-__VERSION__}"'
+      - type: literal_fragment
+        path: shared/scripts/bootstrap-proxmox-talos-stage1.sh
+        template: 'FORGEJO_CHART_VERSION="${FORGEJO_CHART_VERSION:-__VERSION__}"'
+      - type: literal_fragment
+        path: target-stack.md
+        template: '**Forgejo**: bootstrap installs Helm chart `__VERSION__` (Forgejo `13.0.2-rootless`) and GitOps then migrates it to CNPG + Valkey and configures ingress/OIDC (`components/platform/forgejo`).'
+
+  - id: cnpg-operator-chart
+    class: platform-services
+    title: CloudNativePG operator chart
+    version: 0.26.1
+    tracks_issue_slugs:
+      - cnpg-operator
+    summary: Vendored CloudNativePG Helm chart version for the shared Postgres control plane.
+    proposal_notes:
+      - Refresh the vendored render, README, and target-stack entry together.
+      - Re-run CNPG component render validation and live reconcile checks before merging chart bumps.
+    references:
+      - type: literal_fragment
+        path: platform/gitops/components/data/postgres/cnpg-operator/manifest.yaml
+        template: 'helm.sh/chart: cloudnative-pg-__VERSION__'
+      - type: literal_fragment
+        path: platform/gitops/components/data/postgres/cnpg-operator/README.md
+        template: '| CloudNativePG Helm chart | `__VERSION__` | `https://cloudnative-pg.github.io/charts` |'
+      - type: literal_fragment
+        path: target-stack.md
+        template: '**Postgres**: CloudNativePG operator Helm chart `__VERSION__` (app `1.27.1`) and base Postgres image `registry.example.internal/cloudnative-pg/postgresql:16.3` (`components/data/postgres`).'
+
+  - id: cnpg-operator-image-tag
+    class: platform-services
+    title: CloudNativePG operator image tag
+    version: 1.27.1
+    tracks_issue_slugs:
+      - cnpg-operator
+    summary: Runtime image/app version for the shared CloudNativePG operator.
+    proposal_notes:
+      - Keep the runtime artifact catalog, vendored manifest, README, and target-stack aligned in the same change.
+      - Validate the reconciled operator Deployment on Proxmox before merging image-version bumps.
+    references:
+      - type: literal_fragment
+        path: platform/gitops/components/data/postgres/cnpg-operator/manifest.yaml
+        template: 'image: "registry.example.internal/cloudnative-pg/cloudnative-pg:__VERSION__"'
+      - type: literal_fragment
+        path: platform/gitops/artifacts/runtime-artifact-index.yaml
+        template: 'source_ref: registry.example.internal/cloudnative-pg/cloudnative-pg:__VERSION__'
+      - type: literal_fragment
+        path: platform/gitops/artifacts/runtime-artifact-index.yaml
+        template: 'distribution_ref: registry.example.internal/cloudnative-pg/cloudnative-pg:__VERSION__'
+      - type: literal_fragment
+        path: target-stack.md
+        template: '**Postgres**: CloudNativePG operator Helm chart `0.26.1` (app `__VERSION__`) and base Postgres image `registry.example.internal/cloudnative-pg/postgresql:16.3` (`components/data/postgres`).'

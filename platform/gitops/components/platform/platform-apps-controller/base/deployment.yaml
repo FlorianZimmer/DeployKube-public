@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: platform-apps-controller
+  labels:
+    app.kubernetes.io/name: platform-apps-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: platform-apps-controller
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: platform-apps-controller
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      serviceAccountName: platform-apps-controller
+      containers:
+        - name: controller
+          image: registry.example.internal/deploykube/tenant-provisioner:0.2.24
+          imagePullPolicy: IfNotPresent
+          args:
+            - --controller-profile=platform-apps
+            - --platform-apps-observe-only=false
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+          ports:
+            - name: metrics
+              containerPort: 8080
+            - name: probes
+              containerPort: 8081
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: probes
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: probes
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      securityContext:
+        runAsNonRoot: true
+      volumes:
+        - name: tmp
+          emptyDir: {}

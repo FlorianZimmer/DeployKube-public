@@ -1,0 +1,29 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+  - pv-backup-target.yaml
+  - pv-tier0-vault-core.yaml
+  - pv-tier0-postgres-keycloak.yaml
+  - pv-tier0-postgres-powerdns.yaml
+  - pv-tier0-postgres-forgejo.yaml
+  - rbac-pv-claimref-repair.yaml
+  - job-pv-claimref-repair.yaml
+  - job-backup-set-permissions-repair.yaml
+  - job-tenant-backup-permissions-repair.yaml
+
+images:
+  - name: registry.example.internal/deploykube/bootstrap-tools
+    newName: 198.51.100.11:5010/deploykube/bootstrap-tools
+    digest: sha256:72407960aa586b2220673e125e20a3c6c0723460ec3064b98597bfe6d90c6456
+
+patches:
+  - path: patch-pvc-bind-backup-target.yaml
+    target:
+      kind: PersistentVolumeClaim
+      name: backup-target
+  - path: patch-backup-set-assemble-breakglass-required.yaml
+    target:
+      kind: CronJob
+      name: storage-backup-set-assemble

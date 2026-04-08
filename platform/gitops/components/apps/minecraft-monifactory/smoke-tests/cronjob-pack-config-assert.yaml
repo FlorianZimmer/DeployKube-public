@@ -1,0 +1,248 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: minecraft-pack-config-assert
+  namespace: minecraft-monifactory
+  labels:
+    app.kubernetes.io/name: minecraft-monifactory
+    app.kubernetes.io/component: smoke-test
+spec:
+  # This is intended to be run on-demand:
+  # - either unsuspend temporarily, or
+  # - `kubectl create job --from=cronjob/minecraft-pack-config-assert <name>`
+  schedule: "0 0 * * *"
+  startingDeadlineSeconds: 600
+  suspend: true
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 300
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          annotations:
+            sidecar.istio.io/inject: "false"
+        spec:
+          restartPolicy: Never
+          affinity:
+            podAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchLabels:
+                      app: minecraft-monifactory
+                  topologyKey: kubernetes.io/hostname
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: assert
+              image: itzg/minecraft-server:java17
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+              envFrom:
+                - configMapRef:
+                    name: minecraft-monifactory-config
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -eu
+                  (set -o pipefail 2>/dev/null) || true
+
+                  echo "[pack-config-assert] starting"
+
+                  expected_marker="${CF_FILE_ID:-}:${DEPLOYKUBE_PACK_CONFIG_SYNC_REV:-}"
+                  marker_file="/data/.deploykube/monifactory-pack-config-sync"
+                  actual_marker="$(cat "${marker_file}" 2>/dev/null || true)"
+                  if [ "${actual_marker}" != "${expected_marker}" ]; then
+                    echo "[pack-config-assert] FAIL: marker mismatch"
+                    echo "[pack-config-assert]   expected: ${expected_marker}"
+                    echo "[pack-config-assert]   actual:   ${actual_marker:-<missing>}"
+                    echo "[pack-config-assert] hint: bump DEPLOYKUBE_PACK_CONFIG_SYNC_REV and restart deploy/minecraft"
+                    exit 1
+                  fi
+                  echo "[pack-config-assert] OK: marker ${actual_marker}"
+
+                  check_sha256() {
+                    path="$1"
+                    expected="$2"
+                    if [ ! -f "${path}" ]; then
+                      echo "[pack-config-assert] FAIL: missing ${path}"
+                      exit 1
+                    fi
+                    actual="$(sha256sum "${path}" | awk '{print $1}')"
+                    if [ "${actual}" != "${expected}" ]; then
+                      echo "[pack-config-assert] FAIL: sha256 mismatch for ${path}"
+                      echo "[pack-config-assert]   expected: ${expected}"
+                      echo "[pack-config-assert]   actual:   ${actual}"
+                      exit 1
+                    fi
+                    echo "[pack-config-assert] OK: ${path} sha256=${actual}"
+                  }
+
+                  # Representative, high-confidence pack-authored configs for Monifactory 0.13 beta (CF_FILE_ID=7328733).
+                  check_sha256 "/data/config/telepastries-common.toml" "4111943adef37dec427952b4b0b806545e668779371adf9b8c4e625aaac669ec"
+                  check_sha256 "/data/config/create-common.toml" "679e3eb1366b748e91af6d137f1a9f52a3a3a02373c0e454015dc504df4bf6fa"
+                  check_sha256 "/data/config/NuclearCraft/common.toml" "5b8c5014041fa3d5ab0fa9fb87cca4107da3e1861324e98a173a9d3440dffe68"
+                  check_sha256 "/data/config/enderio/base-common.toml" "4a895e3f8ca027c6e8644412402cd1a5518685ed107ee0f9b8812becd11ebc49"
+                  check_sha256 "/data/config/hostilenetworks.cfg" "17163033901a86688ee39b0f285c8ea7099bcaca991a012102cafbe69d6647db"
+                  check_sha256 "/data/config/hammerlib/tags/modded/hammerlib.json" "a06cb059b42626445bdffd2bfbff787a02fc84055c7dd729c6d0979bd521249c"
+                  check_sha256 "/data/config/thermal-common.toml" "5235d8bab1e28f6e966fa03a7782a72cae3ab2ea3fa8f60ecdc19df7ad9b1e23"
+                  check_sha256 "/data/config/emi_loot_config.toml" "02f271fbb7f2e83b7d1303e23e43b6f2540fa362021fa2d5d5edf849823306ae"
+
+                  # Packmode-specific configs (enforced by monifactory-packmode initContainer).
+                  #
+                  # These YAML files may be rewritten/normalized by the mod at runtime (formatting changes, and
+                  # some keys omitted when they match defaults), so sha256 is not stable. Assert key values instead.
+                  mode="${DEPLOYKUBE_MONIFACTORY_MODE:-}"
+                  if [ ! -f "/data/config/gtmutils.yaml" ]; then
+                    echo "[pack-config-assert] FAIL: missing /data/config/gtmutils.yaml"
+                    exit 1
+                  fi
+                  if [ ! -f "/data/config/monilabs.yaml" ]; then
+                    echo "[pack-config-assert] FAIL: missing /data/config/monilabs.yaml"
+                    exit 1
+                  fi
+                  case "${mode}" in
+                    N)
+                      if ! grep -Eq '^[[:space:]]*pterbCoolantBaseDrain:[[:space:]]*0([[:space:]]*(#.*)?)?$' "/data/config/gtmutils.yaml"; then
+                        echo "[pack-config-assert] FAIL: expected pterbCoolantBaseDrain: 0 in /data/config/gtmutils.yaml"
+                        exit 1
+                      fi
+                      if ! grep -Eq '^[[:space:]]*hostileMicroverseTooltip:[[:space:]]*false([[:space:]]*(#.*)?)?$' "/data/config/monilabs.yaml"; then
+                        echo "[pack-config-assert] FAIL: expected hostileMicroverseTooltip: false in /data/config/monilabs.yaml"
+                        exit 1
+                      fi
+                      ;;
+                    H|E)
+                      if ! grep -Eq '^[[:space:]]*pterbCoolantBaseDrain:[[:space:]]*4([[:space:]]*(#.*)?)?$' "/data/config/gtmutils.yaml"; then
+                        echo "[pack-config-assert] FAIL: expected pterbCoolantBaseDrain: 4 in /data/config/gtmutils.yaml"
+                        exit 1
+                      fi
+                      if ! grep -Eq '^[[:space:]]*hostileMicroverseTooltip:[[:space:]]*true([[:space:]]*(#.*)?)?$' "/data/config/monilabs.yaml"; then
+                        echo "[pack-config-assert] FAIL: expected hostileMicroverseTooltip: true in /data/config/monilabs.yaml"
+                        exit 1
+                      fi
+                      ;;
+                    *)
+                      echo "[pack-config-assert] FAIL: unknown DEPLOYKUBE_MONIFACTORY_MODE='${mode}' (expected N/H/E)"
+                      exit 1
+                      ;;
+                  esac
+                  echo "[pack-config-assert] OK: gtmutils.yaml/monilabs.yaml mode=${mode} key checks"
+
+                  # gtceu.yaml is not allowlisted (pack default differs from our intended behavior), but we do assert
+                  # the server-required invariant to avoid accidental regressions.
+                  if [ ! -f "/data/config/gtceu.yaml" ]; then
+                    echo "[pack-config-assert] FAIL: missing /data/config/gtceu.yaml"
+                    exit 1
+                  fi
+                  if ! grep -Eq '^[[:space:]]*enableFEConverters:[[:space:]]*false([[:space:]]*(#.*)?)?$' "/data/config/gtceu.yaml"; then
+                    echo "[pack-config-assert] FAIL: expected enableFEConverters: false in /data/config/gtceu.yaml"
+                    echo "[pack-config-assert] hint: check initContainer gtceu-disable-fe-to-eu logs"
+                    exit 1
+                  fi
+                  echo "[pack-config-assert] OK: gtceu.yaml enableFEConverters=false"
+
+                  # difficultylock.json5 is applied via monifactory-packmode (mode-aware). For Hard Mode (H) we
+                  # expect it to force Peaceful difficulty and lock it.
+                  if [ ! -f "/data/config/difficultylock.json5" ]; then
+                    echo "[pack-config-assert] FAIL: missing /data/config/difficultylock.json5"
+                    exit 1
+                  fi
+                  if ! grep -Eq '"forcePeaceful"[[:space:]]*:[[:space:]]*true' "/data/config/difficultylock.json5"; then
+                    echo "[pack-config-assert] FAIL: expected forcePeaceful: true in /data/config/difficultylock.json5"
+                    echo "[pack-config-assert] hint: check initContainer monifactory-packmode logs"
+                    exit 1
+                  fi
+                  if ! grep -Eq '"shouldLockDifficulty"[[:space:]]*:[[:space:]]*true' "/data/config/difficultylock.json5"; then
+                    echo "[pack-config-assert] FAIL: expected shouldLockDifficulty: true in /data/config/difficultylock.json5"
+                    echo "[pack-config-assert] hint: check initContainer monifactory-packmode logs"
+                    exit 1
+                  fi
+                  echo "[pack-config-assert] OK: difficultylock.json5 forcePeaceful=true shouldLockDifficulty=true"
+
+                  # Resourceful Config Web is server-side but should remain disabled (avoid exposing an in-game
+                  # config web UI on a server port).
+                  if [ ! -f "/data/config/resourceful-config-web.json" ]; then
+                    echo "[pack-config-assert] FAIL: missing /data/config/resourceful-config-web.json"
+                    exit 1
+                  fi
+                  if ! grep -Eq '"enabled"[[:space:]]*:[[:space:]]*false' "/data/config/resourceful-config-web.json"; then
+                    echo "[pack-config-assert] FAIL: expected enabled=false in /data/config/resourceful-config-web.json"
+                    exit 1
+                  fi
+                  echo "[pack-config-assert] OK: resourceful-config-web.json enabled=false"
+
+                  # Bountiful: engineer decree is pack-authored; bounty pools are mode-specific (Hard differs;
+                  # Expert currently falls back to Normal).
+                  check_sha256 "/data/config/bountiful/bounty_decrees/engineer.json" "46bd45e3776e756ebb48349bec9f660e394e82b3f522531af629978eedb25330"
+                  case "${mode}" in
+                    H)
+                      expected_bountiful="2af69a0a83e637b35f5db6745782a51175847eba18d2ca5a3d6ed5c8f97d30ac"
+                      expected_moni_objs="8bc57cb4b19b872a80d5f1c5903e838dcc8de8703be38e5f89485172ef4de14c"
+                      expected_moni_rews="65139d6700d2ee179ef256d99d1f5ad0eba3532713bd9d374bc6db9d763d2d4c"
+                      ;;
+                    N|E)
+                      expected_bountiful="fc85dc954b74c3f8bf7fd3724976073af0bac7edeff04ffcd78d41d536090cb1"
+                      expected_moni_objs="e644df7470f5da756c8b88e32da92123e0c4cb5cd344e5fa45a45edfa08d2f33"
+                      expected_moni_rews="78d2ac4bc1e9ffc355be891eed8e9e6578e631f97a70f055cc3641b0796814e0"
+                      ;;
+                    *)
+                      echo "[pack-config-assert] FAIL: unknown mode '${mode}' for bountiful asserts"
+                      exit 1
+                      ;;
+                  esac
+                  check_sha256 "/data/config/bountiful/bountiful.json" "${expected_bountiful}"
+                  check_sha256 "/data/config/bountiful/bounty_pools/moni_objs.json" "${expected_moni_objs}"
+                  check_sha256 "/data/config/bountiful/bounty_pools/moni_rews.json" "${expected_moni_rews}"
+
+                  # Iron Jetpacks: pack ships additional jetpack tiers beyond the generated defaults.
+                  check_sha256 "/data/config/ironjetpacks/jetpacks/vibrant.json" "7134248b414b05cabfc976e6dd938e243c90ff92c4a56bb0a9d1c22ba379b7d0"
+                  check_sha256 "/data/config/ironjetpacks/jetpacks/leadstone.json" "ccf0f1f7d16eafa55a441fd4a5a90ea3cb74331487d1c526cfd5fe956ada9913"
+                  check_sha256 "/data/config/ironjetpacks/jetpacks/electricalsteel.json" "dd0d5e2147c787c35fbc1cac76013e8b07d2235828b7b274d226328d459e031e"
+                  check_sha256 "/data/config/ironjetpacks/jetpacks/energetic.json" "cafbc33f4d8a593aceb1bf2176748e4db6582bac8095a351e115e94fc582961c"
+                  check_sha256 "/data/config/ironjetpacks/jetpacks/hardened.json" "8f4a8a79a32b1ecba6753306c9934991cccc23e85fe61bfb75c959c1201272de"
+                  check_sha256 "/data/config/ironjetpacks/jetpacks/darksoularium.json" "c2ef329055590f69bb12efa30c7902d9f9e80f86788126d320c5e9545fd235a2"
+                  check_sha256 "/data/config/ironjetpacks/jetpacks/conductiveiron.json" "954516c38ba9cf0a6cfdc71dec58418190f7b106658ca0a9c1e73e6042311a78"
+                  check_sha256 "/data/config/ironjetpacks/jetpacks/reinforced.json" "03fbb0986246b8de6e4eb65bfde289fe4da92e266acf90cfada2aaad19536986"
+                  check_sha256 "/data/config/ironjetpacks/jetpacks/fluxed.json" "a05e47b9b4ad83cb55c9a6fe24afd1808bdd75de35ec59bd17865cdc6862457d"
+                  check_sha256 "/data/config/ironjetpacks/jetpacks/resonant.json" "f73a5dd8e076ce7cecdcaae5981239b3afd3452ab582071611f6c10204e0aedf"
+
+                  # Lost Cities is intentionally disabled on this server (custom divergence): no teleporter bed,
+                  # and no dimension profile mapping.
+                  if [ "${DEPLOYKUBE_DISABLE_LOSTCITIES:-false}" = "true" ]; then
+                    if [ ! -f "/data/world/serverconfig/lostcities-server.toml" ]; then
+                      echo "[pack-config-assert] FAIL: missing /data/world/serverconfig/lostcities-server.toml"
+                      exit 1
+                    fi
+                    if ! grep -Eq '^[[:space:]]*specialBedBlock[[:space:]]*=[[:space:]]*\"minecraft:barrier\"' "/data/world/serverconfig/lostcities-server.toml"; then
+                      echo "[pack-config-assert] FAIL: expected specialBedBlock=\"minecraft:barrier\" in /data/world/serverconfig/lostcities-server.toml"
+                      exit 1
+                    fi
+                    if ! grep -Eq '^[[:space:]]*dimensionsWithProfiles[[:space:]]*=[[:space:]]*[[][[:space:]]*[]][[:space:]]*$' "/data/config/lostcities/common.toml"; then
+                      echo "[pack-config-assert] FAIL: expected dimensionsWithProfiles=[] in /data/config/lostcities/common.toml"
+                      exit 1
+                    fi
+                    echo "[pack-config-assert] OK: lostcities disabled (no bed teleport, no dimension mapping)"
+                  fi
+
+                  echo "[pack-config-assert] PASS"
+              volumeMounts:
+                - name: data
+                  mountPath: /data
+                  readOnly: true
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: minecraft-data

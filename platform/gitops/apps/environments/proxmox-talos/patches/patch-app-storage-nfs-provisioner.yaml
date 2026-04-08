@@ -1,0 +1,27 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: storage-nfs-provisioner
+  namespace: argocd
+spec:
+  source:
+    helm:
+      values: |
+        nfs:
+          server: 198.51.100.10
+          path: /nvme01/kube
+          mountOptions:
+            - vers=4.1
+            - rsize=1048576
+            - wsize=1048576
+            - hard
+            - timeo=600
+            - retrans=2
+        storageClass:
+          create: false
+        resources:
+          requests:
+            cpu: 15m
+            memory: 64Mi
+          limits:
+            memory: 96Mi

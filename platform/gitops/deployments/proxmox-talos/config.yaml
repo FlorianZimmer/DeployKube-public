@@ -1,0 +1,156 @@
+apiVersion: platform.darksite.cloud/v1alpha1
+kind: DeploymentConfig
+metadata:
+  name: proxmox-talos
+spec:
+  deploymentId: proxmox-talos
+  environmentId: prod
+
+  dns:
+    baseDomain: prod.internal.example.com
+    authority:
+      nameServers:
+        - ns1.prod.internal.example.com
+    delegation:
+      mode: manual
+      parentZone: internal.example.com
+    cloudDNS:
+      tenantWorkloadZones:
+        enabled: true
+        zoneSuffix: workloads
+    # Operator/LAN resolvers that should be able to resolve this deployment's internal zone
+    # (e.g. Pi-hole, Unbound). Used by DNS reachability smoke jobs; optional.
+    operatorDnsServers:
+      - 198.51.100.3
+    hostnames:
+      argocd: argocd.prod.internal.example.com
+      forgejo: forgejo.prod.internal.example.com
+      garage: garage.prod.internal.example.com
+      harbor: harbor.prod.internal.example.com
+      keycloak: keycloak.prod.internal.example.com
+      registry: registry.prod.internal.example.com
+      vault: vault.prod.internal.example.com
+      grafana: grafana.prod.internal.example.com
+      kiali: kiali.prod.internal.example.com
+      hubble: hubble.prod.internal.example.com
+
+  certificates:
+    platformIngress:
+      mode: vault
+    tenants:
+      mode: subCa
+
+  iam:
+    mode: hybrid
+    primaryRealm: deploykube-admin
+    secondaryRealms:
+      - deploykube-apps
+    upstream:
+      type: oidc
+      alias: upstream
+      displayName: "Upstream OIDC"
+      oidc:
+        issuerUrl: https://keycloak.prod.internal.example.com/realms/deploykube-apps
+        clientId: deploykube-upstream-broker
+        clientSecretRef:
+          secretName: keycloak-upstream-oidc
+          secretKey: clientSecret
+    hybrid:
+      failOpen: true
+      healthCheck:
+        type: http
+        url: https://keycloak.prod.internal.example.com/realms/deploykube-apps/.well-known/openid-configuration
+        caRef:
+          secretName: keycloak-upstream-oidc
+          secretKey: ca.crt
+        timeoutSeconds: 5
+        intervalSeconds: 60
+        successThreshold: 1
+        failureThreshold: 1
+      offlineCredential:
+        required: false
+        method: password+otp
+
+  trustRoots:
+    stepCaRootCertPath: shared/certs/deploykube-root-ca.crt
+
+  secrets:
+    rootOfTrust:
+      provider: kmsShim
+      mode: inCluster
+      assurance: low
+      acknowledgeLowAssurance: true
+
+  time:
+    ntp:
+      # Use internal NTP servers first in air-gapped deployments; internet servers remain supported.
+      upstreamServers:
+        - time.cloudflare.com
+
+  network:
+    handoffMode: l2
+    metallb:
+      pools:
+        public:
+          - 198.51.100.61-198.51.100.100
+    vip:
+      publicGatewayIP: 198.51.100.62
+      powerdnsIP: 198.51.100.65
+
+  backup:
+    enabled: true
+    target:
+      type: nfs
+      nfs:
+        server: 198.51.100.11
+        exportPath: /volume1/deploykube/backups
+        mountOptions:
+          - nfsvers=4.1
+          - tcp
+          - soft
+          - timeo=50
+          - retrans=2
+          - noatime
+    rpo:
+      tier0: 1h
+      s3Mirror: 1h
+      pvc: 6h
+    schedules:
+      s3Mirror: "7 * * * *"
+      smokeBackupTargetWrite: "11 * * * *"
+      pvcResticBackup: "17 */6 * * *"
+      smokeBackupsFreshness: "29,59 * * * *"
+      smokePvcResticCredentials: "41 */6 * * *"
+      smokeFullRestoreStaleness: "43 4 * * *"
+      backupSetAssemble: "47 * * * *"
+      pruneTier0: "15 3 * * *"
+    retention:
+      # Ordinary workload PVC backups (restic) - v1 placeholder; full PVC backup-plane wiring tracked in docs/component-issues/backup-system.md
+      restic: --keep-within 2h --keep-hourly 24 --keep-daily 7 --keep-weekly 8
+      # Tier-0 retention (Vault snapshots + Postgres dumps) - enforced by backup-plane pruning CronJob (storage-prune-tier0)
+      tier0:
+        hourlyWithin: 24h
+        dailyWithin: 7d
+        totalWithin: 56d
+      # Backup set retention (backup-set-assemble artifacts under /backup/<deploymentId>/sets) - enforced by storage-prune-sets
+      sets:
+        hourlyWithin: 24h
+        dailyWithin: 7d
+        weeklyWithin: 56d
+    s3Mirror:
+      mode: s3-replication
+      mirrorObservabilityBuckets: false
+      replication:
+        destination:
+          # DR replication target S3 endpoint (Synology-hosted Garage).
+          endpoint: http://198.51.100.11:3900
+          region: us-east-1
+          # Prefer a single destination bucket with a deployment-scoped prefix to minimize bucket sprawl.
+          bucket: deploykube-dr
+          prefix: proxmox-talos/
+
+  observability:
+    loki:
+      limits:
+        # Reduce compactor/index pressure while we validate prod memory tuning.
+        retentionPeriod: 168h

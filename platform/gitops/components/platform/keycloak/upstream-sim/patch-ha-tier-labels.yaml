@@ -1,0 +1,12 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak-upstream-sim
+  namespace: keycloak-upstream-sim
+  labels:
+    darksite.cloud/ha-tier: tier-2
+spec:
+  template:
+    metadata:
+      labels:
+        darksite.cloud/ha-tier: tier-2

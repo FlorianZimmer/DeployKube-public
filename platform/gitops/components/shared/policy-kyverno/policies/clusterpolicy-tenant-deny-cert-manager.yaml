@@ -1,0 +1,46 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: tenant-deny-cert-manager
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  admission: true
+  validationFailureAction: Enforce
+  background: false
+  emitWarning: false
+  rules:
+    - name: deny-cert-manager-apis
+      match:
+        any:
+          - resources:
+              kinds:
+                - Certificate
+                - Issuer
+                - CertificateRequest
+                - Order.acme.cert-manager.io
+                - Challenge.acme.cert-manager.io
+              namespaceSelector:
+                matchLabels:
+                  darksite.cloud/rbac-profile: tenant
+      skipBackgroundRequests: true
+      preconditions:
+        all:
+          # Tenant endpoint TLS is platform-owned. Deny direct cert-manager API usage in
+          # tenant namespaces even if a caller somehow bypasses tenant GitOps boundaries.
+          - key: "{{ request.userInfo.username }}"
+            operator: NotIn
+            value:
+              - system:serviceaccount:argocd:argocd-application-controller
+      validate:
+        message: "Tenant namespaces may not create cert-manager resources directly; endpoint TLS is platform-owned."
+        allowExistingViolations: true
+        deny:
+          conditions:
+            any:
+              - key: "{{ request.operation }}"
+                operator: Equals
+                value: CREATE
+              - key: "{{ request.operation }}"
+                operator: Equals
+                value: UPDATE

@@ -1,0 +1,732 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: storage-backup-set-assemble
+  labels:
+    app.kubernetes.io/component: backup-maintenance
+    app.kubernetes.io/part-of: backup-system
+    darksite.cloud/backup-plane-spread: long-running
+spec:
+  # Intentionally offset from :00 to avoid top-of-hour kube-apiserver contention.
+  schedule: "47 * * * *"
+  suspend: false
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 3600
+      ttlSecondsAfterFinished: 21600
+      template:
+        metadata:
+          annotations:
+            sidecar.istio.io/inject: "false"
+          labels:
+            app.kubernetes.io/component: backup-maintenance
+            app.kubernetes.io/part-of: backup-system
+            darksite.cloud/backup-plane-spread: long-running
+        spec:
+          serviceAccountName: backup-set-writer
+          restartPolicy: Never
+          securityContext:
+            runAsUser: 65532
+            runAsGroup: 65532
+            runAsNonRoot: true
+            fsGroup: 65532
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile:
+              type: RuntimeDefault
+          affinity:
+            nodeAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+                # Prefer non-control-plane nodes when present, but remain schedulable on single-node clusters.
+                - weight: 100
+                  preference:
+                    matchExpressions:
+                      - key: node-role.kubernetes.io/control-plane
+                        operator: DoesNotExist
+                - weight: 50
+                  preference:
+                    matchExpressions:
+                      - key: node-role.kubernetes.io/master
+                        operator: DoesNotExist
+            podAntiAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+                - weight: 100
+                  podAffinityTerm:
+                    topologyKey: kubernetes.io/hostname
+                    labelSelector:
+                      matchLabels:
+                        darksite.cloud/backup-plane-spread: long-running
+          topologySpreadConstraints:
+            - maxSkew: 1
+              topologyKey: kubernetes.io/hostname
+              whenUnsatisfiable: ScheduleAnyway
+              labelSelector:
+                matchLabels:
+                  darksite.cloud/backup-plane-spread: long-running
+          containers:
+            - name: assemble
+              image: registry.example.internal/deploykube/bootstrap-tools@sha256:e7be47a69e3a11bc58c857f2d690a71246ada91ac3a60bdfb0a547f091f6485a
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: DEPLOYMENT_ID
+                  value: proxmox-talos
+                - name: MAX_AGE_TIER0_SECONDS
+                  value: "7200"
+                - name: MAX_AGE_S3_MIRROR_SECONDS
+                  value: "21600"
+                - name: MAX_AGE_PVC_RESTIC_SECONDS
+                  value: "43200"
+                - name: SOURCE_REVISION
+                  value: ""
+                - name: GITOPS_REPO_URL
+                  value: ""
+                - name: FORGEJO_CA_SECRET_NAMESPACE
+                  value: forgejo
+                - name: FORGEJO_CA_SECRET_NAME
+                  value: forgejo-repo-tls
+                - name: FORGEJO_CA_SECRET_KEY
+                  value: tls.crt
+                - name: HOME
+                  value: /tmp
+                - name: TMPDIR
+                  value: /tmp
+                - name: REQUIRE_BREAKGLASS_KUBECONFIG
+                  value: "false"
+                - name: REQUIRE_RESTIC_PASSWORDS
+                  value: "true"
+                - name: AGE_RECIPIENT
+                  valueFrom:
+                    configMapKeyRef:
+                      name: backup-recovery-encryption
+                      key: AGE_RECIPIENT
+              volumeMounts:
+                - name: deployment-config
+                  mountPath: /config
+                  readOnly: true
+                - name: backup
+                  mountPath: /backup
+                - name: recovery-repo
+                  mountPath: /recovery-repo
+                  readOnly: true
+                - name: recovery-input
+                  mountPath: /recovery-input
+                  readOnly: true
+                - name: recovery-breakglass
+                  mountPath: /recovery-breakglass
+                  readOnly: true
+                - name: tmp
+                  mountPath: /tmp
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+                readOnlyRootFilesystem: true
+              command:
+                - /bin/bash
+                - -c
+                - |
+                  set -euo pipefail
+                  command -v yq >/dev/null 2>&1 || { echo "missing dependency: yq" >&2; exit 1; }
+                  command -v kubectl >/dev/null 2>&1 || { echo "missing dependency: kubectl" >&2; exit 1; }
+                  command -v age >/dev/null 2>&1 || { echo "missing dependency: age" >&2; exit 1; }
+                  : "${AGE_RECIPIENT:?missing AGE_RECIPIENT}"
+
+                  duration_to_seconds() {
+                    local raw="${1:-}"
+                    if [[ ! "${raw}" =~ ^([0-9]+)([smhd])$ ]]; then
+                      return 1
+                    fi
+                    local n="${BASH_REMATCH[1]}"
+                    local unit="${BASH_REMATCH[2]}"
+                    local mult=1
+                    case "${unit}" in
+                      s) mult=1 ;;
+                      m) mult=60 ;;
+                      h) mult=3600 ;;
+                      d) mult=86400 ;;
+                      *) return 1 ;;
+                    esac
+                    printf '%s' "$((n * mult))"
+                  }
+
+                  rpo_to_max_age_seconds() {
+                    local rpo_raw="${1:-}"
+                    local multiplier="${2:-1}"
+                    local fallback="${3:-}"
+                    local seconds=""
+                    if seconds="$(duration_to_seconds "${rpo_raw}")"; then
+                      printf '%s' "$((seconds * multiplier))"
+                      return 0
+                    fi
+                    printf '%s' "${fallback}"
+                  }
+
+                  cfg="/config/deployment-config.yaml"
+                  if [ -f "$cfg" ]; then
+                    dep="$(yq -r '.spec.deploymentId // ""' "$cfg" 2>/dev/null || true)"
+                    if [ -n "$dep" ]; then
+                      DEPLOYMENT_ID="$dep"
+                    fi
+
+                    # Defaults remain backwards-compatible with env values in this manifest,
+                    # but prefer deployment-config RPO when available.
+                    rpo_tier0="$(yq -r '.spec.backup.rpo.tier0 // ""' "$cfg" 2>/dev/null || true)"
+                    rpo_s3="$(yq -r '.spec.backup.rpo.s3Mirror // ""' "$cfg" 2>/dev/null || true)"
+                    rpo_pvc="$(yq -r '.spec.backup.rpo.pvc // ""' "$cfg" 2>/dev/null || true)"
+
+                    MAX_AGE_TIER0_SECONDS="$(rpo_to_max_age_seconds "${rpo_tier0}" 2 "${MAX_AGE_TIER0_SECONDS}")"
+                    MAX_AGE_S3_MIRROR_SECONDS="$(rpo_to_max_age_seconds "${rpo_s3}" 6 "${MAX_AGE_S3_MIRROR_SECONDS}")"
+                    MAX_AGE_PVC_RESTIC_SECONDS="$(rpo_to_max_age_seconds "${rpo_pvc}" 2 "${MAX_AGE_PVC_RESTIC_SECONDS}")"
+                  fi
+
+                  export DEPLOYMENT_ID MAX_AGE_TIER0_SECONDS MAX_AGE_S3_MIRROR_SECONDS MAX_AGE_PVC_RESTIC_SECONDS
+
+                  if [ -z "${SOURCE_REVISION:-}" ]; then
+                    SOURCE_REVISION="$(kubectl -n argocd get application platform-apps -o jsonpath='{.status.sync.revision}' 2>/dev/null || true)"
+                  fi
+                  if [ -z "${GITOPS_REPO_URL:-}" ]; then
+                    GITOPS_REPO_URL="$(kubectl -n argocd get application platform-apps -o jsonpath='{.spec.source.repoURL}' 2>/dev/null || true)"
+                  fi
+                  export SOURCE_REVISION
+                  export GITOPS_REPO_URL
+
+                  python3 - <<'PY'
+                  import datetime
+                  import base64
+                  import io
+                  import errno
+                  import hashlib
+                  import json
+                  import os
+                  import re
+                  import shutil
+                  import ssl
+                  import subprocess
+                  import sys
+                  import tarfile
+                  import urllib.parse
+                  import urllib.request
+                  from pathlib import Path
+
+                  deployment_id = os.environ.get("DEPLOYMENT_ID", "").strip()
+                  if not deployment_id:
+                      print("missing DEPLOYMENT_ID env", file=sys.stderr)
+                      sys.exit(1)
+
+                  def env_int(name: str) -> int:
+                      raw = os.environ.get(name, "").strip()
+                      if not raw:
+                          raise ValueError(f"missing env: {name}")
+                      v = int(raw)
+                      if v <= 0:
+                          raise ValueError(f"{name} must be > 0")
+                      return v
+
+                  max_age_tier0 = env_int("MAX_AGE_TIER0_SECONDS")
+                  max_age_s3 = env_int("MAX_AGE_S3_MIRROR_SECONDS")
+                  max_age_pvc = env_int("MAX_AGE_PVC_RESTIC_SECONDS")
+
+                  source_revision_raw = os.environ.get("SOURCE_REVISION", "").strip()
+                  gitops_repo_url = os.environ.get("GITOPS_REPO_URL", "").strip()
+                  if not gitops_repo_url:
+                      print("missing GITOPS_REPO_URL env", file=sys.stderr)
+                      sys.exit(1)
+                  forgejo_ca_secret_namespace = os.environ.get("FORGEJO_CA_SECRET_NAMESPACE", "").strip()
+                  forgejo_ca_secret_name = os.environ.get("FORGEJO_CA_SECRET_NAME", "").strip()
+                  forgejo_ca_secret_key = os.environ.get("FORGEJO_CA_SECRET_KEY", "").strip() or "tls.crt"
+                  age_recipient = os.environ.get("AGE_RECIPIENT", "").strip()
+                  if not age_recipient:
+                      print("missing AGE_RECIPIENT env", file=sys.stderr)
+                      sys.exit(1)
+
+                  def env_bool(name: str, default: bool) -> bool:
+                      raw = os.environ.get(name, "").strip().lower()
+                      if not raw:
+                          return default
+                      if raw in ("1", "true", "yes", "on"):
+                          return True
+                      if raw in ("0", "false", "no", "off"):
+                          return False
+                      raise ValueError(f"invalid boolean env {name}: {raw!r}")
+
+                  try:
+                      require_breakglass = env_bool("REQUIRE_BREAKGLASS_KUBECONFIG", False)
+                      require_restic = env_bool("REQUIRE_RESTIC_PASSWORDS", False)
+                  except ValueError as e:
+                      print(str(e), file=sys.stderr)
+                      sys.exit(1)
+
+                  if source_revision_raw:
+                      m = re.match(r"^([0-9a-fA-F]{7,64})", source_revision_raw)
+                      if m:
+                          source_revision_full = m.group(1).lower()
+                      else:
+                          source_revision_full = re.sub(r"[^a-zA-Z0-9]", "", source_revision_raw)[:64].lower()
+                  else:
+                      source_revision_full = ""
+                  if not source_revision_full:
+                      print("missing SOURCE_REVISION; cannot materialize GitOps snapshot", file=sys.stderr)
+                      sys.exit(1)
+                  source_revision = source_revision_full[:12]
+
+                  base = Path("/backup") / deployment_id
+                  sets_dir = base / "sets"
+                  sets_dir.mkdir(parents=True, exist_ok=True)
+
+                  checks = [
+                      ("tier0/vault-core/LATEST.json", max_age_tier0, "vault-core"),
+                      ("tier0/postgres/keycloak/LATEST.json", max_age_tier0, "postgres-keycloak"),
+                      ("tier0/postgres/powerdns/LATEST.json", max_age_tier0, "postgres-powerdns"),
+                      ("tier0/postgres/forgejo/LATEST.json", max_age_tier0, "postgres-forgejo"),
+                      ("s3-mirror/LATEST.json", max_age_s3, "s3-mirror"),
+                      ("pvc-restic/LATEST.json", max_age_pvc, "pvc-restic"),
+                  ]
+
+                  def parse_rfc3339(ts: str) -> datetime.datetime:
+                      ts = ts.strip()
+                      if ts.endswith("Z"):
+                          ts = ts[:-1] + "+00:00"
+                      dt = datetime.datetime.fromisoformat(ts)
+                      if dt.tzinfo is None:
+                          dt = dt.replace(tzinfo=datetime.timezone.utc)
+                      return dt
+
+                  now = datetime.datetime.now(datetime.timezone.utc)
+                  marker_summary = {}
+                  for rel, max_age, label in checks:
+                      marker_path = base / rel
+                      if not marker_path.is_file():
+                          print(f"missing marker: {label} ({marker_path})", file=sys.stderr)
+                          sys.exit(1)
+                      try:
+                          marker = json.loads(marker_path.read_text(encoding="utf-8"))
+                      except Exception as e:
+                          print(f"failed to parse marker: {label} ({marker_path}): {e}", file=sys.stderr)
+                          sys.exit(1)
+                      status = marker.get("status")
+                      if status != "ok":
+                          print(f"bad marker status: {label} status={status!r}", file=sys.stderr)
+                          sys.exit(1)
+                      ts = marker.get("timestamp", "")
+                      if not isinstance(ts, str) or not ts.strip():
+                          print(f"missing marker timestamp: {label}", file=sys.stderr)
+                          sys.exit(1)
+                      try:
+                          age = int((now - parse_rfc3339(ts)).total_seconds())
+                      except Exception as e:
+                          print(f"invalid marker timestamp: {label} ts={ts!r} err={e}", file=sys.stderr)
+                          sys.exit(1)
+                      if age < 0 or age > max_age:
+                          print(
+                              f"stale marker: {label} age={age}s max={max_age}s ts={ts}",
+                              file=sys.stderr,
+                          )
+                          sys.exit(1)
+                      marker_summary[label] = {
+                          "path": str(marker_path),
+                          "timestamp": ts,
+                          "maxAgeSeconds": max_age,
+                      }
+
+                  set_timestamp = now.strftime("%Y%m%dT%H%M%SZ")
+                  set_id = f"{set_timestamp}-{source_revision}"
+                  tmp_set_dir = sets_dir / f".{set_id}.tmp"
+                  set_dir = sets_dir / set_id
+                  if set_dir.exists():
+                      print(f"set already exists: {set_dir}", file=sys.stderr)
+                      sys.exit(1)
+                  if tmp_set_dir.exists():
+                      shutil.rmtree(tmp_set_dir)
+                  tmp_set_dir.mkdir(parents=True, exist_ok=False)
+
+                  def run(cmd: list[str]) -> str:
+                      p = subprocess.run(cmd, capture_output=True, text=True)
+                      if p.returncode != 0:
+                          raise RuntimeError(
+                              f"command failed rc={p.returncode}: {' '.join(cmd)}\n"
+                              f"stdout:\n{p.stdout}\n"
+                              f"stderr:\n{p.stderr}"
+                          )
+                      return p.stdout
+
+                  def fetch_secret_data_b64(namespace: str, name: str, key: str) -> str | None:
+                      if not namespace or not name or not key:
+                          return None
+                      try:
+                          return run(
+                              [
+                                  "kubectl",
+                                  "-n",
+                                  namespace,
+                                  "get",
+                                  "secret",
+                                  name,
+                                  "-o",
+                                  f"go-template={{{{ index .data {json.dumps(key)} }}}}",
+                              ]
+                          ).strip()
+                      except Exception:
+                          return None
+
+                  def build_gitops_archive_url(repo_url: str, revision: str) -> str:
+                      parsed = urllib.parse.urlsplit(repo_url)
+                      if parsed.scheme not in ("https", "http"):
+                          raise ValueError(f"unsupported gitops repo scheme: {parsed.scheme!r}")
+                      path_parts = [part for part in parsed.path.split("/") if part]
+                      if len(path_parts) < 2:
+                          raise ValueError(f"unsupported gitops repo path: {parsed.path!r}")
+                      owner = path_parts[0]
+                      repo = path_parts[1]
+                      if repo.endswith(".git"):
+                          repo = repo[:-4]
+                      archive_path = (
+                          f"/api/v1/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo)}"
+                          f"/archive/{urllib.parse.quote(revision)}.tar.gz"
+                      )
+                      return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, archive_path, "", ""))
+
+                  def extract_gitops_tarball(archive_bytes: bytes, dst_root: Path) -> None:
+                      dst_root.mkdir(parents=True, exist_ok=True)
+                      with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as tf:
+                          members = [member for member in tf.getmembers() if member.name and member.name.strip()]
+                          top_levels = {member.name.split("/", 1)[0] for member in members}
+                          strip_prefix = next(iter(top_levels)) if len(top_levels) == 1 else None
+                          base_resolved = dst_root.resolve()
+
+                          for member in members:
+                              member_name = member.name.lstrip("./")
+                              if strip_prefix and member_name == strip_prefix:
+                                  continue
+                              if strip_prefix and member_name.startswith(strip_prefix + "/"):
+                                  rel_name = member_name[len(strip_prefix) + 1 :]
+                              else:
+                                  rel_name = member_name
+                              rel_name = rel_name.strip("/")
+                              if not rel_name:
+                                  continue
+                              target_path = (dst_root / rel_name).resolve()
+                              if not (target_path == base_resolved or str(target_path).startswith(str(base_resolved) + os.sep)):
+                                  raise ValueError(f"unsafe tar path: {member.name!r}")
+                              if member.isdir():
+                                  target_path.mkdir(parents=True, exist_ok=True)
+                                  continue
+                              if member.issym() or member.islnk():
+                                  raise ValueError(f"unsupported link entry in gitops archive: {member.name!r}")
+                              extracted = tf.extractfile(member)
+                              if extracted is None:
+                                  raise ValueError(f"failed to extract tar member: {member.name!r}")
+                              target_path.parent.mkdir(parents=True, exist_ok=True)
+                              with extracted, target_path.open("wb") as out_f:
+                                  shutil.copyfileobj(extracted, out_f)
+
+                  def fetch_gitops_snapshot(dst_root: Path, repo_url: str, revision: str, username: str, password: str) -> tuple[str, str]:
+                      archive_url = build_gitops_archive_url(repo_url, revision)
+                      auth = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
+                      request = urllib.request.Request(
+                          archive_url,
+                          headers={
+                              "Authorization": f"Basic {auth}",
+                              "Accept": "application/gzip, application/octet-stream",
+                          },
+                      )
+                      context = None
+                      if urllib.parse.urlsplit(repo_url).scheme == "https":
+                          ca_b64 = fetch_secret_data_b64(
+                              forgejo_ca_secret_namespace,
+                              forgejo_ca_secret_name,
+                              forgejo_ca_secret_key,
+                          )
+                          if ca_b64:
+                              try:
+                                  ca_pem = base64.b64decode(ca_b64).decode("utf-8")
+                              except Exception as e:
+                                  raise RuntimeError(f"failed to decode Forgejo CA secret data: {e}") from e
+                              context = ssl.create_default_context(cadata=ca_pem)
+                          else:
+                              context = ssl.create_default_context()
+                      try:
+                          with urllib.request.urlopen(request, context=context, timeout=120) as response:
+                              archive_bytes = response.read()
+                      except Exception as e:
+                          raise RuntimeError(f"failed to fetch GitOps archive from {archive_url}: {e}") from e
+                      archive_sha256 = hashlib.sha256(archive_bytes).hexdigest()
+                      extract_gitops_tarball(archive_bytes, dst_root)
+                      return archive_url, archive_sha256
+
+                  def link_or_copy(src: Path, dst: Path) -> None:
+                      try:
+                          os.link(src, dst)
+                      except OSError as e:
+                          if e.errno not in (errno.EXDEV, errno.EPERM, errno.EACCES, errno.ENOTSUP):
+                              raise
+                          shutil.copy2(src, dst)
+
+                  def snapshot_tree(src_root: Path, dst_root: Path) -> None:
+                      if not src_root.exists():
+                          return
+                      if src_root.is_file():
+                          dst_root.parent.mkdir(parents=True, exist_ok=True)
+                          link_or_copy(src_root, dst_root)
+                          return
+                      dst_root.mkdir(parents=True, exist_ok=True)
+                      for root, dirs, files in os.walk(src_root):
+                          root_path = Path(root)
+                          rel_root = root_path.relative_to(src_root)
+                          out_root = dst_root / rel_root
+                          out_root.mkdir(parents=True, exist_ok=True)
+                          for d in dirs:
+                              (out_root / d).mkdir(parents=True, exist_ok=True)
+                          for f in files:
+                              src_file = root_path / f
+                              dst_file = out_root / f
+                              link_or_copy(src_file, dst_file)
+
+                  snapshot_tree(base / "tier0", tmp_set_dir / "tier0")
+
+                  # PVC restic repositories can be large; keep only the marker in sets.
+                  snapshot_tree(base / "pvc-restic" / "LATEST.json", tmp_set_dir / "pvc-restic" / "LATEST.json")
+
+                  # S3 mirror payload can be large (and can contain high-churn observability data).
+                  # Keeping full payload snapshots inside every set balloons filesystem metadata on backup targets.
+                  # Sets carry only LATEST.json markers; the actual mirror payload remains at the top-level /backup/<deploymentId>/s3-mirror.
+                  snapshot_tree(base / "s3-mirror" / "LATEST.json", tmp_set_dir / "s3-mirror" / "LATEST.json")
+
+                  # Tenant mirrors follow the same rule: store only per-tenant marker files in sets.
+                  def snapshot_tenant_markers(src_root: Path, dst_root: Path) -> None:
+                      if not src_root.is_dir():
+                          return
+                      for tenant_dir in src_root.iterdir():
+                          if not tenant_dir.is_dir():
+                              continue
+                          marker = tenant_dir / "s3-mirror" / "LATEST.json"
+                          if not marker.is_file():
+                              continue
+                          out = dst_root / tenant_dir.name / "s3-mirror" / "LATEST.json"
+                          snapshot_tree(marker, out)
+
+                  snapshot_tenant_markers(base / "tenants", tmp_set_dir / "tenants")
+
+                  def read_text(path: Path) -> str:
+                      return path.read_text(encoding="utf-8").strip()
+
+                  repo_username_path = Path("/recovery-repo/username")
+                  repo_password_path = Path("/recovery-repo/password")
+                  if not repo_username_path.is_file() or not repo_password_path.is_file():
+                      print("missing repo credential files at /recovery-repo/{username,password}", file=sys.stderr)
+                      sys.exit(1)
+                  repo_username = read_text(repo_username_path)
+                  repo_password = read_text(repo_password_path)
+                  if not repo_username or not repo_password:
+                      print("repo credentials are empty", file=sys.stderr)
+                      sys.exit(1)
+
+                  gitops_dir = tmp_set_dir / "gitops"
+                  try:
+                      gitops_archive_url, gitops_archive_sha256 = fetch_gitops_snapshot(
+                          gitops_dir,
+                          gitops_repo_url,
+                          source_revision_full,
+                          repo_username,
+                          repo_password,
+                      )
+                  except Exception as e:
+                      print(str(e), file=sys.stderr)
+                      sys.exit(1)
+                  gitops_snapshot = {
+                      "repository": gitops_repo_url,
+                      "archiveUrl": gitops_archive_url,
+                      "sourceRevision": source_revision_full,
+                      "archiveSha256": gitops_archive_sha256,
+                      "retrievedAt": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                  }
+                  gitops_snapshot_path = gitops_dir / "SNAPSHOT.json"
+                  gitops_snapshot_path.write_text(
+                      json.dumps(gitops_snapshot, sort_keys=True, indent=2) + "\n",
+                      encoding="utf-8",
+                  )
+
+                  manifest = {
+                      "deploymentId": deployment_id,
+                      "backupSetId": set_id,
+                      "createdAt": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                      "sourceRevision": source_revision_full,
+                      "markers": marker_summary,
+                      "gitops": {
+                          "repository": gitops_repo_url,
+                          "archiveUrl": gitops_archive_url,
+                          "archiveSha256": gitops_archive_sha256,
+                          "snapshotMetadataPath": "gitops/SNAPSHOT.json",
+                      },
+                      "paths": {
+                          "gitops": "gitops/",
+                          "tier0": "tier0/",
+                          "s3Mirror": "s3-mirror/",
+                          "pvcRestic": "pvc-restic/",
+                          "tenants": "tenants/",
+                          "recovery": "recovery/",
+                      },
+                  }
+                  manifest_path = tmp_set_dir / "manifest.json"
+                  manifest_path.write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+                  manifest_sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+
+                  breakglass_kubeconfig = ""
+                  for breakglass_path in (
+                      Path("/recovery-breakglass/BREAKGLASS_KUBECONFIG"),
+                      Path("/recovery-input/BREAKGLASS_KUBECONFIG"),
+                  ):
+                      if breakglass_path.is_file():
+                          breakglass_kubeconfig = breakglass_path.read_text(encoding="utf-8")
+                          break
+                  if require_breakglass and not breakglass_kubeconfig.strip():
+                      print("REQUIRE_BREAKGLASS_KUBECONFIG=true but BREAKGLASS_KUBECONFIG is missing/empty", file=sys.stderr)
+                      sys.exit(1)
+
+                  restic_passwords = None
+                  restic_path = Path("/recovery-input/RESTIC_PASSWORDS_JSON")
+                  if restic_path.is_file():
+                      raw = restic_path.read_text(encoding="utf-8").strip()
+                      if raw:
+                          try:
+                              restic_passwords = json.loads(raw)
+                          except json.JSONDecodeError as e:
+                              print(f"invalid RESTIC_PASSWORDS_JSON: {e}", file=sys.stderr)
+                              sys.exit(1)
+                  if require_restic and restic_passwords is None:
+                      print("REQUIRE_RESTIC_PASSWORDS=true but RESTIC_PASSWORDS_JSON is missing/empty", file=sys.stderr)
+                      sys.exit(1)
+
+                  recovery_dir = tmp_set_dir / "recovery"
+                  recovery_dir.mkdir(parents=True, exist_ok=True)
+                  recovery_plain_path = recovery_dir / "recovery-bundle.json"
+                  recovery_enc_path = recovery_dir / "recovery-bundle.json.age"
+
+                  warnings = []
+                  if not breakglass_kubeconfig.strip():
+                      warnings.append("breakglass kubeconfig not included")
+                  if restic_passwords is None:
+                      warnings.append("restic passwords not included")
+
+                  recovery_payload = {
+                      "deploymentId": deployment_id,
+                      "backupSetId": set_id,
+                      "generatedAt": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                      "backupSetManifestPath": "manifest.json",
+                      "backupSetManifestSha256": manifest_sha,
+                      "gitops": {
+                          "repository": gitops_repo_url,
+                          "sourceRevision": source_revision_full,
+                          "snapshotPath": "gitops/",
+                          "snapshotMetadataPath": "gitops/SNAPSHOT.json",
+                          "archiveUrl": gitops_archive_url,
+                          "archiveSha256": gitops_archive_sha256,
+                          "credentials": {
+                              "username": repo_username,
+                              "password": repo_password,
+                          },
+                      },
+                      "restoreCritical": {
+                          "breakglassKubeconfig": breakglass_kubeconfig if breakglass_kubeconfig.strip() else None,
+                          "resticPasswords": restic_passwords,
+                      },
+                  }
+                  recovery_plain_path.write_text(
+                      json.dumps(recovery_payload, sort_keys=True, indent=2) + "\n",
+                      encoding="utf-8",
+                  )
+
+                  try:
+                      subprocess.run(
+                          [
+                              "age",
+                              "-r",
+                              age_recipient,
+                              "-o",
+                              str(recovery_enc_path),
+                              str(recovery_plain_path),
+                          ],
+                          check=True,
+                          capture_output=True,
+                          text=True,
+                      )
+                  except subprocess.CalledProcessError as e:
+                      stderr = (e.stderr or "").strip()
+                      print(f"failed to encrypt recovery bundle: {stderr}", file=sys.stderr)
+                      sys.exit(1)
+                  recovery_plain_path.unlink(missing_ok=True)
+                  recovery_sha = hashlib.sha256(recovery_enc_path.read_bytes()).hexdigest()
+
+                  recovery_marker = {
+                      "timestamp": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                      "status": "ok",
+                      "bundlePath": "recovery/recovery-bundle.json.age",
+                      "bundleSha256": recovery_sha,
+                      "includes": {
+                          "gitopsSnapshot": True,
+                          "gitopsRepoCredentials": True,
+                          "breakglassKubeconfig": bool(breakglass_kubeconfig.strip()),
+                          "resticPasswords": restic_passwords is not None,
+                      },
+                      "required": {
+                          "breakglassKubeconfig": require_breakglass,
+                          "resticPasswords": require_restic,
+                      },
+                      "warnings": warnings,
+                  }
+                  recovery_marker_path = recovery_dir / "RECOVERY_BUNDLE.json"
+                  recovery_marker_path.write_text(
+                      json.dumps(recovery_marker, sort_keys=True, indent=2) + "\n",
+                      encoding="utf-8",
+                  )
+
+                  tmp_set_dir.rename(set_dir)
+
+                  latest = {
+                      "timestamp": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                      "status": "ok",
+                      "backupSetId": set_id,
+                      "sourceRevision": source_revision_full,
+                      "manifestPath": f"sets/{set_id}/manifest.json",
+                      "backupSetManifestSha256": manifest_sha,
+                      "recoveryBundlePath": f"sets/{set_id}/recovery/recovery-bundle.json.age",
+                      "recoveryBundleSha256": recovery_sha,
+                  }
+                  latest_tmp = base / "LATEST.json.tmp"
+                  latest_path = base / "LATEST.json"
+                  latest_tmp.write_text(json.dumps(latest, sort_keys=True) + "\n", encoding="utf-8")
+                  latest_tmp.replace(latest_path)
+
+                  print(
+                      f"[backup-set] assembled set={set_id} sourceRevision={source_revision} "
+                      f"manifestSha256={manifest_sha}"
+                  )
+                  PY
+          volumes:
+            - name: deployment-config
+              configMap:
+                name: deploykube-deployment-config
+                defaultMode: 0444
+            - name: backup
+              persistentVolumeClaim:
+                claimName: backup-target
+            - name: recovery-repo
+              secret:
+                secretName: backup-recovery-forgejo-repo
+                defaultMode: 0400
+            - name: recovery-input
+              secret:
+                secretName: backup-recovery-material
+                defaultMode: 0400
+                optional: true
+            - name: recovery-breakglass
+              secret:
+                secretName: backup-breakglass-kubeconfig
+                defaultMode: 0400
+                optional: true
+            - name: tmp
+              emptyDir: {}

@@ -1,0 +1,12 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: rbac-system
+resources:
+  - namespace.yaml
+  - clusterroles.yaml
+  - clusterrolebindings.yaml
+  - networkpolicies.yaml
+  - ../../bootstrap-scripts/istio-native-exit
+  - namespace-sync
+  - forgejo-team-sync
+  - forgejo-tenant-pr-gate-enforcer

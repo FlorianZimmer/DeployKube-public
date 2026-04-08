@@ -1,0 +1,55 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kiali-oidc-smoke
+  namespace: istio-system
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: HookSucceeded,BeforeHookCreation
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 180
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      restartPolicy: Never
+      serviceAccountName: kiali-oidc-smoke
+      containers:
+        - name: smoke
+          image: registry.example.internal/deploykube/bootstrap-tools:1.4
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - -lc
+            - |
+              set -euo pipefail
+
+              dump_on_error() {
+                echo "[kiali-oidc-smoke] diagnostics (best-effort)" >&2
+                kubectl -n istio-system get deploy kiali -o wide >&2 || true
+                kubectl -n istio-system get configmap kiali -o yaml >&2 || true
+                kubectl -n istio-system get secret kiali -o yaml >&2 || true
+              }
+              trap dump_on_error ERR
+
+              echo "[kiali-oidc-smoke] waiting for deployment/kiali rollout"
+              kubectl -n istio-system rollout status deploy/kiali --timeout=120s
+
+              echo "[kiali-oidc-smoke] assert Kiali config is OIDC-backed"
+              cfg="$(kubectl -n istio-system get configmap kiali -o go-template='{{ index .data "config.yaml" }}')"
+              echo "${cfg}" | grep -qF 'auth:'
+              echo "${cfg}" | grep -qF 'strategy: openid'
+              echo "${cfg}" | grep -qF 'issuer_uri: https://keycloak.dev-single.internal.example.com/realms/deploykube-admin'
+              echo "${cfg}" | grep -qF 'client_id: kiali'
+
+              echo "[kiali-oidc-smoke] assert OIDC client secret is present"
+              b64="$(kubectl -n istio-system get secret kiali -o go-template='{{ index .data "oidc-secret" }}' || true)"
+              if [[ -z "${b64}" ]]; then
+                echo "[kiali-oidc-smoke] missing Secret/istio-system/kiali data.oidc-secret" >&2
+                exit 1
+              fi
+
+              echo "[kiali-oidc-smoke] ok"

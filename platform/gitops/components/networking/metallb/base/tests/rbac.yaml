@@ -1,0 +1,113 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: metallb-memberlist
+  namespace: metallb-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: metallb-pool-drift-guard
+  namespace: metallb-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: metallb-memberlist
+  namespace: metallb-system
+rules:
+  - apiGroups: [""]
+    resources: ["secrets", "events", "pods"]
+    verbs: ["get", "list", "watch", "create", "patch", "update"]
+  - apiGroups: ["metallb.io"]
+    resources: ["ipaddresspools", "l2advertisements"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "daemonsets"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: metallb-memberlist
+  namespace: metallb-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: metallb-memberlist
+subjects:
+  - kind: ServiceAccount
+    name: metallb-memberlist
+    namespace: metallb-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: metallb-smoke-istio-read
+rules:
+  - apiGroups: [""]
+    resources: ["services"]
+    resourceNames: ["public-gateway-istio", "istio-ingressgateway"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: metallb-smoke-istio-read
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: metallb-smoke-istio-read
+subjects:
+  - kind: ServiceAccount
+    name: metallb-memberlist
+    namespace: metallb-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: metallb-pool-drift-guard
+  namespace: metallb-system
+rules:
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["metallb.io"]
+    resources: ["ipaddresspools"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: metallb-pool-drift-guard
+  namespace: metallb-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: metallb-pool-drift-guard
+subjects:
+  - kind: ServiceAccount
+    name: metallb-pool-drift-guard
+    namespace: metallb-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: metallb-pool-drift-guard
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: metallb-pool-drift-guard
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: metallb-pool-drift-guard
+subjects:
+  - kind: ServiceAccount
+    name: metallb-pool-drift-guard
+    namespace: metallb-system

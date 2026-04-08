@@ -1,0 +1,29 @@
+apiVersion: data.darksite.cloud/v1alpha1
+kind: PostgresInstance
+metadata:
+  name: postgres
+spec:
+  classRef:
+    name: platform-ha
+  databaseName: powerdns
+  ownerRole: powerdns
+  connectionSecretName: powerdns-postgres-app
+  superuserSecretName: powerdns-postgres-superuser
+  serviceAliases:
+    - powerdns-postgresql
+  resourceNames:
+    backupConfigMapName: backup-encryption
+    backupServiceAccountName: postgres-backup
+    backupCronJobName: postgres-backup
+    backupPVCName: postgres-backup-v2
+    backupWarmupJobName: postgres-backup-warmup
+    networkPolicyName: powerdns-postgres-ingress
+  network:
+    accessMode: SameNamespace
+  backup:
+    schedule: "0 4 * * *"
+    sourceName: postgres
+    connection:
+      host: postgres-rw.dns-system.svc.cluster.local
+      sslMode: verify-full
+      caSecretName: postgres-ca

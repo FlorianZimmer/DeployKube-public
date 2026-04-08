@@ -1,0 +1,121 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: keycloak-bootstrap
+  namespace: keycloak
+  labels:
+    deploykube.gitops/job: keycloak-bootstrap
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: HookSucceeded,BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/hook-weight: "10"
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 900
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        deploykube.gitops/job: keycloak-bootstrap
+      annotations:
+        sidecar.istio.io/inject: "true"
+        sidecar.istio.io/nativeSidecar: "true"
+        proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}'
+    spec:
+      serviceAccountName: keycloak-bootstrap
+      restartPolicy: Never
+      containers:
+      - name: bootstrap
+        image: registry.example.internal/deploykube/bootstrap-tools:1.4
+        imagePullPolicy: IfNotPresent
+        command:
+        - /scripts/bootstrap.sh
+        env:
+        - name: VAULT_ADDR
+          value: http://vault.vault-system.svc:8200
+        - name: VAULT_K8S_ROLE
+          value: keycloak-bootstrap
+        - name: KEYCLOAK_HOST
+          value: https://keycloak.placeholder.invalid
+        - name: DEPLOYKUBE_CONFIG_SNAPSHOT_NAME
+          value: deploykube-deployment-config
+        - name: DEPLOYKUBE_CONFIG_SNAPSHOT_KEY
+          value: deployment-config.yaml
+        - name: KEYCLOAK_INTERNAL_URL
+          value: http://keycloak.keycloak.svc.cluster.local:8080
+        - name: KEYCLOAK_KCADM_COMMAND_TIMEOUT
+          value: 20s
+        - name: KEYCLOAK_REALM_TEMPLATE_DIR
+          value: /realm-templates
+        - name: KEYCLOAK_REALM_RENDER_DIR
+          value: /rendered-realms
+        - name: KEYCLOAK_REALM_VARIABLES_CONFIGMAP
+          value: keycloak-realm-variable-map
+        - name: KEYCLOAK_NAMESPACE
+          value: keycloak
+        - name: KEYCLOAK_NAME
+          value: keycloak
+        - name: KEYCLOAK_HTTPROUTE_NAME
+          value: keycloak
+        - name: KEYCLOAK_ISTIO_NAMESPACE
+          value: istio-system
+        - name: ARGOCD_NAMESPACE
+          value: argocd
+        - name: ARGOCD_HOST
+          value: argocd.placeholder.invalid
+        - name: FORGEJO_NAMESPACE
+          value: forgejo
+        - name: FORGEJO_HOST
+          value: forgejo.placeholder.invalid
+        - name: KEYCLOAK_VAULT_HOST
+          value: vault.placeholder.invalid
+        - name: GRAFANA_HOST
+          value: grafana.placeholder.invalid
+        - name: KIALI_HOST
+          value: kiali.placeholder.invalid
+        - name: HUBBLE_HOST
+          value: hubble.placeholder.invalid
+        - name: ENABLE_DEV_K8S_ADMIN_BINDING
+          value: auto
+        - name: TENANT_REGISTRY_PATH
+          value: /tenant-registry/tenant-registry.yaml
+        volumeMounts:
+        - name: bootstrap-script
+          mountPath: /scripts/bootstrap.sh
+          subPath: bootstrap.sh
+          readOnly: true
+        - name: realm-template-deploykube-admin
+          mountPath: /realm-templates/deploykube-admin.yaml
+          subPath: deploykube-admin.yaml
+          readOnly: true
+        - name: realm-template-deploykube-apps
+          mountPath: /realm-templates/deploykube-apps.yaml
+          subPath: deploykube-apps.yaml
+          readOnly: true
+        - name: tenant-registry
+          mountPath: /tenant-registry/tenant-registry.yaml
+          subPath: tenant-registry.yaml
+          readOnly: true
+        - name: istio-native-exit
+          mountPath: /helpers
+          readOnly: true
+      volumes:
+      - name: bootstrap-script
+        configMap:
+          name: keycloak-bootstrap-script
+          defaultMode: 0755
+      - name: realm-template-deploykube-admin
+        configMap:
+          name: keycloak-realm-template-deploykube-admin
+      - name: realm-template-deploykube-apps
+        configMap:
+          name: keycloak-realm-template-deploykube-apps
+      - name: tenant-registry
+        configMap:
+          name: deploykube-tenant-registry
+          optional: true
+      - name: istio-native-exit
+        configMap:
+          name: istio-native-exit-script
+          defaultMode: 0444

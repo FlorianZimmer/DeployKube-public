@@ -1,0 +1,205 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mimir-rules-sync
+  namespace: mimir
+  labels:
+    deploykube.gitops/job: mimir-rules-sync
+    app.kubernetes.io/component: ruler
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: HookSucceeded,BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 900
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        deploykube.gitops/job: mimir-rules-sync
+      annotations:
+        sidecar.istio.io/proxyCPU: "50m"
+        sidecar.istio.io/proxyMemory: "128Mi"
+        sidecar.istio.io/proxyCPULimit: "200m"
+        sidecar.istio.io/proxyMemoryLimit: "256Mi"
+        proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}'
+    spec:
+      serviceAccountName: mimir-rules-sync
+      restartPolicy: Never
+      containers:
+        - name: sync
+          image: registry.example.internal/deploykube/bootstrap-tools:1.4
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "-lc"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+          env:
+            - name: MIMIR_TENANT
+              value: platform
+            - name: MIMIR_RULER_URL
+              value: http://mimir-ruler.mimir.svc.cluster.local:8080
+          args:
+            - |
+              set -euo pipefail
+              . /helpers/istio-native-exit.sh
+              trap deploykube_istio_quit_sidecar EXIT INT TERM
+
+              ns="mimir"
+              tenant="${MIMIR_TENANT:-platform}"
+              ruler="${MIMIR_RULER_URL:-http://mimir-ruler.mimir.svc.cluster.local:8080}"
+
+              echo "[rules-sync] waiting for ruler API..."
+              for i in $(seq 1 60); do
+                if curl -sf -H "X-Scope-OrgID: ${tenant}" "${ruler%/}/prometheus/api/v1/status/buildinfo" >/dev/null; then
+                  break
+                fi
+                sleep 2
+              done
+
+              tmp="$(mktemp -d)"
+              resp="${tmp}/resp.txt"
+
+              shopt -s nullglob
+              cms=()
+              for cm_dir in /rules/mimir-rules-*; do
+                [[ -d "${cm_dir}" ]] || continue
+                cms+=("$(basename "${cm_dir}")")
+              done
+              mapfile -t cms < <(printf '%s\n' "${cms[@]}" | sort -u)
+              echo "[rules-sync] found ${#cms[@]} mounted rule ConfigMap(s)"
+
+              for cm in "${cms[@]}"; do
+                rule_ns="${cm#mimir-rules-}"
+                echo "[rules-sync] syncing ${cm} -> ruler namespace '${rule_ns}'"
+
+                # Replace semantics: clear the existing namespace first (ignore 404).
+                curl -sS -o /dev/null -H "X-Scope-OrgID: ${tenant}" -X DELETE "${ruler%/}/prometheus/config/v1/rules/${rule_ns}" || true
+
+                for file in "/rules/${cm}/"*.yaml; do
+                  [[ -f "${file}" ]] || continue
+
+                  group_count="$(yq -r '.groups | length' "${file}" 2>/dev/null || echo 0)"
+                  if [[ "${group_count}" -le 0 ]]; then
+                    echo "[rules-sync] WARN: ${cm}/$(basename "${file}") has no groups; skipping"
+                    continue
+                  fi
+
+                  for idx in $(seq 0 $((group_count - 1))); do
+                    group_yaml="$(yq -o=yaml ".groups[${idx}]" "${file}")"
+                    group_name="$(printf '%s' "${group_yaml}" | yq -r '.name // ""')"
+                    if [[ -z "${group_name}" ]]; then
+                      echo "[rules-sync] ERROR: empty group name in ${cm}/$(basename "${file}") (index ${idx})" >&2
+                      exit 1
+                    fi
+
+                    code="$(curl -sS -w '%{http_code}' -o "${resp}" \
+                      -H "X-Scope-OrgID: ${tenant}" \
+                      -H "Content-Type: application/yaml" \
+                      -X POST --data-binary "${group_yaml}" \
+                      "${ruler%/}/prometheus/config/v1/rules/${rule_ns}" || true)"
+                    if [[ "${code}" != 2* ]]; then
+                      echo "[rules-sync] ERROR: upload failed for ${rule_ns}/${group_name} (HTTP ${code})" >&2
+                      cat "${resp}" >&2 || true
+                      exit 1
+                    fi
+                  done
+                done
+              done
+
+              echo "[rules-sync] verifying rules are visible via evaluation API"
+              curl -sf -H "X-Scope-OrgID: ${tenant}" "${ruler%/}/prometheus/api/v1/rules" \
+                | jq -e '.data.groups | length > 0' >/dev/null
+
+              echo "[rules-sync] ok"
+          volumeMounts:
+            - name: istio-native-exit
+              mountPath: /helpers
+              readOnly: true
+            - name: rules-kubernetes-pods
+              mountPath: /rules/mimir-rules-kubernetes-pods
+              readOnly: true
+            - name: rules-lgtm-health
+              mountPath: /rules/mimir-rules-lgtm-health
+              readOnly: true
+            - name: rules-grafana-data-health
+              mountPath: /rules/mimir-rules-grafana-data-health
+              readOnly: true
+            - name: rules-dns-powerdns-health
+              mountPath: /rules/mimir-rules-dns-powerdns-health
+              readOnly: true
+            - name: rules-certificates-health
+              mountPath: /rules/mimir-rules-certificates-health
+              readOnly: true
+            - name: rules-access-guardrails
+              mountPath: /rules/mimir-rules-access-guardrails
+              readOnly: true
+            - name: rules-apps-minecraft-monifactory
+              mountPath: /rules/mimir-rules-apps-minecraft-monifactory
+              readOnly: true
+            - name: rules-backup-system
+              mountPath: /rules/mimir-rules-backup-system
+              readOnly: true
+            - name: rules-observability-smokes
+              mountPath: /rules/mimir-rules-observability-smokes
+              readOnly: true
+            - name: rules-resource-contract-runtime
+              mountPath: /rules/mimir-rules-resource-contract-runtime
+              readOnly: true
+            - name: rules-security-scanning-ci
+              mountPath: /rules/mimir-rules-security-scanning-ci
+              readOnly: true
+      volumes:
+        - name: istio-native-exit
+          configMap:
+            name: istio-native-exit-script
+            defaultMode: 0444
+        - name: rules-kubernetes-pods
+          configMap:
+            name: mimir-rules-kubernetes-pods
+            defaultMode: 0444
+        - name: rules-lgtm-health
+          configMap:
+            name: mimir-rules-lgtm-health
+            defaultMode: 0444
+        - name: rules-grafana-data-health
+          configMap:
+            name: mimir-rules-grafana-data-health
+            defaultMode: 0444
+            optional: true
+        - name: rules-dns-powerdns-health
+          configMap:
+            name: mimir-rules-dns-powerdns-health
+            defaultMode: 0444
+        - name: rules-certificates-health
+          configMap:
+            name: mimir-rules-certificates-health
+            defaultMode: 0444
+        - name: rules-access-guardrails
+          configMap:
+            name: mimir-rules-access-guardrails
+            defaultMode: 0444
+        - name: rules-apps-minecraft-monifactory
+          configMap:
+            name: mimir-rules-apps-minecraft-monifactory
+            defaultMode: 0444
+        - name: rules-backup-system
+          configMap:
+            name: mimir-rules-backup-system
+            defaultMode: 0444
+        - name: rules-observability-smokes
+          configMap:
+            name: mimir-rules-observability-smokes
+            defaultMode: 0444
+        - name: rules-resource-contract-runtime
+          configMap:
+            name: mimir-rules-resource-contract-runtime
+            defaultMode: 0444
+        - name: rules-security-scanning-ci
+          configMap:
+            name: mimir-rules-security-scanning-ci
+            defaultMode: 0444

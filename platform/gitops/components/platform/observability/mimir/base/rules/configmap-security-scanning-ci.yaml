@@ -1,0 +1,49 @@
+# Centralized Trivy CI scanning freshness/failure rules (platform tenant)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mimir-rules-security-scanning-ci
+  namespace: mimir
+  labels:
+    mimir.grafana.com/rules: "true"
+    app.kubernetes.io/component: ruler
+data:
+  security-scanning-ci.yaml: |
+    # yaml-language-server: $schema=https://json.schemastore.org/prometheus-rule.json
+    groups:
+      - name: security.scanning.ci
+        interval: 1m
+        rules:
+          - alert: SecurityScanningCIScanStale
+            expr: |
+              (time() - deploykube_security_ci_scan_last_success_timestamp_seconds) > 129600
+            for: 30m
+            labels:
+              severity: warning
+              team: platform
+              service: security-scanning
+              cluster: deploykube
+              runbook_url: docs/runbooks/security-scanning-ci-alerts.md
+            annotations:
+              summary: "Centralized CI Trivy scan stale ({{ $labels.inventory }})"
+              description: "No successful centralized Trivy CI publish has updated the {{ $labels.inventory }} inventory inside the expected freshness window."
+
+          - alert: SecurityScanningCILastRunFailed
+            expr: |
+              (
+                time() - deploykube_security_ci_scan_last_run_timestamp_seconds
+              ) < 21600
+              and on (inventory)
+              (
+                deploykube_security_ci_scan_run_success == 0
+              )
+            for: 15m
+            labels:
+              severity: critical
+              team: platform
+              service: security-scanning
+              cluster: deploykube
+              runbook_url: docs/runbooks/security-scanning-ci-alerts.md
+            annotations:
+              summary: "Centralized CI Trivy scan failed ({{ $labels.inventory }})"
+              description: "The latest centralized Trivy CI publish for the {{ $labels.inventory }} inventory reported a failed run. Check the workflow run, the scan summary artefacts, and the publish step."

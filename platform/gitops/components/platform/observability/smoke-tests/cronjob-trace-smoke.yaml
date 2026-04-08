@@ -1,0 +1,121 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: observability-trace-smoke
+  namespace: observability
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  # Intentionally offset from :00 to avoid top-of-hour kube-apiserver contention.
+  schedule: "25,55 * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 300
+      ttlSecondsAfterFinished: 900
+      template:
+        metadata:
+          annotations:
+            sidecar.istio.io/nativeSidecar: "true"
+            proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}'
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: trace-send
+              image: registry.example.internal/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.143.0
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  memory: 256Mi
+              env:
+                - name: POD_NAME
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.name
+              command: ["/telemetrygen"]
+              args:
+                - traces
+                - --otlp-http
+                - --otlp-insecure
+                - --otlp-endpoint=tempo.tempo.svc.cluster.local:4318
+                - --otlp-http-url-path=/v1/traces
+                - --traces=1
+                - --service=tempo-smoke
+                - '--otlp-header=X-Scope-OrgID="smoke-$(POD_NAME)"'
+                - '--otlp-attributes=runid="$(POD_NAME)"'
+            - name: trace-query
+              image: curlimages/curl:8.6.0
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  memory: 256Mi
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -euo pipefail
+                  ISTIO_HELPER="/helpers/istio-native-exit.sh"
+                  [ -f "${ISTIO_HELPER}" ] || { echo "missing istio-native-exit helper" >&2; exit 1; }
+                  . "${ISTIO_HELPER}"
+                  trap deploykube_istio_quit_sidecar EXIT INT TERM
+                  runid="${POD_NAME}"
+                  tenant="smoke-${POD_NAME}"
+                  base="http://tempo.tempo.svc.cluster.local:3200"
+                  echo "waiting for Tempo readiness..."
+                  i=0
+                  while [ "$i" -lt 30 ]; do
+                    if curl -fsS --max-time 5 "${base}/ready" >/dev/null 2>&1; then
+                      break
+                    fi
+                    i=$((i + 1))
+                    sleep 2
+                  done
+                  curl -fsS --max-time 5 "${base}/ready" >/dev/null
+                  sleep 5
+                  echo "searching trace back..."
+                  attempts=25
+                  sleep_s=3
+                  i=1
+                  while [ "${i}" -le "${attempts}" ]; do
+                    echo "attempt ${i}/${attempts}..."
+                    resp="$(curl -sfS -G "${base}/api/search" \
+                      -H "X-Scope-OrgID: ${tenant}" \
+                      --data-urlencode "tags=runid=${runid}" || true)"
+                    if echo "${resp}" | grep -q "traceID"; then
+                      echo "trace found"
+                      break
+                    fi
+                    i="$((i+1))"
+                    sleep "${sleep_s}"
+                  done
+                  if [ "${i}" -gt "${attempts}" ]; then
+                    echo "trace not found after ${attempts} attempts"
+                    exit 1
+                  fi
+
+                  echo "attempting tenant cleanup (best-effort)..."
+                  curl -sS -X POST "${base}/compactor/delete_tenant" -H "X-Scope-OrgID: ${tenant}" || true
+
+                  echo "trace smoke ok"
+              env:
+                - name: POD_NAME
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.name
+              volumeMounts:
+                - name: istio-native-exit
+                  mountPath: /helpers
+                  readOnly: true
+          volumes:
+            - name: istio-native-exit
+              configMap:
+                name: istio-native-exit-script
+                defaultMode: 0444

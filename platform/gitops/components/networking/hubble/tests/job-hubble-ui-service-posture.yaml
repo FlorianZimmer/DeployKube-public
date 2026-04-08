@@ -1,0 +1,62 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: hubble-ui-service-posture
+  namespace: kube-system
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: HookSucceeded,BeforeHookCreation
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 300
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      restartPolicy: Never
+      serviceAccountName: hubble-posture
+      containers:
+        - name: patch
+          image: registry.example.internal/deploykube/bootstrap-tools:1.4
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - -lc
+            - |
+              set -euo pipefail
+
+              dump_on_error() {
+                echo "[hubble-posture] diagnostics (best-effort)" >&2
+                kubectl -n kube-system get svc hubble-ui -o yaml >&2 || true
+                kubectl -n kube-system get events --sort-by=.lastTimestamp >&2 || true
+              }
+              trap dump_on_error ERR
+
+              echo "[hubble-posture] ensure kube-system/svc/hubble-ui is ClusterIP (no NodePort exposure)"
+              t="$(kubectl -n kube-system get svc hubble-ui -o jsonpath='{.spec.type}' || true)"
+              if [[ -z "${t}" ]]; then
+                echo "[hubble-posture] svc/hubble-ui not found" >&2
+                exit 1
+              fi
+              echo "[hubble-posture] current type: ${t}"
+
+              if [[ "${t}" = "ClusterIP" ]]; then
+                echo "[hubble-posture] already ClusterIP"
+                exit 0
+              fi
+
+              if [[ "${t}" != "NodePort" ]]; then
+                echo "[hubble-posture] unexpected Service type: ${t} (expected NodePort or ClusterIP)" >&2
+                exit 1
+              fi
+
+              kubectl -n kube-system patch svc hubble-ui --type=merge -p '{"spec":{"type":"ClusterIP"}}'
+
+              t2="$(kubectl -n kube-system get svc hubble-ui -o jsonpath='{.spec.type}' || true)"
+              echo "[hubble-posture] new type: ${t2}"
+              test "${t2}" = "ClusterIP"
+
+              echo "[hubble-posture] ok"
+

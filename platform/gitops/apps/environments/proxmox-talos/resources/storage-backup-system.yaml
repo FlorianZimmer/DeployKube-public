@@ -1,0 +1,68 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: storage-backup-system
+  namespace: argocd
+  annotations:
+    # Needs to exist before tier-0 backup PVCs bind to the static PVs.
+    argocd.argoproj.io/sync-wave: "1.2"
+spec:
+  project: platform
+  destination:
+    name: in-cluster
+    namespace: backup-system
+  source:
+    repoURL: https://forgejo-https.forgejo.svc.cluster.local/platform/cluster-config.git
+    targetRevision: main
+    path: components/storage/backup-system/overlays/proxmox-talos
+  ignoreDifferences:
+    # DeploymentConfig controller owns backup-system Cron schedules.
+    - group: batch
+      kind: CronJob
+      namespace: backup-system
+      jsonPointers:
+        - /spec/schedule
+    # DeploymentConfig controller owns static backup PV NFS mount wiring.
+    - group: ""
+      kind: PersistentVolume
+      name: backup-target-proxmox-talos
+      jsonPointers:
+        - /spec/mountOptions
+        - /spec/nfs/server
+        - /spec/nfs/path
+    - group: ""
+      kind: PersistentVolume
+      name: tier0-vault-core-proxmox-talos
+      jsonPointers:
+        - /spec/mountOptions
+        - /spec/nfs/server
+        - /spec/nfs/path
+    - group: ""
+      kind: PersistentVolume
+      name: tier0-postgres-keycloak-proxmox-talos
+      jsonPointers:
+        - /spec/mountOptions
+        - /spec/nfs/server
+        - /spec/nfs/path
+    - group: ""
+      kind: PersistentVolume
+      name: tier0-postgres-powerdns-proxmox-talos
+      jsonPointers:
+        - /spec/mountOptions
+        - /spec/nfs/server
+        - /spec/nfs/path
+    - group: ""
+      kind: PersistentVolume
+      name: tier0-postgres-forgejo-proxmox-talos
+      jsonPointers:
+        - /spec/mountOptions
+        - /spec/nfs/server
+        - /spec/nfs/path
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ApplyOutOfSyncOnly=true
+      - RespectIgnoreDifferences=true

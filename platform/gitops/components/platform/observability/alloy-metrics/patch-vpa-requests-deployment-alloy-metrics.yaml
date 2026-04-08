@@ -1,0 +1,23 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alloy-metrics
+  namespace: observability
+spec:
+  template:
+    spec:
+      containers:
+        - name: alloy
+          resources:
+            requests:
+              cpu: "80m"
+              memory: "1664Mi"
+            limits:
+              memory: "2496Mi"
+        - name: config-reloader
+          resources:
+            requests:
+              cpu: "15m"
+              memory: "32Mi"
+            limits:
+              memory: "48Mi"

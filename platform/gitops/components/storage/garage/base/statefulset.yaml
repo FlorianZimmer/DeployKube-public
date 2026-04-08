@@ -1,0 +1,129 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: garage
+  namespace: garage
+  labels:
+    app.kubernetes.io/name: garage
+    app.kubernetes.io/component: object-storage
+spec:
+  serviceName: garage
+  podManagementPolicy: OrderedReady
+  revisionHistoryLimit: 10
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      partition: 0
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: garage
+      app.kubernetes.io/component: object-storage
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: garage
+        app.kubernetes.io/component: object-storage
+      annotations:
+        sidecar.istio.io/inject: "true"
+        sidecar.istio.io/proxyMemory: "256Mi"
+        sidecar.istio.io/proxyMemoryLimit: "2Gi"
+        # Garage's intra-cluster RPC traffic (3901) is not HTTP and doesn't benefit from Envoy.
+        # Exclude it from Istio interception and rely on Garage's rpc_secret for auth.
+        traffic.sidecar.istio.io/excludeInboundPorts: "3901"
+    spec:
+      securityContext:
+        fsGroup: 1000
+        runAsUser: 1000
+        runAsGroup: 1000
+      initContainers:
+        - name: render-config
+          image: registry.example.internal/deploykube/bootstrap-tools:1.4
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -euo pipefail
+              python3 -c 'import os, pathlib, re; tpl_path=pathlib.Path("/config-template/garage.toml.tpl"); out_path=pathlib.Path("/config/garage.toml"); tpl=tpl_path.read_text(); required=("GARAGE_RPC_SECRET","GARAGE_ADMIN_TOKEN","GARAGE_METRICS_TOKEN","S3_REGION"); missing=[k for k in required if os.getenv(k) is None]; assert not missing, f"Missing env {missing}"; rpc=os.environ["GARAGE_RPC_SECRET"]; assert re.fullmatch(r"[0-9a-fA-F]{64}", rpc), "GARAGE_RPC_SECRET must be 64 hex chars (32 bytes)"; tpl=tpl.replace("${GARAGE_RPC_SECRET}", rpc).replace("${GARAGE_ADMIN_TOKEN}", os.environ["GARAGE_ADMIN_TOKEN"]).replace("${GARAGE_METRICS_TOKEN}", os.environ["GARAGE_METRICS_TOKEN"]).replace("${S3_REGION}", os.environ["S3_REGION"]); out_path.write_text(tpl)'
+          envFrom:
+            - secretRef:
+                name: garage-credentials
+            - secretRef:
+                name: garage-s3
+          volumeMounts:
+            - name: config-template
+              mountPath: /config-template
+            - name: config
+              mountPath: /config
+      containers:
+        - name: garage
+          image: docker.io/dxflrs/garage:v2.1.0
+          imagePullPolicy: IfNotPresent
+          command:
+            - /garage
+          args:
+            - -c
+            - /config/garage.toml
+            - server
+          envFrom:
+            - secretRef:
+                name: garage-credentials
+            - secretRef:
+                name: garage-s3
+          ports:
+            - name: s3
+              containerPort: 3900
+            - name: rpc
+              containerPort: 3901
+              protocol: TCP
+            - name: admin
+              containerPort: 3903
+          livenessProbe:
+            tcpSocket:
+              port: admin
+            initialDelaySeconds: 20
+            periodSeconds: 15
+          readinessProbe:
+            tcpSocket:
+              port: admin
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              memory: 2Gi
+          volumeMounts:
+            - name: config
+              mountPath: /config
+            - name: data
+              mountPath: /var/lib/garage
+      volumes:
+        - name: config-template
+          configMap:
+            name: garage-config-template
+        - name: config
+          emptyDir: {}
+  volumeClaimTemplates:
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: data
+        labels:
+          # Garage data is backed up at the S3 API level (mirror), not via PVC snapshots/restic.
+          darksite.cloud/backup: skip
+          darksite.cloud/backup-skip-reason: s3-mirror
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        resources:
+          requests:
+            storage: 20Gi
+        storageClassName: shared-rwo
+        volumeMode: Filesystem
+      status:
+        phase: Pending

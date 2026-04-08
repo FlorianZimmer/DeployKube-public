@@ -1,0 +1,60 @@
+# Kyverno Helm chart values (Phase 0 baseline posture).
+#
+# Goals:
+# - Fail-closed enforcement for tenant namespaces only (label scoped)
+# - PolicyExceptions enabled (Git-managed, time-bound)
+# - Keep cluster-scoped blast radius low via webhook match conditions
+
+crds:
+  install: true
+
+features:
+  policyExceptions:
+    enabled: true
+    namespace: "*"
+  # Keep Kyverno from generating Kubernetes ValidatingAdmissionPolicy objects in Phase 0.
+  generateValidatingAdmissionPolicy:
+    enabled: false
+
+admissionController:
+  replicas: 2
+  initContainer:
+    image:
+      registry: registry.example.internal
+  container:
+    image:
+      registry: registry.example.internal
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+
+backgroundController:
+  image:
+    registry: registry.example.internal
+
+cleanupController:
+  image:
+    registry: registry.example.internal
+
+reportsController:
+  image:
+    registry: registry.example.internal
+
+config:
+  # Scope Kyverno admission webhooks to tenant namespaces only.
+  webhooks:
+    namespaceSelector:
+      matchLabels:
+        darksite.cloud/rbac-profile: tenant
+  # Prevent Kyverno webhooks from matching arbitrary cluster-scoped core resources.
+  # Allow:
+  # - Namespaced resources (namespace != "")
+  # - Namespace resources only when they are tenant-labeled (needed for generate triggers)
+  matchConditions:
+    - name: tenant-only-or-tenant-namespaces
+      expression: |
+        (has(request.namespace) && request.namespace != "") ||
+        (request.kind.kind == "Namespace" &&
+          has(object.metadata.labels) &&
+          object.metadata.labels["darksite.cloud/rbac-profile"] == "tenant")
+  webhookAnnotations: {}

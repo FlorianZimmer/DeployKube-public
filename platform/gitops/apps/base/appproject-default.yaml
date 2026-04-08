@@ -1,0 +1,20 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: default
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-99"
+spec:
+  description: Deny-by-default safety project (do not use)
+  sourceRepos:
+    - https://example.invalid/*
+  destinations:
+    - name: do-not-use
+      namespace: do-not-use
+  clusterResourceWhitelist:
+    - group: do-not-use
+      kind: DoNotUse
+  namespaceResourceWhitelist:
+    - group: do-not-use
+      kind: DoNotUse

@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: t-<orgId>-p-<projectId>-dev-app
+  labels:
+    darksite.cloud/rbac-profile: tenant
+    darksite.cloud/tenant-id: <orgId>
+    darksite.cloud/project-id: <projectId>
+    observability.grafana.com/tenant: <orgId>

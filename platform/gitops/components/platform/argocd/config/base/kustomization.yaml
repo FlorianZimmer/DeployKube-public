@@ -1,0 +1,31 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: argocd
+resources:
+  - repo-server-certificate.yaml
+  - externalsecret-repository.yaml
+  - externalsecret-repository-tenant-factorio.yaml
+  - destinationrule-kube-apiserver.yaml
+  - networkpolicy-server-ingress.yaml
+  - networkpolicy-core-egress.yaml
+  - networkpolicy-redis-egress.yaml
+  - ciliumnetworkpolicy-core-kube-apiserver-egress.yaml
+  - configmap-argocd-oidc-state.yaml
+  - job-secrets-preflight.yaml
+  - job-oidc-config.yaml
+  - configmap-argocd-styles.yaml
+  - deployment-argocd-ui-extensions.yaml
+  - poddisruptionbudget-argocd-ui-extensions.yaml
+  - service-argocd-ui-extensions.yaml
+  - networkpolicy-ui-extensions-ingress.yaml
+  - networkpolicy-ui-extensions-egress.yaml
+  - tests
+configMapGenerator:
+  - name: argocd-secrets-preflight-script
+    files:
+      - secrets-preflight.sh=scripts/secrets-preflight.sh
+  - name: argocd-oidc-config-script
+    files:
+      - configure-oidc.sh=scripts/configure-oidc.sh
+generatorOptions:
+  disableNameSuffixHash: true

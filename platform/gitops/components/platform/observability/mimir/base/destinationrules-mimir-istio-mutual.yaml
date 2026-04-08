@@ -1,0 +1,64 @@
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: mimir-query-frontend-istio-mutual
+  namespace: mimir
+  annotations:
+    argocd.argoproj.io/sync-wave: "2.5"
+spec:
+  host: mimir-query-frontend.mimir.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: mimir-distributor-headless-istio-mutual
+  namespace: mimir
+  annotations:
+    argocd.argoproj.io/sync-wave: "2.5"
+spec:
+  host: mimir-distributor-headless.mimir.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: mimir-alertmanager-headless-istio-mutual
+  namespace: mimir
+  annotations:
+    argocd.argoproj.io/sync-wave: "2.5"
+spec:
+  host: mimir-alertmanager-headless.mimir.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: mimir-ruler-istio-mutual
+  namespace: mimir
+  annotations:
+    argocd.argoproj.io/sync-wave: "2.5"
+spec:
+  host: mimir-ruler.mimir.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: mimir-compactor-istio-mutual
+  namespace: mimir
+  annotations:
+    argocd.argoproj.io/sync-wave: "2.5"
+spec:
+  host: mimir-compactor.mimir.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL

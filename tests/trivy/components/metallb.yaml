@@ -1,0 +1,19 @@
+schemaVersion: v1alpha1
+description: Component-owned Trivy targets for MetalLB.
+watch_paths:
+  - platform/gitops/artifacts/runtime-artifact-index.yaml
+  - platform/gitops/components/networking/metallb
+  - tests/trivy/components/metallb.yaml
+image_targets:
+  - id: metallb-controller
+    artifact_catalog: runtime-artifacts
+    artifact_name: metallb-controller
+  - id: metallb-speaker
+    artifact_catalog: runtime-artifacts
+    artifact_name: metallb-speaker
+  - id: metallb-frr
+    artifact_catalog: runtime-artifacts
+    artifact_name: metallb-frr
+config_targets:
+  - id: metallb-manifests
+    path: platform/gitops/components/networking/metallb

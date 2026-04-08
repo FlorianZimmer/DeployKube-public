@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: argocd
+  labels:
+    deploykube.gitops/component: argocd
+    deploykube.gitops/owner: platform
+    deploykube.gitops/public-gateway: allowed
+    istio-injection: enabled
+    observability.grafana.com/tenant: platform

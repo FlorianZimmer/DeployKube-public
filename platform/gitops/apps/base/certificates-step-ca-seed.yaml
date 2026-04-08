@@ -1,0 +1,25 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: certificates-step-ca-seed
+  namespace: argocd
+  annotations:
+    # Seeds Step CA material into Vault before ESO projections / Step CA Helm.
+    argocd.argoproj.io/sync-wave: "1.25"
+spec:
+  project: platform
+  destination:
+    name: in-cluster
+    namespace: argocd
+  source:
+    repoURL: https://forgejo-https.forgejo.svc.cluster.local/platform/cluster-config.git
+    targetRevision: main
+    path: components/certificates/step-ca/seed
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - ServerSideApply=true

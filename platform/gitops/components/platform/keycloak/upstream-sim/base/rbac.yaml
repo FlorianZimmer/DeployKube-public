@@ -1,0 +1,79 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: keycloak-upstream-sim-bootstrap
+  namespace: keycloak-upstream-sim
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: keycloak-upstream-sim-bootstrap
+  namespace: keycloak-upstream-sim
+rules:
+  - apiGroups: [""]
+    resources: ["secrets", "configmaps"]
+    verbs: ["get", "list", "watch", "create", "patch", "update"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "deployments/scale"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: keycloak-upstream-sim-bootstrap
+  namespace: keycloak-upstream-sim
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: keycloak-upstream-sim-bootstrap
+subjects:
+  - kind: ServiceAccount
+    name: keycloak-upstream-sim-bootstrap
+    namespace: keycloak-upstream-sim
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: keycloak-upstream-sim-deploymentconfig-read
+rules:
+  - apiGroups: ["platform.darksite.cloud"]
+    resources: ["deploymentconfigs"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: keycloak-upstream-sim-deploymentconfig-read
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: keycloak-upstream-sim-deploymentconfig-read
+subjects:
+  - kind: ServiceAccount
+    name: keycloak-upstream-sim-bootstrap
+    namespace: keycloak-upstream-sim
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: keycloak-upstream-sim-read-keycloak-upstream-oidc
+  namespace: keycloak
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["keycloak-upstream-oidc"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: keycloak-upstream-sim-read-keycloak-upstream-oidc
+  namespace: keycloak
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: keycloak-upstream-sim-read-keycloak-upstream-oidc
+subjects:
+  - kind: ServiceAccount
+    name: keycloak-upstream-sim-bootstrap
+    namespace: keycloak-upstream-sim

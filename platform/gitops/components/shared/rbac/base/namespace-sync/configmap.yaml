@@ -1,0 +1,407 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rbac-namespace-sync
+  namespace: rbac-system
+data:
+  sync.sh: |
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    AUDITOR_GROUP="dk-auditors"
+    BACKUP_RUNNER_BINDING_NAME="backup-pvc-restic-runner-target"
+    BACKUP_RUNNER_CLUSTERROLE="backup-pvc-restic-runner-target"
+    BACKUP_RUNNER_NAMESPACE_ALLOWLIST="backup-system,step-system"
+    BACKUP_RUNNER_SA_NAME="backup-pvc-restic-runner"
+    BACKUP_RUNNER_SA_NAMESPACE="backup-system"
+    BACKUP_SCOPE_LABEL_KEY="darksite.cloud/backup-scope"
+    BACKUP_SCOPE_LABEL_VALUE="enabled"
+    HASH_ANNOTATION="darksite.cloud/rbac-namespace-sync-hash"
+    MANAGED_ANNOTATION="darksite.cloud/rbac-namespace-sync-managed"
+
+    log() { printf '[rbac-namespace-sync] %s\n' "$*" >&2; }
+
+    sha256_hex() {
+      if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum | awk '{print $1}'
+        return 0
+      fi
+      if command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 | awk '{print $1}'
+        return 0
+      fi
+      log "missing dependency: sha256sum/shasum"
+      return 1
+    }
+
+    rolebinding_hash() {
+      local ns="$1"
+      local name="$2"
+      local clusterrole="$3"
+      shift 3
+
+      {
+        printf 'ns=%s\n' "${ns}"
+        printf 'name=%s\n' "${name}"
+        printf 'clusterrole=%s\n' "${clusterrole}"
+        for g in "$@"; do
+          printf 'group=%s\n' "${g}"
+        done
+      } | sha256_hex
+    }
+
+    csv_contains() {
+      local csv="$1"
+      local needle="$2"
+      local IFS=','
+      local parts=()
+      local part
+
+      read -r -a parts <<<"${csv}"
+      for part in "${parts[@]}"; do
+        part="${part//[[:space:]]/}"
+        if [[ -n "${part}" && "${part}" == "${needle}" ]]; then
+          return 0
+        fi
+      done
+      return 1
+    }
+
+    render_rolebinding() {
+      local ns="$1"
+      local name="$2"
+      local clusterrole="$3"
+      shift 3
+      local groups=("$@")
+
+      local hash
+      hash="$(rolebinding_hash "${ns}" "${name}" "${clusterrole}" "${groups[@]}")"
+
+      cat <<EOF2
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    metadata:
+      name: ${name}
+      namespace: ${ns}
+      annotations:
+        ${MANAGED_ANNOTATION}: "true"
+        ${HASH_ANNOTATION}: "${hash}"
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: ClusterRole
+      name: ${clusterrole}
+    subjects:
+    EOF2
+
+      for g in "${groups[@]}"; do
+        cat <<EOF2
+      - kind: Group
+        name: ${g}
+    EOF2
+      done
+    }
+
+    render_serviceaccount_rolebinding() {
+      local ns="$1"
+      local name="$2"
+      local clusterrole="$3"
+      local sa_name="$4"
+      local sa_namespace="$5"
+      local hash
+
+      hash="$(rolebinding_hash "${ns}" "${name}" "${clusterrole}" "serviceaccount:${sa_namespace}:${sa_name}")"
+
+      cat <<EOF2
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    metadata:
+      name: ${name}
+      namespace: ${ns}
+      annotations:
+        ${MANAGED_ANNOTATION}: "true"
+        ${HASH_ANNOTATION}: "${hash}"
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: ClusterRole
+      name: ${clusterrole}
+    subjects:
+      - kind: ServiceAccount
+        name: ${sa_name}
+        namespace: ${sa_namespace}
+    EOF2
+    }
+
+    kubectl_retry() {
+      local attempt=1
+      local max_attempts=8
+      local out err err_file combined sleep_s
+
+      while true; do
+        err_file="$(mktemp)"
+        : >"${err_file}"
+
+        if out="$(kubectl "$@" 2>"${err_file}")"; then
+          err="$(cat "${err_file}")"
+          rm -f "${err_file}"
+          if [ -n "${err}" ]; then
+            printf '%s\n' "${err}" >&2
+          fi
+          printf '%s\n' "${out}"
+          return 0
+        fi
+
+        err="$(cat "${err_file}")"
+        rm -f "${err_file}"
+        if [ -n "${out}" ]; then
+          printf '%s\n' "${out}" >&2
+        fi
+        if [ -n "${err}" ]; then
+          printf '%s\n' "${err}" >&2
+        fi
+        combined="${out} ${err}"
+
+        if printf '%s\n' "${combined}" | grep -Eq 'Too Many Requests|context deadline exceeded|Client\.Timeout exceeded|TLS handshake timeout|i/o timeout|connection refused|EOF|Service Unavailable'; then
+          if [ "${attempt}" -ge "${max_attempts}" ]; then
+            log "kubectl failed after ${max_attempts} attempts"
+            return 1
+          fi
+          sleep_s="$((attempt * 2))"
+          log "kubectl transient failure; retrying in ${sleep_s}s (${attempt}/${max_attempts})"
+          sleep "${sleep_s}"
+          attempt="$((attempt + 1))"
+          continue
+        fi
+
+        log "kubectl failed with non-retryable error"
+        return 1
+      done
+    }
+
+    kubectl_apply_retry() {
+      local manifest="$1"
+
+      local attempt=1
+      local max_attempts=8
+      local out sleep_s
+
+      while true; do
+        if out="$(kubectl apply -f - <<<"${manifest}" 2>&1)"; then
+          printf '%s\n' "${out}"
+          return 0
+        fi
+
+        printf '%s\n' "${out}" >&2
+
+        if printf '%s\n' "${out}" | grep -Eq 'Too Many Requests|context deadline exceeded|Client\.Timeout exceeded|TLS handshake timeout|i/o timeout|connection refused|EOF|Service Unavailable'; then
+          if [ "${attempt}" -ge "${max_attempts}" ]; then
+            log "kubectl apply failed after ${max_attempts} attempts"
+            return 1
+          fi
+          sleep_s="$((attempt * 2))"
+          log "kubectl apply transient failure; retrying in ${sleep_s}s (${attempt}/${max_attempts})"
+          sleep "${sleep_s}"
+          attempt="$((attempt + 1))"
+          continue
+        fi
+
+        log "kubectl apply failed with non-retryable error"
+        return 1
+      done
+    }
+
+    get_existing_rolebinding_hash() {
+      local rolebindings_json="$1"
+      local name="$2"
+
+      jq -r --arg name "${name}" --arg ann "${HASH_ANNOTATION}" '
+        .items[]
+        | select(.metadata.name == $name)
+        | .metadata.annotations[$ann] // ""
+      ' <<<"${rolebindings_json}" | head -n 1
+    }
+
+    any_rolebinding_exists() {
+      local rolebindings_json="$1"
+      shift
+      local name
+      for name in "$@"; do
+        if jq -e --arg name "${name}" '.items[] | select(.metadata.name == $name)' >/dev/null <<<"${rolebindings_json}"; then
+          return 0
+        fi
+      done
+      return 1
+    }
+
+    apply_platform_bindings() {
+      local ns="$1"
+      local subjects_admin="dk-platform-operators"
+
+      render_rolebinding "${ns}" "platform-operators" "platform-operator" "${subjects_admin}"
+      render_rolebinding "${ns}" "platform-auditors" "auditor-readonly" "${AUDITOR_GROUP}"
+    }
+
+    apply_app_bindings() {
+      local ns="$1"
+      local team="$2"
+
+      local admin_group="dk-app-${team}-maintainers"
+      local edit_group="dk-app-${team}-contributors"
+
+      render_rolebinding "${ns}" "app-admins" "app-namespace-admin" "${admin_group}"
+      render_rolebinding "${ns}" "app-editors" "app-namespace-edit" "${edit_group}"
+      render_rolebinding "${ns}" "app-viewers" "app-namespace-view" "${AUDITOR_GROUP}"
+    }
+
+    apply_tenant_bindings() {
+      local ns="$1"
+      local tenant_id="$2"
+      local project_id="$3"
+
+      local org_admin_group="dk-tenant-${tenant_id}-admins"
+      local org_view_group="dk-tenant-${tenant_id}-viewers"
+
+      local project_admin_group="dk-tenant-${tenant_id}-project-${project_id}-admins"
+      local project_dev_group="dk-tenant-${tenant_id}-project-${project_id}-developers"
+      local project_view_group="dk-tenant-${tenant_id}-project-${project_id}-viewers"
+
+      render_rolebinding "${ns}" "tenant-admins" "app-namespace-admin" "${org_admin_group}" "${project_admin_group}"
+      render_rolebinding "${ns}" "tenant-developers" "app-namespace-edit" "${project_dev_group}"
+      render_rolebinding "${ns}" "tenant-viewers" "app-namespace-view" "${org_view_group}" "${project_view_group}"
+      render_rolebinding "${ns}" "tenant-auditors" "app-namespace-view" "${AUDITOR_GROUP}"
+    }
+
+    cleanup_tenant_legacy_rolebindings() {
+      local ns="$1"
+      kubectl_retry -n "${ns}" delete rolebinding app-admins app-editors app-viewers --ignore-not-found >/dev/null
+    }
+
+    reconcile_backup_runner_binding() {
+      local ns="$1"
+      local rolebindings_json="$2"
+      local enabled="$3"
+      local desired_hash
+      local existing_hash
+      local manifest
+
+      existing_hash="$(get_existing_rolebinding_hash "${rolebindings_json}" "${BACKUP_RUNNER_BINDING_NAME}")"
+
+      if [[ "${enabled}" == "true" ]]; then
+        desired_hash="$(rolebinding_hash "${ns}" "${BACKUP_RUNNER_BINDING_NAME}" "${BACKUP_RUNNER_CLUSTERROLE}" "serviceaccount:${BACKUP_RUNNER_SA_NAMESPACE}:${BACKUP_RUNNER_SA_NAME}")"
+        if [[ "${existing_hash}" == "${desired_hash}" ]]; then
+          log "namespace ${ns} backup runner RoleBinding already up-to-date; skipping"
+          return 0
+        fi
+
+        log "reconciling backup runner RoleBinding in namespace ${ns}"
+        manifest="$(render_serviceaccount_rolebinding "${ns}" "${BACKUP_RUNNER_BINDING_NAME}" "${BACKUP_RUNNER_CLUSTERROLE}" "${BACKUP_RUNNER_SA_NAME}" "${BACKUP_RUNNER_SA_NAMESPACE}")"
+        kubectl_apply_retry "${manifest}" >/dev/null
+        return 0
+      fi
+
+      if jq -e --arg name "${BACKUP_RUNNER_BINDING_NAME}" '.items[] | select(.metadata.name == $name)' >/dev/null <<<"${rolebindings_json}"; then
+        log "removing backup runner RoleBinding from namespace ${ns}"
+        kubectl_retry -n "${ns}" delete rolebinding "${BACKUP_RUNNER_BINDING_NAME}" --ignore-not-found >/dev/null
+      fi
+    }
+
+    reconcile_if_needed() {
+      local ns="$1"
+      local manifest="$2"
+      local rolebindings_json="$3"
+      local desired_hashes_json="$4"
+      local mismatch=0
+
+      local name desired_hash existing_hash
+      while IFS=$'\t' read -r name desired_hash; do
+        existing_hash="$(get_existing_rolebinding_hash "${rolebindings_json}" "${name}")"
+        if [ "${existing_hash}" != "${desired_hash}" ]; then
+          mismatch=1
+          break
+        fi
+      done < <(jq -r '.[] | [.name, .hash] | @tsv' <<<"${desired_hashes_json}")
+
+      if [ "${mismatch}" -eq 0 ]; then
+        log "namespace ${ns} RoleBindings already up-to-date; skipping"
+        return 0
+      fi
+
+      log "reconciling RoleBindings in namespace ${ns} (changes detected)"
+      kubectl_apply_retry "${manifest}" >/dev/null
+    }
+
+    main() {
+      log "discovering namespaces"
+      namespaces_json="$(kubectl_retry get namespaces -o json)"
+      jq -c '.items[]' <<<"${namespaces_json}" | while read -r ns_json; do
+        local ns profile team tenant_id project_id backup_scope backup_runner_enabled
+        ns=$(jq -r '.metadata.name' <<<"${ns_json}")
+        profile=$(jq -r '.metadata.labels["darksite.cloud/rbac-profile"] // empty' <<<"${ns_json}")
+        team=$(jq -r '.metadata.labels["darksite.cloud/rbac-team"] // empty' <<<"${ns_json}")
+        tenant_id=$(jq -r '.metadata.labels["darksite.cloud/tenant-id"] // empty' <<<"${ns_json}")
+        project_id=$(jq -r '.metadata.labels["darksite.cloud/project-id"] // empty' <<<"${ns_json}")
+        backup_scope=$(jq -r --arg key "${BACKUP_SCOPE_LABEL_KEY}" '.metadata.labels[$key] // empty' <<<"${ns_json}")
+
+        rolebindings_json="$(kubectl_retry -n "${ns}" get rolebindings -o json)"
+        backup_runner_enabled="false"
+        if csv_contains "${BACKUP_RUNNER_NAMESPACE_ALLOWLIST}" "${ns}" || [[ "${backup_scope}" == "${BACKUP_SCOPE_LABEL_VALUE}" ]]; then
+          backup_runner_enabled="true"
+        fi
+
+        reconcile_backup_runner_binding "${ns}" "${rolebindings_json}" "${backup_runner_enabled}"
+
+        case "${profile}" in
+          platform)
+            manifest="$(apply_platform_bindings "${ns}")"
+            desired_platform_hashes="[{\"name\":\"platform-operators\",\"hash\":\"$(rolebinding_hash "${ns}" "platform-operators" "platform-operator" "dk-platform-operators")\"},{\"name\":\"platform-auditors\",\"hash\":\"$(rolebinding_hash "${ns}" "platform-auditors" "auditor-readonly" "${AUDITOR_GROUP}")\"}]"
+
+            reconcile_if_needed "${ns}" "${manifest}" "${rolebindings_json}" "${desired_platform_hashes}"
+            ;;
+          app)
+            if [[ -z "${team}" ]]; then
+              log "namespace ${ns} missing darksite.cloud/rbac-team label; skipping"
+              continue
+            fi
+            admin_group="dk-app-${team}-maintainers"
+            edit_group="dk-app-${team}-contributors"
+
+            manifest="$(apply_app_bindings "${ns}" "${team}")"
+            desired_app_hashes="[{\"name\":\"app-admins\",\"hash\":\"$(rolebinding_hash "${ns}" "app-admins" "app-namespace-admin" "${admin_group}")\"},{\"name\":\"app-editors\",\"hash\":\"$(rolebinding_hash "${ns}" "app-editors" "app-namespace-edit" "${edit_group}")\"},{\"name\":\"app-viewers\",\"hash\":\"$(rolebinding_hash "${ns}" "app-viewers" "app-namespace-view" "${AUDITOR_GROUP}")\"}]"
+
+            reconcile_if_needed "${ns}" "${manifest}" "${rolebindings_json}" "${desired_app_hashes}"
+            ;;
+          tenant)
+            if [[ -z "${tenant_id}" || -z "${project_id}" ]]; then
+              log "namespace ${ns} missing darksite.cloud/tenant-id or darksite.cloud/project-id label; skipping"
+              continue
+            fi
+            if any_rolebinding_exists "${rolebindings_json}" app-admins app-editors app-viewers; then
+              log "cleaning up legacy app RoleBindings in namespace ${ns} (profile=tenant)"
+              cleanup_tenant_legacy_rolebindings "${ns}"
+              rolebindings_json="$(kubectl_retry -n "${ns}" get rolebindings -o json)"
+            fi
+
+            org_admin_group="dk-tenant-${tenant_id}-admins"
+            org_view_group="dk-tenant-${tenant_id}-viewers"
+            project_admin_group="dk-tenant-${tenant_id}-project-${project_id}-admins"
+            project_dev_group="dk-tenant-${tenant_id}-project-${project_id}-developers"
+            project_view_group="dk-tenant-${tenant_id}-project-${project_id}-viewers"
+
+            manifest="$(apply_tenant_bindings "${ns}" "${tenant_id}" "${project_id}")"
+            desired_tenant_hashes="[{\"name\":\"tenant-admins\",\"hash\":\"$(rolebinding_hash "${ns}" "tenant-admins" "app-namespace-admin" "${org_admin_group}" "${project_admin_group}")\"},{\"name\":\"tenant-developers\",\"hash\":\"$(rolebinding_hash "${ns}" "tenant-developers" "app-namespace-edit" "${project_dev_group}")\"},{\"name\":\"tenant-viewers\",\"hash\":\"$(rolebinding_hash "${ns}" "tenant-viewers" "app-namespace-view" "${org_view_group}" "${project_view_group}")\"},{\"name\":\"tenant-auditors\",\"hash\":\"$(rolebinding_hash "${ns}" "tenant-auditors" "app-namespace-view" "${AUDITOR_GROUP}")\"}]"
+
+            reconcile_if_needed "${ns}" "${manifest}" "${rolebindings_json}" "${desired_tenant_hashes}"
+            ;;
+          *)
+            if [[ -n "${profile}" ]]; then
+              log "namespace ${ns} has unsupported darksite.cloud/rbac-profile=${profile}; skipping"
+            fi
+            ;;
+        esac
+      done
+    }
+
+    if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+      main "$@"
+    fi

@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: step-system
+  labels:
+    deploykube.gitops/component: step-ca
+    deploykube.gitops/owner: certificates
+    istio-injection: enabled
+    observability.grafana.com/tenant: platform

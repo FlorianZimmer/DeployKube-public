@@ -1,0 +1,157 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: storage-smoke-full-restore-staleness
+  annotations:
+    deploykube.gitops/validation-job: "true"
+    argocd.argoproj.io/ignore-healthcheck: "true"
+spec:
+  # Intentionally offset from :00 to avoid top-of-hour kube-apiserver contention.
+  schedule: "43 4 * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 300
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          annotations:
+            sidecar.istio.io/inject: "false"
+        spec:
+          restartPolicy: Never
+          affinity:
+            nodeAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+                # Prefer non-control-plane nodes when present, but remain schedulable on single-node clusters.
+                - weight: 100
+                  preference:
+                    matchExpressions:
+                      - key: node-role.kubernetes.io/control-plane
+                        operator: DoesNotExist
+                - weight: 50
+                  preference:
+                    matchExpressions:
+                      - key: node-role.kubernetes.io/master
+                        operator: DoesNotExist
+          containers:
+            - name: smoke
+              image: registry.example.internal/deploykube/bootstrap-tools@sha256:e7be47a69e3a11bc58c857f2d690a71246ada91ac3a60bdfb0a547f091f6485a
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: DEPLOYMENT_ID
+                  value: proxmox-talos
+                - name: MAX_AGE_FULL_RESTORE_SECONDS
+                  value: "2678400"
+              volumeMounts:
+                - name: deployment-config
+                  mountPath: /config
+                  readOnly: true
+                - name: backup
+                  mountPath: /backup
+              command:
+                - /bin/bash
+                - -c
+                - |
+                  set -euo pipefail
+                  command -v yq >/dev/null 2>&1 || { echo "missing dependency: yq" >&2; exit 1; }
+
+                  cfg="/config/deployment-config.yaml"
+                  if [ -f "$cfg" ]; then
+                    dep="$(yq -r '.spec.deploymentId // ""' "$cfg" 2>/dev/null || true)"
+                    if [ -n "$dep" ]; then
+                      DEPLOYMENT_ID="$dep"
+                      export DEPLOYMENT_ID
+                    fi
+                  fi
+
+                  python3 - <<'PY'
+                  import datetime
+                  import json
+                  import os
+                  import sys
+
+                  deployment_id = os.environ.get("DEPLOYMENT_ID", "").strip()
+                  if not deployment_id:
+                      print("missing DEPLOYMENT_ID env", file=sys.stderr)
+                      sys.exit(1)
+
+                  max_age_raw = os.environ.get("MAX_AGE_FULL_RESTORE_SECONDS", "").strip()
+                  if not max_age_raw:
+                      print("missing MAX_AGE_FULL_RESTORE_SECONDS env", file=sys.stderr)
+                      sys.exit(1)
+                  max_age_seconds = int(max_age_raw)
+                  if max_age_seconds <= 0:
+                      print("MAX_AGE_FULL_RESTORE_SECONDS must be > 0", file=sys.stderr)
+                      sys.exit(1)
+
+                  marker_path = f"/backup/{deployment_id}/signals/FULL_RESTORE_OK.json"
+                  if not os.path.isfile(marker_path):
+                      print(f"missing marker: {marker_path}", file=sys.stderr)
+                      sys.exit(1)
+
+                  try:
+                      with open(marker_path, "r", encoding="utf-8") as f:
+                          marker = json.load(f)
+                  except Exception as e:
+                      print(f"failed to parse marker {marker_path}: {e}", file=sys.stderr)
+                      sys.exit(1)
+
+                  if marker.get("result") != "ok":
+                      print(f"bad marker result: expected 'ok', got {marker.get('result')!r}", file=sys.stderr)
+                      sys.exit(1)
+
+                  backup_set_id = (marker.get("backupSetId") or "").strip()
+                  if not backup_set_id:
+                      print("marker missing backupSetId", file=sys.stderr)
+                      sys.exit(1)
+
+                  manifest_sha = (marker.get("backupSetManifestSha256") or "").strip()
+                  if not manifest_sha:
+                      print("marker missing backupSetManifestSha256", file=sys.stderr)
+                      sys.exit(1)
+
+                  restored_at = (marker.get("restoredAt") or "").strip()
+                  if not restored_at:
+                      print("marker missing restoredAt", file=sys.stderr)
+                      sys.exit(1)
+
+                  if restored_at.endswith("Z"):
+                      restored_at = restored_at[:-1] + "+00:00"
+                  try:
+                      restored_dt = datetime.datetime.fromisoformat(restored_at)
+                  except Exception as e:
+                      print(f"invalid restoredAt timestamp: {e}", file=sys.stderr)
+                      sys.exit(1)
+                  if restored_dt.tzinfo is None:
+                      restored_dt = restored_dt.replace(tzinfo=datetime.timezone.utc)
+
+                  now = datetime.datetime.now(datetime.timezone.utc)
+                  age_seconds = int((now - restored_dt).total_seconds())
+                  if age_seconds < 0:
+                      print(f"marker restoredAt is in the future: age={age_seconds}s", file=sys.stderr)
+                      sys.exit(1)
+                  if age_seconds > max_age_seconds:
+                      print(
+                          f"full restore marker stale: age={age_seconds}s max={max_age_seconds}s "
+                          f"backupSetId={backup_set_id}",
+                          file=sys.stderr,
+                      )
+                      sys.exit(1)
+
+                  print(
+                      "ok: full restore marker fresh "
+                      f"(age={age_seconds}s max={max_age_seconds}s backupSetId={backup_set_id})"
+                  )
+                  PY
+          volumes:
+            - name: deployment-config
+              configMap:
+                name: deploykube-deployment-config
+                defaultMode: 0444
+            - name: backup
+              persistentVolumeClaim:
+                claimName: backup-target

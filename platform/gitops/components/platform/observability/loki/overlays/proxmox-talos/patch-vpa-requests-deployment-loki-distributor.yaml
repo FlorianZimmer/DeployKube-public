@@ -1,0 +1,16 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loki-distributor
+  namespace: loki
+spec:
+  template:
+    spec:
+      containers:
+        - name: distributor
+          resources:
+            requests:
+              cpu: "35m"
+              memory: "144Mi"
+            limits:
+              memory: "216Mi"

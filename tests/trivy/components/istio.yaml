@@ -1,0 +1,22 @@
+schemaVersion: v1alpha1
+description: Component-owned Trivy targets for Istio control-plane and mesh policy.
+watch_paths:
+  - platform/gitops/artifacts/runtime-artifact-index.yaml
+  - platform/gitops/components/networking/istio
+  - tests/trivy/components/istio.yaml
+image_targets:
+  - id: istiod
+    artifact_catalog: runtime-artifacts
+    artifact_name: istiod
+  - id: istio-proxyv2
+    artifact_catalog: runtime-artifacts
+    artifact_name: istio-proxyv2
+  - id: istio-operator
+    artifact_catalog: runtime-artifacts
+    artifact_name: istio-operator
+  - id: kiali-server
+    artifact_catalog: runtime-artifacts
+    artifact_name: kiali-server
+config_targets:
+  - id: istio-manifests
+    path: platform/gitops/components/networking/istio

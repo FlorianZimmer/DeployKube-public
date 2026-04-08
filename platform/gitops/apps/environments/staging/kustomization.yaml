@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Staging environment - placeholder for future use
+# Uses environment-neutral base with staging-specific overlays
+resources:
+  - ../../base
+  - ../../tenants/base
+
+# NOTE: Applications are now managed by the PlatformApps CRD/controller.
+# When staging becomes active, add:
+# - a platform-apps-controller overlay at
+#   components/platform/platform-apps-controller/overlays/<deploymentId>
+# - an environment patch selecting that overlay on Application/platform-platform-apps-controller

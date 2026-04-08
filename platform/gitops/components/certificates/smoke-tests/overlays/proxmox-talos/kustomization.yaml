@@ -1,0 +1,7 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+
+# proxmox-talos schedule: hourly (default in base, but explicit here for clarity)
+# No patches needed - base defaults are appropriate for prod

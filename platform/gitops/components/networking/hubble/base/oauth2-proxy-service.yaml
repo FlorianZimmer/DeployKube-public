@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: hubble-auth-proxy
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: hubble-auth-proxy
+spec:
+  selector:
+    app.kubernetes.io/name: hubble-auth-proxy
+  ports:
+    - name: http
+      port: 80
+      targetPort: 4180

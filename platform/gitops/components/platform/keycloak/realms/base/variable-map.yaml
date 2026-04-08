@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keycloak-realm-variable-map
+  namespace: keycloak
+  labels:
+    deploykube.gitops/component: keycloak-realms
+data:
+  KEYCLOAK_ARGOCD_CLIENT_ID: literal:argocd
+  KEYCLOAK_ARGOCD_CLIENT_SECRET: secret:keycloak/keycloak-argocd-client:clientSecret
+  KEYCLOAK_FORGEJO_CLIENT_ID: literal:forgejo
+  KEYCLOAK_FORGEJO_CLIENT_SECRET: secret:keycloak/keycloak-forgejo-client:clientSecret
+  KEYCLOAK_KIALI_CLIENT_ID: literal:kiali
+  KEYCLOAK_KIALI_CLIENT_SECRET: secret:keycloak/keycloak-kiali-client:clientSecret
+  KEYCLOAK_HARBOR_CLIENT_ID: literal:harbor
+  KEYCLOAK_HARBOR_CLIENT_SECRET: secret:keycloak/keycloak-harbor-client:clientSecret
+  KEYCLOAK_HUBBLE_CLIENT_ID: literal:hubble
+  KEYCLOAK_HUBBLE_CLIENT_SECRET: secret:keycloak/keycloak-hubble-client:clientSecret
+  KEYCLOAK_VAULT_CLIENT_ID: literal:vault-cli
+  KEYCLOAK_VAULT_CLIENT_SECRET: secret:keycloak/keycloak-vault-client:clientSecret
+  KEYCLOAK_VAULT_HOST: env:KEYCLOAK_VAULT_HOST
+  KEYCLOAK_GRAFANA_CLIENT_ID: literal:grafana
+  KEYCLOAK_GRAFANA_CLIENT_SECRET: secret:keycloak/keycloak-grafana-client:clientSecret
+  GRAFANA_HOST: env:GRAFANA_HOST
+  HARBOR_HOST: env:HARBOR_HOST
+  KIALI_HOST: env:KIALI_HOST
+  HUBBLE_HOST: env:HUBBLE_HOST
+  KEYCLOAK_DEFAULT_USER_PASSWORD: secret:keycloak/keycloak-dev-user:password
+  KEYCLOAK_AUTOMATION_USERNAME: literal:argocd-automation
+  KEYCLOAK_AUTOMATION_PASSWORD: secret:keycloak/keycloak-argocd-automation-user:password

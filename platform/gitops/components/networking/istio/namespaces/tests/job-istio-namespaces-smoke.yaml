@@ -1,0 +1,82 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: istio-namespaces-smoke
+  namespace: istio-system
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: HookSucceeded,BeforeHookCreation
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 180
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      restartPolicy: Never
+      serviceAccountName: istio-namespaces-smoke
+      containers:
+        - name: smoke
+          image: registry.example.internal/deploykube/bootstrap-tools:1.4
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - -lc
+            - |
+              set -euo pipefail
+
+              echo "[istio-namespaces-smoke] verify managed namespaces exist + labels are correct"
+
+              default_psa="privileged"
+              declare -A want_psa=(
+                # cnpg-system is intentionally out-of-mesh; keep it PSA restricted.
+                [cnpg-system]=restricted
+              )
+
+              # Expected Istio injection posture (from this component's namespace manifests).
+              # NOTE: Some namespaces are intentionally out-of-mesh (e.g. CNPG + cert-manager webhooks).
+              declare -A want_injection=(
+                [argocd]=enabled
+                [cert-manager]=disabled
+                [cnpg-system]=disabled
+                [dns-system]=enabled
+                [external-secrets]=enabled
+                [forgejo]=enabled
+                [keycloak]=enabled
+                [platform-ops]=enabled
+                [step-system]=enabled
+                [vault-system]=enabled
+              )
+
+              failures=0
+              for ns in "${!want_injection[@]}"; do
+                if ! kubectl get ns "${ns}" >/dev/null 2>&1; then
+                  echo "[istio-namespaces-smoke] FAIL ${ns}: namespace missing" >&2
+                  failures=$((failures + 1))
+                  continue
+                fi
+
+                inj="$(kubectl get ns "${ns}" -o jsonpath='{.metadata.labels.istio-injection}' 2>/dev/null || true)"
+                if [[ "${inj}" != "${want_injection[$ns]}" ]]; then
+                  echo "[istio-namespaces-smoke] FAIL ${ns}: istio-injection=${inj:-<missing>} (want ${want_injection[$ns]})" >&2
+                  failures=$((failures + 1))
+                fi
+
+                for k in enforce audit warn; do
+                  psa="${want_psa[$ns]:-${default_psa}}"
+                  v="$(kubectl get ns "${ns}" -o jsonpath="{.metadata.labels.pod-security\.kubernetes\.io/${k}}" 2>/dev/null || true)"
+                  if [[ "${v}" != "${psa}" ]]; then
+                    echo "[istio-namespaces-smoke] FAIL ${ns}: pod-security.kubernetes.io/${k}=${v:-<missing>} (want ${psa})" >&2
+                    failures=$((failures + 1))
+                  fi
+                done
+              done
+
+              if [[ "${failures}" -ne 0 ]]; then
+                echo "[istio-namespaces-smoke] failures: ${failures}" >&2
+                exit 1
+              fi
+
+              echo "[istio-namespaces-smoke] ok"

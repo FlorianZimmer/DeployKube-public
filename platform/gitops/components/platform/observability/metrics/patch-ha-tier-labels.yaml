@@ -1,0 +1,25 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: metrics-server
+  namespace: kube-system
+  labels:
+    darksite.cloud/ha-tier: tier-2
+spec:
+  template:
+    metadata:
+      labels:
+        darksite.cloud/ha-tier: tier-2
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kube-state-metrics
+  namespace: observability
+  labels:
+    darksite.cloud/ha-tier: tier-2
+spec:
+  template:
+    metadata:
+      labels:
+        darksite.cloud/ha-tier: tier-2

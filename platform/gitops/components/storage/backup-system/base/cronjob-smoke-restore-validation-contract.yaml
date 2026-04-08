@@ -1,0 +1,288 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: storage-smoke-restore-validation-contract
+  annotations:
+    deploykube.gitops/validation-job: "true"
+spec:
+  # Intentionally offset from :00 to avoid top-of-hour kube-apiserver contention.
+  schedule: "19 4 * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 1200
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          annotations:
+            sidecar.istio.io/inject: "false"
+        spec:
+          serviceAccountName: backup-restore-validation-reader
+          restartPolicy: Never
+          securityContext:
+            runAsUser: 65532
+            runAsGroup: 65532
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          affinity:
+            nodeAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+                # Prefer non-control-plane nodes when present, but remain schedulable on single-node clusters.
+                - weight: 100
+                  preference:
+                    matchExpressions:
+                      - key: node-role.kubernetes.io/control-plane
+                        operator: DoesNotExist
+                - weight: 50
+                  preference:
+                    matchExpressions:
+                      - key: node-role.kubernetes.io/master
+                        operator: DoesNotExist
+          containers:
+            - name: smoke
+              image: registry.example.internal/deploykube/bootstrap-tools@sha256:e7be47a69e3a11bc58c857f2d690a71246ada91ac3a60bdfb0a547f091f6485a
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: HOOK_NAMESPACE_LABEL_KEY
+                  value: darksite.cloud/restore-validation-scope
+                - name: HOOK_NAMESPACE_LABEL_VALUE
+                  value: enabled
+                - name: HOOK_LABEL_KEY
+                  value: darksite.cloud/restore-validation-hook
+                - name: HOOK_LABEL_VALUE
+                  value: enabled
+                - name: HOOK_PVCS_ANNOTATION
+                  value: darksite.cloud/restore-validation-pvcs
+                - name: HOOK_MAX_AGE_ANNOTATION
+                  value: darksite.cloud/restore-validation-max-age-seconds
+                - name: DEFAULT_MAX_AGE_SECONDS
+                  value: "1209600"
+                - name: MIN_SCOPED_NAMESPACES
+                  value: "1"
+              command:
+                - /bin/bash
+                - -c
+                - |
+                  set -euo pipefail
+                  command -v kubectl >/dev/null 2>&1 || { echo "missing dependency: kubectl" >&2; exit 1; }
+                  command -v python3 >/dev/null 2>&1 || { echo "missing dependency: python3" >&2; exit 1; }
+
+                  python3 - <<'PY'
+                  import datetime
+                  import json
+                  import os
+                  import subprocess
+                  import sys
+
+                  UTC = datetime.timezone.utc
+
+                  def run(cmd: list[str]) -> str:
+                      p = subprocess.run(cmd, capture_output=True, text=True)
+                      if p.returncode != 0:
+                          raise RuntimeError(
+                              f"command failed rc={p.returncode}: {' '.join(cmd)}\n"
+                              f"stdout:\n{p.stdout}\n"
+                              f"stderr:\n{p.stderr}"
+                          )
+                      return p.stdout
+
+                  def env_required(name: str) -> str:
+                      v = os.environ.get(name, "").strip()
+                      if not v:
+                          raise ValueError(f"missing required env {name}")
+                      return v
+
+                  def env_int(name: str, default: int) -> int:
+                      raw = os.environ.get(name, "").strip()
+                      if not raw:
+                          return default
+                      try:
+                          value = int(raw)
+                      except ValueError:
+                          raise ValueError(f"{name} must be an integer, got {raw!r}")
+                      if value < 0:
+                          raise ValueError(f"{name} must be >= 0")
+                      return value
+
+                  def parse_timestamp(raw: str) -> datetime.datetime:
+                      v = raw.strip()
+                      if not v:
+                          raise ValueError("empty timestamp")
+                      if v.endswith("Z"):
+                          v = v[:-1] + "+00:00"
+                      dt = datetime.datetime.fromisoformat(v)
+                      if dt.tzinfo is None:
+                          dt = dt.replace(tzinfo=UTC)
+                      return dt.astimezone(UTC)
+
+                  def parse_name_list(raw: str) -> list[str]:
+                      out: list[str] = []
+                      for part in raw.replace(",", " ").split():
+                          item = part.strip()
+                          if item:
+                              out.append(item)
+                      return out
+
+                  namespace_label_key = env_required("HOOK_NAMESPACE_LABEL_KEY")
+                  namespace_label_value = env_required("HOOK_NAMESPACE_LABEL_VALUE")
+                  hook_label_key = env_required("HOOK_LABEL_KEY")
+                  hook_label_value = env_required("HOOK_LABEL_VALUE")
+                  hook_pvcs_annotation = env_required("HOOK_PVCS_ANNOTATION")
+                  hook_max_age_annotation = env_required("HOOK_MAX_AGE_ANNOTATION")
+                  default_max_age_seconds = env_int("DEFAULT_MAX_AGE_SECONDS", 14 * 24 * 3600)
+                  min_scoped_namespaces = env_int("MIN_SCOPED_NAMESPACES", 0)
+
+                  now = datetime.datetime.now(UTC)
+                  failures: list[str] = []
+
+                  selector = f"{namespace_label_key}={namespace_label_value}"
+                  ns_doc = json.loads(run(["kubectl", "get", "namespace", "-l", selector, "-o", "json"]))
+                  scoped_namespaces = sorted(
+                      item.get("metadata", {}).get("name", "")
+                      for item in ns_doc.get("items", [])
+                      if item.get("metadata", {}).get("name")
+                  )
+
+                  if len(scoped_namespaces) < min_scoped_namespaces:
+                      failures.append(
+                          f"scoped namespace count below minimum: found={len(scoped_namespaces)} "
+                          f"min={min_scoped_namespaces} selector={selector!r}"
+                      )
+
+                  for ns in scoped_namespaces:
+                      pvc_doc = json.loads(run(["kubectl", "-n", ns, "get", "pvc", "-o", "json"]))
+                      eligible_pvcs: set[str] = set()
+                      for pvc in pvc_doc.get("items", []):
+                          name = pvc.get("metadata", {}).get("name", "")
+                          phase = pvc.get("status", {}).get("phase", "")
+                          labels = pvc.get("metadata", {}).get("labels", {}) or {}
+                          if name and phase == "Bound" and labels.get("darksite.cloud/backup") == "restic":
+                              eligible_pvcs.add(name)
+
+                      if not eligible_pvcs:
+                          print(
+                              f"info: namespace {ns!r} has no Bound darksite.cloud/backup=restic PVCs; "
+                              "restore-hook coverage not required"
+                          )
+                          continue
+
+                      hook_selector = f"{hook_label_key}={hook_label_value}"
+                      hook_doc = json.loads(
+                          run(["kubectl", "-n", ns, "get", "cronjob", "-l", hook_selector, "-o", "json"])
+                      )
+                      hooks = hook_doc.get("items", [])
+                      if not hooks:
+                          failures.append(
+                              f"namespace {ns!r} has no restore-validation hook CronJobs "
+                              f"(selector={hook_selector!r})"
+                          )
+                          continue
+
+                      covered_pvcs: set[str] = set()
+                      for hook in hooks:
+                          meta = hook.get("metadata", {}) or {}
+                          spec = hook.get("spec", {}) or {}
+                          status = hook.get("status", {}) or {}
+                          annotations = meta.get("annotations", {}) or {}
+                          hook_name = meta.get("name", "<unknown>")
+
+                          schedule = (spec.get("schedule") or "").strip()
+                          if not schedule:
+                              failures.append(f"{ns}/{hook_name}: missing spec.schedule")
+
+                          if bool(spec.get("suspend", False)):
+                              failures.append(f"{ns}/{hook_name}: hook is suspended")
+
+                          declared_pvcs = parse_name_list(annotations.get(hook_pvcs_annotation, ""))
+                          if not declared_pvcs:
+                              failures.append(
+                                  f"{ns}/{hook_name}: missing or empty {hook_pvcs_annotation!r} annotation"
+                              )
+
+                          max_age_seconds = default_max_age_seconds
+                          raw_max_age = (annotations.get(hook_max_age_annotation) or "").strip()
+                          if raw_max_age:
+                              try:
+                                  max_age_seconds = int(raw_max_age)
+                              except ValueError:
+                                  failures.append(
+                                      f"{ns}/{hook_name}: invalid {hook_max_age_annotation!r}="
+                                      f"{raw_max_age!r} (expected integer seconds)"
+                                  )
+                                  max_age_seconds = default_max_age_seconds
+                              if max_age_seconds <= 0:
+                                  failures.append(
+                                      f"{ns}/{hook_name}: {hook_max_age_annotation!r} must be > 0"
+                                  )
+                                  max_age_seconds = default_max_age_seconds
+
+                          for pvc_name in declared_pvcs:
+                              if pvc_name not in eligible_pvcs:
+                                  failures.append(
+                                      f"{ns}/{hook_name}: declared PVC {pvc_name!r} is not an eligible "
+                                      "Bound darksite.cloud/backup=restic PVC"
+                                  )
+                              else:
+                                  covered_pvcs.add(pvc_name)
+
+                          last_success_raw = (status.get("lastSuccessfulTime") or "").strip()
+                          if not last_success_raw:
+                              failures.append(
+                                  f"{ns}/{hook_name}: missing status.lastSuccessfulTime "
+                                  f"(no successful run recorded yet)"
+                              )
+                              continue
+
+                          try:
+                              last_success = parse_timestamp(last_success_raw)
+                          except Exception as e:
+                              failures.append(
+                                  f"{ns}/{hook_name}: invalid status.lastSuccessfulTime {last_success_raw!r}: {e}"
+                              )
+                              continue
+
+                          age_seconds = int((now - last_success).total_seconds())
+                          if age_seconds < 0:
+                              failures.append(
+                                  f"{ns}/{hook_name}: lastSuccessfulTime is in the future "
+                                  f"(age={age_seconds}s)"
+                              )
+                          elif age_seconds > max_age_seconds:
+                              failures.append(
+                                  f"{ns}/{hook_name}: restore validation stale "
+                                  f"(age={age_seconds}s max={max_age_seconds}s)"
+                              )
+                          else:
+                              print(
+                                  f"ok: {ns}/{hook_name} last_success_age={age_seconds}s "
+                                  f"max={max_age_seconds}s schedule={schedule}"
+                              )
+
+                      uncovered = sorted(pvc for pvc in eligible_pvcs if pvc not in covered_pvcs)
+                      if uncovered:
+                          failures.append(
+                              f"namespace {ns!r}: eligible restic PVCs not covered by any hook annotation: "
+                              f"{', '.join(uncovered)}"
+                          )
+
+                  if failures:
+                      for msg in failures:
+                          print(f"ERROR: {msg}", file=sys.stderr)
+                      sys.exit(1)
+
+                  print(
+                      f"restore validation contract PASSED "
+                      f"(scoped_namespaces={len(scoped_namespaces)})"
+                  )
+                  PY
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+                readOnlyRootFilesystem: true

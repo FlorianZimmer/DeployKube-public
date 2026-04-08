@@ -1,0 +1,20 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: valkey
+  annotations:
+    argocd.argoproj.io/sync-options: Replace=true,Force=true
+spec:
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          darksite.cloud/backup: skip
+          darksite.cloud/backup-skip-reason: cache
+      spec:
+        storageClassName: shared-rwo
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 20Gi

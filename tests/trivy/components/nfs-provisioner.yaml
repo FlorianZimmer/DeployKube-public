@@ -1,0 +1,13 @@
+schemaVersion: v1alpha1
+description: Component-owned Trivy targets for the NFS subdir external provisioner.
+watch_paths:
+  - platform/gitops/artifacts/runtime-artifact-index.yaml
+  - platform/gitops/components/storage/nfs-provisioner
+  - tests/trivy/components/nfs-provisioner.yaml
+image_targets:
+  - id: nfs-subdir-external-provisioner
+    artifact_catalog: runtime-artifacts
+    artifact_name: nfs-subdir-external-provisioner
+config_targets:
+  - id: nfs-provisioner-manifests
+    path: platform/gitops/components/storage/nfs-provisioner

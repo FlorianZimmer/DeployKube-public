@@ -1,0 +1,104 @@
+## Argo CD bootstrap resource policy (applies at Helm install/upgrade time).
+##
+## Goals:
+## - Set explicit memory requests+limits for key Argo CD control-plane components
+##   to avoid unbounded memory usage.
+## - Never set CPU limits (keep CPU bursts possible); only set CPU requests where
+##   explicitly desired.
+## - Keep rollout strategy compatible with hard anti-affinity in small worker
+##   pools: no surge, allow one unavailable pod during rolling updates.
+
+global:
+  deploymentStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+
+controller:
+  resources:
+    requests:
+      cpu: 250m
+      # VPA suggests the controller needs >1Gi in prod; keep this pinned to
+      # reduce OOMKill risk during the early bootstrap window.
+      memory: 1000Mi
+    limits:
+      memory: 2000Mi
+
+applicationSet:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 100Mi
+    limits:
+      memory: 200Mi
+
+dex:
+  image:
+    repository: registry.example.internal/dexidp/dex
+    tag: v2.44.0
+  resources:
+    requests:
+      cpu: 10m
+      memory: 175Mi
+    limits:
+      memory: 300Mi
+
+notifications:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 100Mi
+    limits:
+      memory: 200Mi
+
+repoServer:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 250Mi
+    limits:
+      memory: 750Mi
+
+server:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 100Mi
+    limits:
+      memory: 200Mi
+
+redis-ha:
+  haproxy:
+    deploymentStrategy:
+      type: RollingUpdate
+      rollingUpdate:
+        maxSurge: 0
+        maxUnavailable: 1
+    resources:
+      requests:
+        cpu: 15m
+        memory: 125Mi
+      limits:
+        memory: 250Mi
+  redis:
+    resources:
+      requests:
+        cpu: 30m
+        memory: 75Mi
+      limits:
+        memory: 150Mi
+  sentinel:
+    resources:
+      requests:
+        cpu: 30m
+        memory: 25Mi
+      limits:
+        memory: 50Mi
+  splitBrainDetection:
+    resources:
+      requests:
+        cpu: 10m
+        memory: 25Mi
+      limits:
+        memory: 50Mi

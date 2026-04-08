@@ -1,0 +1,25 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tenant-forgejo-controller
+  namespace: tenant-system
+  labels:
+    darksite.cloud/ha-tier: tier-2
+spec:
+  template:
+    metadata:
+      labels:
+        darksite.cloud/ha-tier: tier-2
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tenant-networking-controller
+  namespace: tenant-system
+  labels:
+    darksite.cloud/ha-tier: tier-2
+spec:
+  template:
+    metadata:
+      labels:
+        darksite.cloud/ha-tier: tier-2

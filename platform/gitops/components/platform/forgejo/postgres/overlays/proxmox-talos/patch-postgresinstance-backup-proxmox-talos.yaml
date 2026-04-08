@@ -1,0 +1,10 @@
+apiVersion: data.darksite.cloud/v1alpha1
+kind: PostgresInstance
+metadata:
+  name: postgres
+spec:
+  backup:
+    schedule: "30 * * * *"
+    sourceName: postgres-forgejo
+    volume:
+      volumeName: tier0-postgres-forgejo-proxmox-talos

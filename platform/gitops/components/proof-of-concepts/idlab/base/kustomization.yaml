@@ -1,0 +1,11 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: idlab
+resources:
+  - namespace.yaml
+  - secrets.yaml
+  - postgresinstance.yaml
+  - postgres-init-job.yaml
+  - keycloaks.yaml
+  - proofs-pvc.yaml
+  - services.yaml

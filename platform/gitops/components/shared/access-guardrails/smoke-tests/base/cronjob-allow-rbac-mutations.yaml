@@ -1,0 +1,72 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: access-guardrails-smoke-allow-rbac-mutations
+  namespace: rbac-system
+  labels:
+    sidecar.istio.io/inject: "false"
+spec:
+  # Patched per-environment.
+  schedule: "0 */6 * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      ttlSecondsAfterFinished: 3600
+      backoffLimit: 0
+      activeDeadlineSeconds: 300
+      template:
+        metadata:
+          annotations:
+            sidecar.istio.io/inject: "false"
+        spec:
+          serviceAccountName: rbac-namespace-sync
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: smoke
+              image: registry.example.internal/deploykube/bootstrap-tools:1.4
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+                runAsNonRoot: true
+                runAsUser: 65534
+                runAsGroup: 65534
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  memory: 256Mi
+              command:
+                - /bin/bash
+                - -lc
+                - |
+                  set -euo pipefail
+
+                  ns="access-guardrails-system"
+                  test_name="access-guardrails-smoke-allow-test"
+
+                  # Ensure this test is idempotent even if a previous run was interrupted.
+                  kubectl -n "${ns}" delete rolebinding "${test_name}" --ignore-not-found >/dev/null 2>&1 || true
+
+                  echo "[allow] creating RoleBinding ${ns}/${test_name} as rbac-system/rbac-namespace-sync (should be allowed)"
+                  kubectl -n "${ns}" create rolebinding "${test_name}" \
+                    --clusterrole=view \
+                    --serviceaccount="rbac-system:rbac-namespace-sync"
+
+                  echo "[allow] verifying RoleBinding exists"
+                  kubectl -n "${ns}" get rolebinding "${test_name}" -o name
+
+                  echo "[allow] cleaning up"
+                  kubectl -n "${ns}" delete rolebinding "${test_name}" --ignore-not-found
+
+                  echo "[allow] success"

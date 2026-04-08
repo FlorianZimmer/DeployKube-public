@@ -1,0 +1,72 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: shared-rwo-io-smoke
+data:
+  storage-smoke-shared-rwo-io.py: |
+    import json
+    import os
+    import statistics
+    import time
+
+
+    def percentile_nearest_rank(samples, pct):
+      if not samples:
+        raise ValueError("empty sample set")
+      if pct <= 0:
+        return min(samples)
+      if pct >= 1:
+        return max(samples)
+      s = sorted(samples)
+      k = int((len(s) * pct) + 0.999999999)  # ceil
+      k = max(1, min(k, len(s)))
+      return s[k - 1]
+
+
+    def summarize(samples):
+      return {
+        "n": len(samples),
+        "min": min(samples),
+        "mean": statistics.mean(samples),
+        "p50": percentile_nearest_rank(samples, 0.50),
+        "p95": percentile_nearest_rank(samples, 0.95),
+        "p99": percentile_nearest_rank(samples, 0.99),
+        "max": max(samples),
+      }
+
+
+    def main():
+      mount = os.environ.get("MOUNT_PATH", "/data")
+      iterations = int(os.environ.get("ITERATIONS", "200"))
+      file_size = int(os.environ.get("FILE_SIZE_BYTES", "4096"))
+      p99_max_s = float(os.environ.get("P99_MAX_S", "1.0"))
+      max_max_s = float(os.environ.get("MAX_MAX_S", "5.0"))
+
+      os.makedirs(mount, exist_ok=True)
+      path = os.path.join(mount, "io-smoke.bin")
+      payload = b"x" * file_size
+
+      samples = []
+      for _ in range(iterations):
+        start = time.monotonic()
+        fd = os.open(path, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
+        try:
+          os.write(fd, payload)
+          os.fsync(fd)
+        finally:
+          os.close(fd)
+        samples.append(time.monotonic() - start)
+
+      result = summarize(samples)
+      print(json.dumps({"mount": mount, "path": path, "fileSizeBytes": file_size, "results": result}, indent=2, sort_keys=True))
+
+      p99 = result["p99"]
+      m = result["max"]
+      if p99 >= p99_max_s or m >= max_max_s:
+        raise SystemExit(
+          f"threshold violated: p99={p99:.3f}s (limit {p99_max_s}s), max={m:.3f}s (limit {max_max_s}s)"
+        )
+
+
+    if __name__ == "__main__":
+      main()

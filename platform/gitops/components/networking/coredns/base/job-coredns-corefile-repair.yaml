@@ -1,0 +1,160 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: coredns-corefile-repair
+  namespace: kube-system
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+    argocd.argoproj.io/sync-options: Replace=true
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 180
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      annotations:
+        sidecar.istio.io/inject: "false"
+      labels:
+        app.kubernetes.io/name: coredns-corefile-repair
+    spec:
+      serviceAccountName: coredns-corefile-repair
+      restartPolicy: Never
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+        - key: node-role.kubernetes.io/master
+          operator: Exists
+          effect: NoSchedule
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: repair
+          image: registry.example.internal/deploykube/bootstrap-tools@sha256:e7be47a69e3a11bc58c857f2d690a71246ada91ac3a60bdfb0a547f091f6485a
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: HOME
+              value: /tmp
+            - name: STUB_DOMAIN
+              valueFrom:
+                configMapKeyRef:
+                  name: deploykube-dns-wiring
+                  key: STUB_DOMAIN
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+
+              : "${STUB_DOMAIN:?missing STUB_DOMAIN}"
+
+              corefile="$(kubectl -n kube-system get configmap coredns -o jsonpath='{.data.Corefile}')"
+              fixed="$(
+                printf '%s\n' "${corefile}" | awk -v stub="${STUB_DOMAIN}" '
+                  BEGIN {
+                    in_managed = 0
+                    skipping = 0
+                    depth = 0
+                  }
+
+                  function trim(s) {
+                    sub(/^[[:space:]]+/, "", s)
+                    sub(/[[:space:]]+$/, "", s)
+                    return s
+                  }
+
+                  function is_begin(line) {
+                    line = trim(line)
+                    return index(line, stub ":53") == 1 && index(line, "{") > 0
+                  }
+
+                  /^# deploykube:stub-domain-begin/ { in_managed = 1; print; next }
+                  /^# deploykube:stub-domain-end/   { in_managed = 0; print; next }
+
+                  {
+                    if (!in_managed && skipping) {
+                      if (index($0, "{") > 0) { depth++ }
+                      if (trim($0) == "}") {
+                        depth--
+                        if (depth <= 0) { skipping = 0; depth = 0 }
+                      }
+                      next
+                    }
+
+                    if (!in_managed && is_begin($0)) {
+                      skipping = 1
+                      depth = 1
+                      next
+                    }
+
+                    print
+                  }
+                '
+              )"
+
+              # Ensure the managed stub-domain block appears *before* the root (.:53) block.
+              # CoreDNS matches server blocks in order; if the root block comes first, it can shadow the stub block.
+              managed="$(
+                printf '%s\n' "${fixed}" | awk '
+                  BEGIN { in_managed=0 }
+                  /^# deploykube:stub-domain-begin/ { in_managed=1 }
+                  in_managed { print }
+                  /^# deploykube:stub-domain-end/ { in_managed=0 }
+                '
+              )"
+              rest="$(
+                printf '%s\n' "${fixed}" | awk '
+                  BEGIN { in_managed=0 }
+                  /^# deploykube:stub-domain-begin/ { in_managed=1; next }
+                  /^# deploykube:stub-domain-end/ { in_managed=0; next }
+                  !in_managed { print }
+                '
+              )"
+
+              if [ -n "${managed}" ]; then
+                reordered="$(printf '%s\n%s\n' "${managed}" "${rest}")"
+              else
+                reordered="${fixed}"
+              fi
+
+              if [ "${reordered}" = "${corefile}" ]; then
+                echo "[coredns-corefile-repair] OK: Corefile already normalized (no duplicates, stub block ordered first)"
+                exit 0
+              fi
+
+              echo "[coredns-corefile-repair] Updating CoreDNS Corefile (dedupe + stub block ordering; stub=${STUB_DOMAIN})"
+              tmp="$(mktemp)"
+              {
+                echo "apiVersion: v1"
+                echo "kind: ConfigMap"
+                echo "metadata:"
+                echo "  name: coredns"
+                echo "  namespace: kube-system"
+                echo "data:"
+                echo "  Corefile: |"
+                printf '%s\n' "${reordered}" | sed 's/^/    /'
+              } > "${tmp}"
+              kubectl apply -f "${tmp}"
+              rm -f "${tmp}"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

@@ -1,0 +1,26 @@
+apiVersion: platform.darksite.cloud/v1alpha1
+kind: PlatformApps
+metadata:
+  name: platform-apps
+  namespace: argocd
+spec:
+  overlayMode: dev
+  deploymentId: mac-orbstack-single
+  enabledApps:
+    - platform-metrics-server
+  disabledApps:
+    - networking-egress-proxy
+    - certificates-platform-ingress
+    - networking-hubble-ui
+    - networking-istio-kiali
+    # Lightweight local playground: Harbor is heavy and not required.
+    - platform-registry-harbor-secrets
+    - platform-registry-harbor-postgres
+    - platform-registry-harbor
+    - platform-registry-harbor-ingress
+    - platform-registry-harbor-smoke-tests
+    - platform-observability-grafana
+    - platform-observability-ingress
+    - platform-observability-vip-probes
+    - platform-observability-loki
+    - platform-observability-mimir

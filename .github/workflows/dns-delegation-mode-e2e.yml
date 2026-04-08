@@ -1,0 +1,150 @@
+name: DNS Delegation Mode E2E
+
+on:
+  pull_request:
+    paths:
+      - "tools/tenant-provisioner/**"
+      - "platform/gitops/components/dns/**"
+      - "platform/gitops/deployments/**"
+      - "tests/scripts/e2e-dns-delegation-modes-matrix.sh"
+      - "tests/scripts/lib/dns_delegation_writer_sim.py"
+      - ".github/workflows/dns-delegation-mode-e2e.yml"
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: quick runs none+manual; full runs quick plus optional auto mode
+        type: choice
+        options:
+          - quick
+          - full
+        default: full
+      run_auto:
+        description: Include auto mode in full profile (auto|yes|no)
+        type: choice
+        options:
+          - auto
+          - yes
+          - no
+        default: auto
+      provision_writer_simulator:
+        description: Provision in-cluster writer simulator for auto mode (auto|yes|no)
+        type: choice
+        options:
+          - yes
+          - auto
+          - no
+        default: yes
+      kubeconfig_path:
+        description: Optional absolute path to kubeconfig on runner
+        type: string
+        default: ""
+  schedule:
+    # Nightly run. Intentionally offset from :00.
+    - cron: "41 3 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  # Runtime mode tests mutate singleton DeploymentConfig; never run in parallel.
+  group: deploykube-runtime-e2e
+  cancel-in-progress: false
+
+jobs:
+  quick:
+    if: |
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       vars.DK_DNS_E2E_ENABLED == 'true') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.profile == 'quick')
+    runs-on:
+      - self-hosted
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate script syntax
+        run: bash -n ./tests/scripts/e2e-dns-delegation-modes-matrix.sh
+
+      - name: Resolve kubeconfig
+        run: |
+          set -euo pipefail
+          if [[ -n "${{ github.event.inputs.kubeconfig_path }}" ]]; then
+            echo "KUBECONFIG=${{ github.event.inputs.kubeconfig_path }}" >> "${GITHUB_ENV}"
+          elif [[ -n "${{ vars.DK_DNS_E2E_KUBECONFIG }}" ]]; then
+            echo "KUBECONFIG=${{ vars.DK_DNS_E2E_KUBECONFIG }}" >> "${GITHUB_ENV}"
+          elif [[ -n "${{ vars.DK_E2E_KUBECONFIG }}" ]]; then
+            echo "KUBECONFIG=${{ vars.DK_E2E_KUBECONFIG }}" >> "${GITHUB_ENV}"
+          fi
+
+      - name: Run quick DNS delegation mode E2E
+        env:
+          DK_DNS_E2E_ACK_CONFIG_MUTATION: yes
+          DK_DNS_E2E_PARENT_ZONE: ${{ vars.DK_DNS_E2E_PARENT_ZONE }}
+        run: |
+          set -euo pipefail
+          ./tests/scripts/e2e-dns-delegation-modes-matrix.sh \
+            --profile quick \
+            --run-auto no \
+            --timeout 20m \
+            --ack-config-mutation yes
+
+  full:
+    if: |
+      (github.event_name == 'schedule' && vars.DK_DNS_E2E_ENABLED == 'true') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.profile == 'full')
+    runs-on:
+      - self-hosted
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate script syntax
+        run: bash -n ./tests/scripts/e2e-dns-delegation-modes-matrix.sh
+
+      - name: Resolve kubeconfig
+        run: |
+          set -euo pipefail
+          if [[ -n "${{ github.event.inputs.kubeconfig_path }}" ]]; then
+            echo "KUBECONFIG=${{ github.event.inputs.kubeconfig_path }}" >> "${GITHUB_ENV}"
+          elif [[ -n "${{ vars.DK_DNS_E2E_KUBECONFIG }}" ]]; then
+            echo "KUBECONFIG=${{ vars.DK_DNS_E2E_KUBECONFIG }}" >> "${GITHUB_ENV}"
+          elif [[ -n "${{ vars.DK_E2E_KUBECONFIG }}" ]]; then
+            echo "KUBECONFIG=${{ vars.DK_E2E_KUBECONFIG }}" >> "${GITHUB_ENV}"
+          fi
+
+      - name: Run full DNS delegation mode E2E
+        env:
+          DK_DNS_E2E_ACK_CONFIG_MUTATION: yes
+          DK_DNS_E2E_PARENT_ZONE: ${{ vars.DK_DNS_E2E_PARENT_ZONE }}
+          DK_DNS_E2E_WRITER_SECRET_NAME: ${{ vars.DK_DNS_E2E_WRITER_SECRET_NAME }}
+          DK_DNS_E2E_WRITER_SECRET_NAMESPACE: ${{ vars.DK_DNS_E2E_WRITER_SECRET_NAMESPACE }}
+          DK_DNS_E2E_PROVISION_WRITER_SIMULATOR: ${{ vars.DK_DNS_E2E_PROVISION_WRITER_SIMULATOR }}
+          DK_DNS_E2E_WRITER_SIMULATOR_NAMESPACE: ${{ vars.DK_DNS_E2E_WRITER_SIMULATOR_NAMESPACE }}
+          DK_DNS_E2E_WRITER_SIMULATOR_NAME: ${{ vars.DK_DNS_E2E_WRITER_SIMULATOR_NAME }}
+        run: |
+          set -euo pipefail
+          run_auto="${{ github.event.inputs.run_auto }}"
+          if [[ -z "${run_auto}" ]]; then
+            run_auto="${{ vars.DK_DNS_E2E_RUN_AUTO }}"
+          fi
+          if [[ -z "${run_auto}" ]]; then
+            run_auto="auto"
+          fi
+
+          provision_sim="${{ github.event.inputs.provision_writer_simulator }}"
+          if [[ -z "${provision_sim}" ]]; then
+            provision_sim="${DK_DNS_E2E_PROVISION_WRITER_SIMULATOR:-}"
+          fi
+          if [[ -z "${provision_sim}" ]]; then
+            provision_sim="yes"
+          fi
+
+          ./tests/scripts/e2e-dns-delegation-modes-matrix.sh \
+            --profile full \
+            --run-auto "${run_auto}" \
+            --provision-writer-simulator "${provision_sim}" \
+            --timeout 25m \
+            --ack-config-mutation yes

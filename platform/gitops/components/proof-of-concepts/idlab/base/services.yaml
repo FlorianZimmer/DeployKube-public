@@ -1,0 +1,411 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: upstream-scim-facade
+  namespace: idlab
+  labels:
+    app.kubernetes.io/name: upstream-scim-facade
+    darksite.cloud/ha-tier: tier-2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: upstream-scim-facade
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: upstream-scim-facade
+        darksite.cloud/ha-tier: tier-2
+    spec:
+      containers:
+        - name: facade
+          image: registry.example.internal/deploykube/idlab-poc:0.1.0
+          args: ["upstream-scim-facade", "--loop"]
+          env:
+            - name: IDLAB_LISTEN_ADDR
+              value: :8080
+            - name: UKC_KEYCLOAK_URL
+              value: http://ukc-keycloak:8080
+            - name: UKC_KEYCLOAK_REALM
+              value: ukc
+            - name: UKC_KEYCLOAK_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-service-clients
+                  key: ukcClientId
+            - name: UKC_KEYCLOAK_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-service-clients
+                  key: ukcClientSecret
+            - name: SCIM_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-service-clients
+                  key: scimBearerToken
+            - name: SOURCE_SCIM_URL
+              value: http://source-scim-ingest:8080/scim/v2
+            - name: SOURCE_STATUS_URL
+              value: http://source-scim-ingest:8080/internal/source-status
+            - name: UPSTREAM_PUSH_INTERVAL_SECONDS
+              value: "10"
+            - name: SOURCE_SCIM_STALE_AFTER_SECONDS
+              value: "45"
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          resources:
+            requests:
+              cpu: 20m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: upstream-scim-facade
+  namespace: idlab
+spec:
+  selector:
+    app.kubernetes.io/name: upstream-scim-facade
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: source-scim-ingest
+  namespace: idlab
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+  labels:
+    app.kubernetes.io/name: source-scim-ingest
+    darksite.cloud/ha-tier: tier-2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: source-scim-ingest
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: source-scim-ingest
+        darksite.cloud/ha-tier: tier-2
+    spec:
+      containers:
+        - name: ingest
+          image: registry.example.internal/deploykube/idlab-poc:0.1.0
+          args: ["source-scim-ingest"]
+          env:
+            - name: IDLAB_LISTEN_ADDR
+              value: :8080
+            - name: IDLAB_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-postgres-app
+                  key: uri
+            - name: SCIM_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-service-clients
+                  key: scimBearerToken
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          resources:
+            requests:
+              cpu: 20m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: source-scim-ingest
+  namespace: idlab
+spec:
+  selector:
+    app.kubernetes.io/name: source-scim-ingest
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mkc-scim-facade
+  namespace: idlab
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+  labels:
+    app.kubernetes.io/name: mkc-scim-facade
+    darksite.cloud/ha-tier: tier-2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mkc-scim-facade
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mkc-scim-facade
+        darksite.cloud/ha-tier: tier-2
+    spec:
+      containers:
+        - name: facade
+          image: registry.example.internal/deploykube/idlab-poc:0.1.0
+          args: ["mkc-scim-facade"]
+          env:
+            - name: IDLAB_LISTEN_ADDR
+              value: :8080
+            - name: IDLAB_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-postgres-app
+                  key: uri
+            - name: MKC_KEYCLOAK_URL
+              value: http://mkc-keycloak:8080
+            - name: MKC_KEYCLOAK_REALM
+              value: mkc
+            - name: MKC_KEYCLOAK_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-service-clients
+                  key: mkcClientId
+            - name: MKC_KEYCLOAK_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-service-clients
+                  key: mkcClientSecret
+            - name: SCIM_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-service-clients
+                  key: scimBearerToken
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          resources:
+            requests:
+              cpu: 20m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mkc-scim-facade
+  namespace: idlab
+spec:
+  selector:
+    app.kubernetes.io/name: mkc-scim-facade
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: btp-scim-facade
+  namespace: idlab
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+  labels:
+    app.kubernetes.io/name: btp-scim-facade
+    darksite.cloud/ha-tier: tier-2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: btp-scim-facade
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: btp-scim-facade
+        darksite.cloud/ha-tier: tier-2
+    spec:
+      containers:
+        - name: facade
+          image: registry.example.internal/deploykube/idlab-poc:0.1.0
+          args: ["btp-scim-facade"]
+          env:
+            - name: IDLAB_LISTEN_ADDR
+              value: :8080
+            - name: IDLAB_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-postgres-app
+                  key: uri
+            - name: BTP_KEYCLOAK_URL
+              value: http://btp-keycloak:8080
+            - name: BTP_KEYCLOAK_REALM
+              value: btp
+            - name: BTP_KEYCLOAK_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-service-clients
+                  key: btpClientId
+            - name: BTP_KEYCLOAK_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-service-clients
+                  key: btpClientSecret
+            - name: SCIM_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-service-clients
+                  key: scimBearerToken
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          resources:
+            requests:
+              cpu: 20m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: btp-scim-facade
+  namespace: idlab
+spec:
+  selector:
+    app.kubernetes.io/name: btp-scim-facade
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sync-controller
+  namespace: idlab
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+  labels:
+    app.kubernetes.io/name: sync-controller
+    darksite.cloud/ha-tier: tier-2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sync-controller
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sync-controller
+        darksite.cloud/ha-tier: tier-2
+    spec:
+      containers:
+        - name: controller
+          image: registry.example.internal/deploykube/idlab-poc:0.1.0
+          args: ["sync-controller", "--loop"]
+          env:
+            - name: IDLAB_LISTEN_ADDR
+              value: :8080
+            - name: IDLAB_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-postgres-app
+                  key: uri
+            - name: MKC_SCIM_URL
+              value: http://mkc-scim-facade:8080/scim/v2
+            - name: MKC_INTERNAL_URL
+              value: http://mkc-scim-facade:8080
+            - name: MKC_KEYCLOAK_URL
+              value: http://mkc-keycloak:8080
+            - name: MKC_KEYCLOAK_REALM
+              value: mkc
+            - name: MKC_KEYCLOAK_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-service-clients
+                  key: mkcClientId
+            - name: MKC_KEYCLOAK_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-service-clients
+                  key: mkcClientSecret
+            - name: BTP_SCIM_URL
+              value: http://btp-scim-facade:8080/scim/v2
+            - name: SCIM_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-service-clients
+                  key: scimBearerToken
+            - name: SYNC_LOOP_INTERVAL_SECONDS
+              value: "30"
+            - name: SOURCE_SCIM_STALE_AFTER_SECONDS
+              value: "45"
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          resources:
+            requests:
+              cpu: 20m
+              memory: 96Mi
+            limits:
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sync-controller
+  namespace: idlab
+spec:
+  selector:
+    app.kubernetes.io/name: sync-controller
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

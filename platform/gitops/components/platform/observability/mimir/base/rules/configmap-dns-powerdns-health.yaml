@@ -1,0 +1,48 @@
+# DNS (PowerDNS / external resolver path) smoke staleness/failure rules
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mimir-rules-dns-powerdns-health
+  namespace: mimir
+  labels:
+    mimir.grafana.com/rules: "true"
+    app.kubernetes.io/component: ruler
+data:
+  dns-powerdns-health.yaml: |
+    # yaml-language-server: $schema=https://json.schemastore.org/prometheus-rule.json
+    groups:
+      - name: dns.powerdns.health
+        interval: 1m
+        rules:
+          - alert: PowerDNSLanSmokeCronJobStale
+            expr: |
+              (time() - kube_cronjob_status_last_successful_time{namespace="dns-system", cronjob="powerdns-dns-http-smoke"}) > 3600
+            for: 10m
+            labels:
+              severity: warning
+              team: platform
+              service: dns
+              cluster: deploykube
+              runbook_url: docs/runbooks/powerdns-smoke-alerts.md
+            annotations:
+              summary: "PowerDNS LAN DNS/HTTPS smoke is stale"
+              description: "No successful run of CronJob dns-system/powerdns-dns-http-smoke in > 60 minutes."
+
+          - alert: PowerDNSLanSmokeJobFailed
+            expr: |
+              max by (namespace, job_name) (
+                kube_job_status_failed{
+                  namespace="dns-system",
+                  job_name=~"powerdns-dns-http-smoke-.*"
+                }
+              ) > 0
+            for: 2m
+            labels:
+              severity: critical
+              team: platform
+              service: dns
+              cluster: deploykube
+              runbook_url: docs/runbooks/powerdns-smoke-alerts.md
+            annotations:
+              summary: "PowerDNS LAN DNS/HTTPS smoke Job failed ({{ $labels.namespace }}/{{ $labels.job_name }})"
+              description: "A PowerDNS LAN smoke Job failed. Check the Job logs; common causes include Pi-hole forwarders, MetalLB reachability, and Gateway DNS drift."

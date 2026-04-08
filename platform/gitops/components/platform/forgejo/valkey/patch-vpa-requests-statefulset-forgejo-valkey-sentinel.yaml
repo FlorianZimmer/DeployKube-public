@@ -1,0 +1,15 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: valkey-sentinel
+spec:
+  template:
+    spec:
+      containers:
+        - name: sentinel
+          resources:
+            requests:
+              cpu: "15m"
+              memory: "64Mi"
+            limits:
+              memory: "96Mi"

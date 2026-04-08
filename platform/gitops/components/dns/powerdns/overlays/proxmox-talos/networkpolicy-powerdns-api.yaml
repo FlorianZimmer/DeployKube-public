@@ -1,0 +1,37 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: powerdns-allow-api
+  namespace: dns-system
+  labels:
+    app: powerdns
+spec:
+  podSelector:
+    matchLabels:
+      app: powerdns
+      component: authoritative
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: external-dns
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: dns-external-sync
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: powerdns-zone-bootstrap
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: cloud-dns-tenant-zone-smoke
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: tenant-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: tenant-networking-controller
+      ports:
+        - protocol: TCP
+          port: 8081

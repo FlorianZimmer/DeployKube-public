@@ -1,0 +1,11 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: garage
+  namespace: garage
+spec:
+  template:
+    metadata:
+      annotations:
+        sidecar.istio.io/proxyCPU: "100m"
+        sidecar.istio.io/proxyCPULimit: "1000m"

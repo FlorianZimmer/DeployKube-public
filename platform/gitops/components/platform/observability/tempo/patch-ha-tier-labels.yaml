@@ -1,0 +1,12 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: tempo
+  namespace: tempo
+  labels:
+    darksite.cloud/ha-tier: tier-2
+spec:
+  template:
+    metadata:
+      labels:
+        darksite.cloud/ha-tier: tier-2

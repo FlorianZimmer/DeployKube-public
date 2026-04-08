@@ -1,0 +1,174 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: cert-manager-certificate-smoke
+  namespace: cert-manager
+  labels:
+    app.kubernetes.io/name: cert-manager-smoke
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 600
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cert-manager-smoke
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      restartPolicy: Never
+      serviceAccountName: cert-manager-smoke
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: smoke
+          image: registry.example.internal/deploykube/validation-tools-core@sha256:babdd8ea44c3f169da4b55458061729329880fdf5c00194906d2dd6cdc655347
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: HOME
+              value: /tmp
+            - name: XDG_CONFIG_HOME
+              value: /tmp/.config
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          command:
+            - /bin/sh
+            - -c
+          args:
+            - |
+              set -euo pipefail
+
+              ns="cert-manager"
+              issuer="cert-manager-smoke-issuer"
+              cert="cert-manager-smoke"
+              secret="cert-manager-smoke-tls"
+
+              debug() {
+                echo "--- debug: issuer ---"
+                kubectl -n "${ns}" get issuer "${issuer}" -o yaml || true
+                echo "--- debug: certificate ---"
+                kubectl -n "${ns}" describe certificate "${cert}" || true
+                echo "--- debug: certificaterequests ---"
+                kubectl -n "${ns}" get certificaterequests -o wide --sort-by=.metadata.creationTimestamp || true
+                echo "--- debug: events (tail) ---"
+                kubectl -n "${ns}" get events --sort-by=.metadata.creationTimestamp | tail -n 50 || true
+              }
+
+              echo "checking cert-manager API resources exist (discovery)..."
+              kubectl api-resources --api-group=cert-manager.io -o name | grep -qx 'certificates.cert-manager.io' || {
+                echo "missing api resource: cert-manager.io/certificates" >&2
+                exit 1
+              }
+              kubectl api-resources --api-group=cert-manager.io -o name | grep -qx 'issuers.cert-manager.io' || {
+                echo "missing api resource: cert-manager.io/issuers" >&2
+                exit 1
+              }
+
+              echo "waiting for cert-manager deployments to be Available..."
+              kubectl -n "${ns}" wait --for=condition=Available deployment/cert-manager-webhook --timeout=180s
+              kubectl -n "${ns}" wait --for=condition=Available deployment/cert-manager --timeout=180s
+
+              echo "cleaning up any previous smoke resources (best-effort)..."
+              kubectl -n "${ns}" delete certificate "${cert}" --ignore-not-found --wait=true --timeout=60s || true
+              kubectl -n "${ns}" delete issuer "${issuer}" --ignore-not-found --wait=true --timeout=60s || true
+              kubectl -n "${ns}" delete secret "${secret}" --ignore-not-found || true
+
+              echo "applying Issuer+Certificate..."
+              attempt=1
+              max_attempts=10
+              while true; do
+                out="$(kubectl -n "${ns}" apply -f - 2>&1 <<EOF
+              apiVersion: cert-manager.io/v1
+              kind: Issuer
+              metadata:
+                name: ${issuer}
+                labels:
+                  app.kubernetes.io/name: cert-manager-smoke
+              spec:
+                selfSigned: {}
+              ---
+              apiVersion: cert-manager.io/v1
+              kind: Certificate
+              metadata:
+                name: ${cert}
+                labels:
+                  app.kubernetes.io/name: cert-manager-smoke
+              spec:
+                secretName: ${secret}
+                duration: 1h
+                renewBefore: 30m
+                commonName: cert-manager-smoke.${ns}.svc.cluster.local
+                dnsNames:
+                  - cert-manager-smoke.${ns}.svc.cluster.local
+                issuerRef:
+                  name: ${issuer}
+                  kind: Issuer
+                privateKey:
+                  algorithm: RSA
+                  size: 2048
+                  rotationPolicy: Never
+              EOF
+                )" && { echo "${out}"; break; }
+
+                echo "${out}" >&2
+                if echo "${out}" | grep -Eq 'failed calling webhook|context deadline exceeded|Client.Timeout exceeded'; then
+                  if [ "${attempt}" -ge "${max_attempts}" ]; then
+                    echo "apply failed after ${max_attempts} attempts" >&2
+                    debug
+                    exit 1
+                  fi
+                  sleep_s="$((attempt * 3))"
+                  echo "transient apply failure, retrying in ${sleep_s}s (${attempt}/${max_attempts})..."
+                  sleep "${sleep_s}"
+                  attempt="$((attempt+1))"
+                  continue
+                fi
+
+                echo "apply failed with non-retryable error" >&2
+                debug
+                exit 1
+              done
+
+              echo "waiting for Certificate/Ready..."
+              if ! kubectl -n "${ns}" wait --for=condition=Ready certificate/"${cert}" --timeout=180s; then
+                echo "certificate did not reach Ready=True" >&2
+                debug
+                exit 1
+              fi
+
+              echo "verifying Secret data keys..."
+              crt="$(kubectl -n "${ns}" get secret "${secret}" -o jsonpath='{.data.tls\.crt}' || true)"
+              key="$(kubectl -n "${ns}" get secret "${secret}" -o jsonpath='{.data.tls\.key}' || true)"
+              if [ -z "${crt}" ] || [ -z "${key}" ]; then
+                echo "secret missing tls.crt and/or tls.key" >&2
+                debug
+                exit 1
+              fi
+
+              echo "cleanup (success path)..."
+              kubectl -n "${ns}" delete certificate "${cert}" --ignore-not-found --wait=true --timeout=60s
+              kubectl -n "${ns}" delete issuer "${issuer}" --ignore-not-found --wait=true --timeout=60s
+              kubectl -n "${ns}" delete secret "${secret}" --ignore-not-found
+
+              echo "cert-manager certificate smoke ok"
+      volumes:
+        - name: tmp
+          emptyDir: {}

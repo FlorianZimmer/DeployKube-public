@@ -1,0 +1,21 @@
+# Reduce Valkey to 1 replica and disable persistence for dev.
+# Uses emptyDir to eliminate SSD writes from RDB/AOF syncs.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: valkey
+spec:
+  replicas: 1
+  # Remove volumeClaimTemplates by setting to empty array
+  volumeClaimTemplates: []
+  template:
+    spec:
+      # Add emptyDir volume for /valkey data directory
+      volumes:
+        - name: scripts
+          configMap:
+            name: valkey-scripts
+            defaultMode: 0555
+        - name: data
+          emptyDir:
+            sizeLimit: 512Mi

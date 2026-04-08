@@ -1,0 +1,212 @@
+# Grafana Alloy DaemonSet for LGTM stack log/metric/trace collection.
+# See docs/design/observability-lgtm-log-ingestion.md for architecture.
+fullnameOverride: alloy
+
+controller:
+  type: daemonset
+  updateStrategy:
+    rollingUpdate:
+      maxUnavailable: 1
+  podAnnotations:
+    # Keep the sidecar inbound capture open; Alloy exposes the OTLP receiver ports.
+    traffic.sidecar.istio.io/includeInboundPorts: "*"
+    # Alloy relies on the Kubernetes API for service discovery. Exclude the API ports
+    # from redirection so discovery remains stable under STRICT mTLS.
+    traffic.sidecar.istio.io/excludeOutboundPorts: "443,6443"
+    observability.grafana.com/tenant-source: "namespace"
+  # Tolerate control-plane and dedicated nodes so platform-critical logs aren't missed.
+  tolerations:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
+    - key: node-role.kubernetes.io/master
+      operator: Exists
+      effect: NoSchedule
+
+alloy:
+  # Avoid noisy outbound telemetry attempts from constrained dev clusters.
+  enableReporting: false
+  # Resource sizing per design doc.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 200Mi
+    limits:
+      memory: 600Mi
+  mounts:
+    # Required for file-based pod log tailing (/var/log/pods/*).
+    varlog: true
+  configMap:
+    create: true
+    key: config.alloy
+    content: |
+      logging {
+        level  = "info"
+        format = "logfmt"
+      }
+
+      //
+      // ===== DISCOVERY =====
+      //
+      discovery.kubernetes "pods" {
+        role = "pod"
+      }
+
+      discovery.kubernetes "nodes" {
+        role = "node"
+      }
+
+      //
+      // ===== LOG COLLECTION (Kubernetes Pod Logs -> Loki) =====
+      //
+      // Tenant strategy: namespace label `observability.grafana.com/tenant` with default "platform".
+      // Label strategy: low-cardinality only (cluster, namespace, app, container).
+      //
+      discovery.relabel "pods_logs" {
+        targets = discovery.kubernetes.pods.targets
+
+        // Keep only running pods with a container name.
+        rule {
+          source_labels = ["__meta_kubernetes_pod_phase"]
+          regex         = "Pending|Succeeded|Failed|Unknown"
+          action        = "drop"
+        }
+
+        // Add cluster label.
+        rule {
+          target_label = "cluster"
+          replacement  = "deploykube"
+        }
+
+        // Namespace label.
+        rule {
+          source_labels = ["__meta_kubernetes_namespace"]
+          target_label  = "namespace"
+        }
+
+        // Container name.
+        rule {
+          source_labels = ["__meta_kubernetes_pod_container_name"]
+          target_label  = "container"
+        }
+
+        // App label: prefer app.kubernetes.io/name, fallback to k8s-app, then pod name.
+        rule {
+          source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_name"]
+          target_label  = "app"
+        }
+        rule {
+          source_labels = ["app", "__meta_kubernetes_pod_label_k8s_app"]
+          regex         = ";(.+)"
+          target_label  = "app"
+        }
+        rule {
+          source_labels = ["app", "__meta_kubernetes_pod_label_app"]
+          regex         = ";(.+)"
+          target_label  = "app"
+        }
+        rule {
+          source_labels = ["app", "__meta_kubernetes_pod_name"]
+          regex         = ";(.+)"
+          target_label  = "app"
+        }
+
+        // Pod name (keep for debugging but not primary filter).
+        rule {
+          source_labels = ["__meta_kubernetes_pod_name"]
+          target_label  = "pod"
+        }
+
+        // Node name.
+        rule {
+          source_labels = ["__meta_kubernetes_pod_node_name"]
+          target_label  = "node"
+        }
+
+        // Set the log path.
+        rule {
+          source_labels = ["__meta_kubernetes_pod_uid", "__meta_kubernetes_pod_container_name"]
+          separator     = "/"
+          target_label  = "__path__"
+          replacement   = "/var/log/pods/*$1/$2/*.log"
+        }
+      }
+
+      loki.source.kubernetes "pods" {
+        targets    = discovery.relabel.pods_logs.output
+        forward_to = [loki.process.pods.receiver]
+      }
+
+      loki.process "pods" {
+        stage.static_labels {
+          values = {
+            tenant = "platform",
+          }
+        }
+
+        forward_to = [loki.write.default.receiver]
+      }
+
+      loki.write "default" {
+        endpoint {
+          url       = "http://loki-gateway.loki.svc.cluster.local/loki/api/v1/push"
+          tenant_id = "platform"
+        }
+        external_labels = {
+          cluster = "deploykube",
+        }
+      }
+
+      //
+      // ===== METRICS COLLECTION =====
+      //
+      // Metrics scraping is handled by the dedicated `alloy-metrics` Deployment
+      // so Mimir sees a single writer per timeseries (avoids out-of-order samples).
+
+      //
+      // ===== TRACE COLLECTION (OTLP -> Tempo) =====
+      //
+      otelcol.receiver.otlp "default" {
+        grpc {
+          endpoint = "0.0.0.0:4317"
+        }
+        http {
+          endpoint = "0.0.0.0:4318"
+        }
+        output {
+          traces = [otelcol.processor.batch.default.input]
+        }
+      }
+
+      otelcol.processor.batch "default" {
+        output {
+          traces = [otelcol.exporter.otlphttp.tempo.input]
+        }
+      }
+
+      otelcol.exporter.otlphttp "tempo" {
+        client {
+          endpoint = "http://tempo.tempo.svc.cluster.local:4318"
+          headers = {
+            "X-Scope-OrgID" = "platform",
+          }
+        }
+      }
+
+serviceAccount:
+  create: true
+
+# Resource contract Tier 1: chart defaults set requests but no memory limit for the config reloader.
+configReloader:
+  resources:
+    requests:
+      cpu: "10m"
+      memory: "50Mi"
+    limits:
+      memory: "100Mi"
+
+# RBAC for Kubernetes metadata access (pods, namespaces, nodes).
+# The Helm chart creates ClusterRole/ClusterRoleBinding automatically.
+
+serviceMonitor:
+  enabled: true

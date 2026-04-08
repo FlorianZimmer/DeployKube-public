@@ -1,0 +1,21 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: argocd-repo-server-tls
+  namespace: argocd
+  annotations:
+    # Ensure Argo CD waits for cert-manager to finish issuing before moving on.
+    argocd.argoproj.io/sync-wave: "3.4"
+spec:
+  secretName: argocd-repo-server-tls
+  dnsNames:
+    - argo-cd-argocd-repo-server
+    - argo-cd-argocd-repo-server.argocd
+    - argo-cd-argocd-repo-server.argocd.svc
+    - argo-cd-argocd-repo-server.argocd.svc.cluster.local
+    - reposerver
+    - localhost
+  issuerRef:
+    kind: ClusterIssuer
+    name: step-ca
+

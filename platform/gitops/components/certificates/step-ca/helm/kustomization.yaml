@@ -1,0 +1,25 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: step-system
+resources:
+  - preflight.yaml
+helmGlobals:
+  chartHome: charts
+helmCharts:
+  - name: step-certificates
+    version: 1.28.4
+    releaseName: step-ca
+    namespace: step-system
+    valuesFile: values.yaml
+patches:
+  - path: patch-retention.yaml
+    target:
+      kind: StatefulSet
+      name: step-ca-step-certificates
+  - path: patch-volume-mount.yaml
+    target:
+      kind: StatefulSet
+      name: step-ca-step-certificates
+  - path: patch-vpa-requests-statefulset-step-ca-step-certificates.yaml
+  - path: patch-vpa-requests-statefulset-step-ca-step-certificates.yaml
+  - path: patch-ha-tier-labels.yaml

@@ -1,0 +1,74 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kiali
+  namespace: istio-system
+spec:
+  template:
+    spec:
+      volumes:
+        # Rendered config (writable). We keep the Helm-rendered ConfigMap mount as the template.
+        - name: kiali-configuration-rendered
+          emptyDir: {}
+      initContainers:
+        - name: kiali-render-config
+          image: docker.io/library/busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+          args:
+            - |
+              set -eu
+              i=0
+              while [ "$i" -lt 60 ]; do
+                if [ -s /kiali-secret/oidc-secret ]; then
+                  break
+                fi
+                echo "[kiali-render-config] waiting for /kiali-secret/oidc-secret to exist and be non-empty" >&2
+                i=$((i + 1))
+                sleep 2
+              done
+
+              if [ ! -s /kiali-secret/oidc-secret ]; then
+                echo "[kiali-render-config] missing Secret/istio-system/kiali key oidc-secret" >&2
+                exit 1
+              fi
+
+              raw="$(cat /kiali-secret/oidc-secret | tr -d '\n')"
+              if [ "${#raw}" -lt 32 ]; then
+                echo "[kiali-render-config] oidc-secret is too short to derive a 32-byte login_token.signing_key (len=${#raw})" >&2
+                exit 1
+              fi
+              # Kiali requires the session signing key to be exactly 16/24/32 bytes. The Keycloak
+              # client secret we already have is hex (48 chars), so derive a stable 32-byte key.
+              key="$(printf '%s' "$raw" | cut -c1-32)"
+              # Escape for sed replacement.
+              esc="$(printf '%s' "$key" | sed 's/[\\/&]/\\\\&/g')"
+              sed "s/__DK_KIALI_LOGIN_TOKEN_SIGNING_KEY__/${esc}/g" \
+                /kiali-configuration-template/config.yaml \
+                > /kiali-configuration/config.yaml
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: false
+            runAsUser: 0
+            runAsGroup: 0
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: kiali-configuration-rendered
+              mountPath: /kiali-configuration
+            - name: kiali-configuration
+              mountPath: /kiali-configuration-template
+              readOnly: true
+            - name: kiali-secret
+              mountPath: /kiali-secret
+              readOnly: true
+      containers:
+        - name: kiali
+          volumeMounts:
+            - mountPath: /kiali-configuration
+              name: kiali-configuration-rendered

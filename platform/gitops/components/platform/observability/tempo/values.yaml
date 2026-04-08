@@ -1,0 +1,62 @@
+# Tempo single-binary with S3 blocks; enable multi-tenancy and OTLP.
+fullnameOverride: tempo
+
+tempo:
+  multitenancyEnabled: true
+  # Explicit resources for the main container (avoid relying on Istio sidecar defaults).
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+  metricsGenerator:
+    enabled: false
+  overrides:
+    defaults:
+      ingestion:
+        # Ensure non-zero ingest limits for all tenants (smoke tests use per-run tenants).
+        rate_strategy: local
+        rate_limit_bytes: 15000000
+        burst_size_bytes: 20000000
+    per_tenant_override_config: /conf/overrides.yaml
+  livenessProbe: null
+  readinessProbe: null
+  extraEnvFrom:
+    - secretRef:
+        name: tempo-s3
+  # S3/AWS env vars (AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY) come from `Secret/tempo-s3`
+  # via the ExternalSecret; bucket/endpoint/region are configured explicitly below.
+  storage:
+    trace:
+      backend: s3
+      s3:
+        # Keep in sync with `secret/data/garage/s3` → `BUCKET_TRACES` (projected via `Secret/tempo-s3`).
+        bucket: garage-traces
+        # Use the in-cluster Garage S3 service; the tempo namespace default-deny
+        # egress policy allows TCP/3900 to the `garage` namespace.
+        endpoint: garage.garage.svc:3900
+        region: us-east-1
+        insecure: true
+        forcepathstyle: true
+  server:
+    http_listen_port: 3200
+  receivers:
+    otlp:
+      protocols:
+        http:
+          endpoint: 0.0.0.0:4318
+        grpc:
+          endpoint: 0.0.0.0:4317
+
+ingester:
+  replicas: 2
+
+queryFrontend:
+  queryShards: 2
+
+gateway:
+  enabled: false  # HTTPRoute/mesh to be added later
+
+serviceMonitor:
+  enabled: true

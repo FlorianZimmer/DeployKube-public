@@ -1,0 +1,11 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: platform-apps-controller
+  namespace: argocd
+spec:
+  template:
+    spec:
+      containers:
+        - name: controller
+          image: 198.51.100.11:5010/deploykube/tenant-provisioner:0.2.16-platformapps

@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: keycloak-iam-sync
+  namespace: keycloak
+  labels:
+    app.kubernetes.io/name: keycloak-iam-sync
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: keycloak-iam-sync
+  namespace: keycloak
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets"]
+    verbs: ["get", "list", "watch", "create", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: keycloak-iam-sync
+  namespace: keycloak
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: keycloak-iam-sync
+subjects:
+  - kind: ServiceAccount
+    name: keycloak-iam-sync
+    namespace: keycloak

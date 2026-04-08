@@ -1,0 +1,12 @@
+# OpenTofu/Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+tfplan
+.terraform.lock.hcl
+
+# Talos generated configs (secrets)
+/talos/talosconfig
+/talos/*.yaml
+!/talos/.gitignore

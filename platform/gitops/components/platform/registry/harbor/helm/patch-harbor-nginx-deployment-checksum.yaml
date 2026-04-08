@@ -1,0 +1,9 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: harbor-nginx
+spec:
+  template:
+    metadata:
+      annotations:
+        checksum/configmap: a40dea257ac64ed3973b5e7f820604a0ef3e09572f59565ca1dd2e5bd3755549

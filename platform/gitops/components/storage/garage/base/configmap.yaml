@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: garage-config-template
+  namespace: garage
+data:
+  garage.toml.tpl: |
+    # Garage single-node config (DeployKube single-node storage profile)
+    metadata_dir = "/var/lib/garage/meta"
+    data_dir = "/var/lib/garage/data"
+    db_engine = "lmdb"
+    lmdb_map_size = "64G"
+    replication_factor = 1
+    rpc_bind_addr = "0.0.0.0:3901"
+    rpc_public_addr = "garage.garage.svc.cluster.local:3901"
+    rpc_secret = "${GARAGE_RPC_SECRET}"
+
+    [s3_api]
+    s3_region = "${S3_REGION}"
+    api_bind_addr = "0.0.0.0:3900"
+    root_domain = ""
+
+    [admin]
+    api_bind_addr = "0.0.0.0:3903"
+    admin_token = "${GARAGE_ADMIN_TOKEN}"
+    metrics_token = "${GARAGE_METRICS_TOKEN}"

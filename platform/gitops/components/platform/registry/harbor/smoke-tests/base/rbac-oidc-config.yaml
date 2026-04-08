@@ -1,0 +1,54 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: harbor-oidc-config
+  namespace: harbor
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames:
+      - harbor-admin-password
+      - harbor-oidc-client
+      - harbor-oidc-ca
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["endpoints"]
+    resourceNames: ["harbor"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: harbor-oidc-config
+  namespace: harbor
+subjects:
+  - kind: ServiceAccount
+    name: harbor-oidc-config
+    namespace: harbor
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: harbor-oidc-config
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: harbor-oidc-config
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["deploykube-deployment-config"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: harbor-oidc-config
+subjects:
+  - kind: ServiceAccount
+    name: harbor-oidc-config
+    namespace: harbor
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: harbor-oidc-config

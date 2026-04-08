@@ -1,0 +1,204 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: tenant-baseline-generate
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  admission: true
+  background: true
+  emitWarning: false
+  validationFailureAction: Audit
+  rules:
+    - name: generate-tenant-default-deny
+      match:
+        any:
+          - resources:
+              kinds: ["Namespace"]
+              selector:
+                matchLabels:
+                  darksite.cloud/rbac-profile: tenant
+      skipBackgroundRequests: true
+      generate:
+        generateExisting: true
+        synchronize: true
+        apiVersion: networking.k8s.io/v1
+        kind: NetworkPolicy
+        name: tenant-default-deny
+        namespace: "{{ request.object.metadata.name }}"
+        data:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: tenant-default-deny
+          spec:
+            podSelector: {}
+            policyTypes: ["Ingress", "Egress"]
+
+    - name: generate-tenant-allow-same-namespace
+      match:
+        any:
+          - resources:
+              kinds: ["Namespace"]
+              selector:
+                matchLabels:
+                  darksite.cloud/rbac-profile: tenant
+      skipBackgroundRequests: true
+      generate:
+        generateExisting: true
+        synchronize: true
+        apiVersion: networking.k8s.io/v1
+        kind: NetworkPolicy
+        name: tenant-allow-same-namespace
+        namespace: "{{ request.object.metadata.name }}"
+        data:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: tenant-allow-same-namespace
+          spec:
+            podSelector: {}
+            policyTypes: ["Ingress", "Egress"]
+            ingress:
+              - from:
+                  - podSelector: {}
+            egress:
+              - to:
+                  - podSelector: {}
+
+    - name: generate-tenant-allow-dns-egress
+      match:
+        any:
+          - resources:
+              kinds: ["Namespace"]
+              selector:
+                matchLabels:
+                  darksite.cloud/rbac-profile: tenant
+      skipBackgroundRequests: true
+      generate:
+        generateExisting: true
+        synchronize: true
+        apiVersion: networking.k8s.io/v1
+        kind: NetworkPolicy
+        name: tenant-allow-dns-egress
+        namespace: "{{ request.object.metadata.name }}"
+        data:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: tenant-allow-dns-egress
+          spec:
+            podSelector: {}
+            policyTypes: ["Egress"]
+            egress:
+              - to:
+                  - namespaceSelector:
+                      matchLabels:
+                        kubernetes.io/metadata.name: kube-system
+                    podSelector:
+                      matchLabels:
+                        k8s-app: kube-dns
+                ports:
+                  - protocol: UDP
+                    port: 53
+                  - protocol: TCP
+                    port: 53
+
+    - name: generate-tenant-allow-ntp-egress
+      match:
+        any:
+          - resources:
+              kinds: ["Namespace"]
+              selector:
+                matchLabels:
+                  darksite.cloud/rbac-profile: tenant
+      skipBackgroundRequests: true
+      generate:
+        generateExisting: true
+        synchronize: true
+        apiVersion: networking.k8s.io/v1
+        kind: NetworkPolicy
+        name: tenant-allow-ntp-egress
+        namespace: "{{ request.object.metadata.name }}"
+        data:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: tenant-allow-ntp-egress
+          spec:
+            podSelector: {}
+            policyTypes: ["Egress"]
+            egress:
+              - to:
+                  - namespaceSelector:
+                      matchLabels:
+                        kubernetes.io/metadata.name: time-system
+                    podSelector:
+                      matchLabels:
+                        app.kubernetes.io/name: platform-ntp
+                ports:
+                  - protocol: UDP
+                    port: 123
+
+    - name: generate-tenant-default-limits
+      match:
+        any:
+          - resources:
+              kinds: ["Namespace"]
+              selector:
+                matchLabels:
+                  darksite.cloud/rbac-profile: tenant
+      skipBackgroundRequests: true
+      generate:
+        generateExisting: true
+        synchronize: true
+        apiVersion: v1
+        kind: LimitRange
+        name: tenant-default-limits
+        namespace: "{{ request.object.metadata.name }}"
+        data:
+          apiVersion: v1
+          kind: LimitRange
+          metadata:
+            name: tenant-default-limits
+          spec:
+            limits:
+              - type: Container
+                defaultRequest:
+                  cpu: 100m
+                  memory: 128Mi
+                default:
+                  memory: 512Mi
+                max:
+                  memory: 4Gi
+
+    - name: generate-tenant-quota
+      match:
+        any:
+          - resources:
+              kinds: ["Namespace"]
+              selector:
+                matchLabels:
+                  darksite.cloud/rbac-profile: tenant
+      skipBackgroundRequests: true
+      generate:
+        generateExisting: true
+        synchronize: true
+        apiVersion: v1
+        kind: ResourceQuota
+        name: tenant-quota
+        namespace: "{{ request.object.metadata.name }}"
+        data:
+          apiVersion: v1
+          kind: ResourceQuota
+          metadata:
+            name: tenant-quota
+          spec:
+            hard:
+              pods: "20"
+              services: "20"
+              requests.cpu: "2"
+              requests.memory: 4Gi
+              limits.memory: 8Gi
+              requests.storage: 10Gi
+              persistentvolumeclaims: "20"

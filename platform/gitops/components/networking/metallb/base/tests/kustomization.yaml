@@ -1,0 +1,8 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - rbac.yaml
+  - job-metallb-memberlist-secret.yaml
+  - job-metallb-smoke.yaml
+  - cronjob-metallb-pool-drift-guard.yaml
+

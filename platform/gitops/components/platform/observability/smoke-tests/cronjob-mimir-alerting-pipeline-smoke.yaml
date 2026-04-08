@@ -1,0 +1,118 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: mimir-alerting-pipeline-smoke
+  namespace: observability
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  # Intentionally offset from :00 to avoid top-of-hour kube-apiserver contention.
+  schedule: "17,47 * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 300
+      ttlSecondsAfterFinished: 900
+      template:
+        metadata:
+          annotations:
+            sidecar.istio.io/nativeSidecar: "true"
+            proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}'
+        spec:
+          restartPolicy: Never
+          volumes:
+            - name: istio-native-exit
+              configMap:
+                name: istio-native-exit-script
+                defaultMode: 0444
+          containers:
+            - name: mimir-alerting-pipeline-smoke
+              image: registry.example.internal/deploykube/bootstrap-tools:1.4
+              imagePullPolicy: IfNotPresent
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  memory: 256Mi
+              volumeMounts:
+                - name: istio-native-exit
+                  mountPath: /helpers
+                  readOnly: true
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -euo pipefail
+                  ISTIO_HELPER="/helpers/istio-native-exit.sh"
+                  [ -f "${ISTIO_HELPER}" ] || { echo "missing istio-native-exit helper" >&2; exit 1; }
+                  . "${ISTIO_HELPER}"
+                  trap deploykube_istio_quit_sidecar EXIT INT TERM
+
+                  hdr_tenant="X-Scope-OrgID: platform"
+
+                  # 1) Rules API: prove rules are loaded and Watchdog exists.
+                  rule_bases="
+                  http://mimir-querier.mimir.svc.cluster.local:8080
+                  http://mimir-ruler.mimir.svc.cluster.local:8080
+                  http://mimir-gateway.mimir.svc.cluster.local:8080
+                  "
+                  rules_path="/prometheus/api/v1/rules"
+
+                  rules_ok=0
+                  for base in ${rule_bases}; do
+                    url="${base}${rules_path}"
+                    echo "[mimir-alerting-smoke] trying rules: ${url}"
+                    code="$(curl -sS -o /tmp/rules.json -w '%{http_code}' --max-time 20 -H "${hdr_tenant}" "${url}" || true)"
+                    if [ "${code}" != "200" ]; then
+                      continue
+                    fi
+                    jq -e '.status == "success"' /tmp/rules.json >/dev/null
+                    if jq -e '[.data.groups[].rules[]? | select(.name == "Watchdog" or (.labels.alertname? == "Watchdog"))] | length > 0' /tmp/rules.json >/dev/null; then
+                      echo "[mimir-alerting-smoke] ok: Watchdog rule visible via ${url}"
+                      rules_ok=1
+                      break
+                    fi
+                    echo "[mimir-alerting-smoke] rules endpoint responded but Watchdog not found"
+                    jq -c '.data.groups[]? | {name: .name, rules: ([.rules[]? | .name] | unique)}' /tmp/rules.json | head -n 20 || true
+                  done
+
+                  if [ "${rules_ok}" -ne 1 ]; then
+                    echo "[mimir-alerting-smoke] FAIL: could not confirm Watchdog rule is loaded" >&2
+                    exit 1
+                  fi
+
+                  # 2) Alertmanager API: prove Watchdog is firing/visible.
+                  am_urls="
+                  http://mimir-alertmanager.mimir.svc.cluster.local:9093/api/v2/alerts
+                  http://mimir-alertmanager.mimir.svc.cluster.local:8080/alertmanager/api/v2/alerts
+                  http://mimir-gateway.mimir.svc.cluster.local:8080/alertmanager/api/v2/alerts
+                  "
+
+                  am_ok=0
+                  for url in ${am_urls}; do
+                    echo "[mimir-alerting-smoke] trying alertmanager: ${url}"
+                    code="$(curl -sS -o /tmp/alerts.json -w '%{http_code}' --max-time 20 -H "${hdr_tenant}" "${url}" || true)"
+                    if [ "${code}" != "200" ]; then
+                      continue
+                    fi
+                    if jq -e 'type == "array"' /tmp/alerts.json >/dev/null \
+                      && jq -e 'any(.[]; .labels.alertname == "Watchdog")' /tmp/alerts.json >/dev/null; then
+                      echo "[mimir-alerting-smoke] ok: Watchdog alert visible via ${url}"
+                      am_ok=1
+                      break
+                    fi
+                    echo "[mimir-alerting-smoke] alertmanager endpoint responded but Watchdog not visible"
+                    jq -c '[.[]? | .labels.alertname] | unique | .[0:10]' /tmp/alerts.json || true
+                  done
+
+                  if [ "${am_ok}" -ne 1 ]; then
+                    echo "[mimir-alerting-smoke] FAIL: could not confirm Watchdog alert is visible in Alertmanager" >&2
+                    exit 1
+                  fi
+
+                  echo "[mimir-alerting-smoke] ok"

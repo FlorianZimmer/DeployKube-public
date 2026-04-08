@@ -1,0 +1,24 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: platform-forgejo-valkey-smoke-tests
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "15"
+spec:
+  project: platform
+  destination:
+    name: in-cluster
+    namespace: forgejo
+  source:
+    repoURL: https://forgejo-https.forgejo.svc.cluster.local/platform/cluster-config.git
+    targetRevision: main
+    path: components/platform/forgejo/valkey/smoke-tests/base
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - PrunePropagationPolicy=foreground
+      - ServerSideApply=true
+

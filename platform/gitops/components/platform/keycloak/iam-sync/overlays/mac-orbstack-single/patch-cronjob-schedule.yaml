@@ -1,0 +1,8 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: keycloak-iam-sync
+  namespace: keycloak
+spec:
+  schedule: "*/15 * * * *"
+

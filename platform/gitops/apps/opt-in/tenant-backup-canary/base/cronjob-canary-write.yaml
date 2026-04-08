@@ -1,0 +1,64 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: tenant-backup-canary-write
+  namespace: tenant-smoke-demo
+spec:
+  # Suspended by default; run manually via `kubectl create job --from=cronjob/...`.
+  schedule: "19 2 * * *"
+  suspend: true
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 120
+      ttlSecondsAfterFinished: 21600
+      template:
+        metadata:
+          annotations:
+            sidecar.istio.io/inject: "false"
+        spec:
+          serviceAccountName: tenant-backup-canary
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: write
+              image: docker.io/library/busybox:1.36
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -eu
+                  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+                  printf 'tenant-backup-canary payload %s\n' "${ts}" > /data/payload.txt
+                  sha256sum /data/payload.txt > /data/payload.sha256
+                  ls -la /data
+                  echo "[tenant-backup-canary] OK: wrote payload"
+              volumeMounts:
+                - name: data
+                  mountPath: /data
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  memory: 128Mi
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: tenant-backup-canary-data
+

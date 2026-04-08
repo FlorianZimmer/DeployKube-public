@@ -1,0 +1,1726 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minecraft
+  namespace: minecraft-monifactory
+  labels:
+    app: minecraft-monifactory
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: minecraft-monifactory
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: minecraft-monifactory
+    spec:
+      terminationGracePeriodSeconds: 120
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+      initContainers:
+        - name: world-reset
+          image: itzg/minecraft-server:java17
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: minecraft-monifactory-config
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              (set -o pipefail 2>/dev/null) || true
+
+              if [ "${DEPLOYKUBE_WORLD_RESET_ARMED:-false}" != "true" ]; then
+                echo "[world-reset] not armed (DEPLOYKUBE_WORLD_RESET_ARMED!=true); skipping"
+                exit 0
+              fi
+
+              RESET_ID="${DEPLOYKUBE_WORLD_RESET_ID:-}"
+              if [ -z "${RESET_ID}" ]; then
+                echo "[world-reset] missing DEPLOYKUBE_WORLD_RESET_ID" >&2
+                exit 1
+              fi
+
+              MARKER_DIR="/data/.deploykube"
+              MARKER_FILE="${MARKER_DIR}/world-reset-id"
+              ARCHIVE_DIR="/data/world-archive"
+
+              if [ -f "${MARKER_FILE}" ] && [ "$(cat "${MARKER_FILE}" 2>/dev/null || true)" = "${RESET_ID}" ]; then
+                echo "[world-reset] already applied (${RESET_ID})"
+                exit 0
+              fi
+
+              if [ -d /data/world ]; then
+                mkdir -p "${ARCHIVE_DIR}"
+                if [ -e "${ARCHIVE_DIR}/${RESET_ID}" ]; then
+                  echo "[world-reset] archive target exists (${ARCHIVE_DIR}/${RESET_ID}); refusing to overwrite" >&2
+                  exit 1
+                fi
+                echo "[world-reset] archiving existing world -> ${ARCHIVE_DIR}/${RESET_ID}"
+                mv /data/world "${ARCHIVE_DIR}/${RESET_ID}"
+              else
+                echo "[world-reset] no existing /data/world; nothing to archive"
+              fi
+
+              mkdir -p "${MARKER_DIR}"
+              printf '%s' "${RESET_ID}" >"${MARKER_FILE}"
+              echo "[world-reset] done; server will generate a fresh world on next start"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+        - name: world-trim-keep-chunks-once
+          image: itzg/minecraft-server:java17
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: minecraft-monifactory-config
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              (set -o pipefail 2>/dev/null) || true
+
+              TRIM_ID="${DEPLOYKUBE_WORLD_TRIM_ID:-}"
+              KEEP="${DEPLOYKUBE_WORLD_TRIM_KEEP_CHUNKS:-}"
+              if [ -z "${TRIM_ID}" ] || [ -z "${KEEP}" ]; then
+                echo "[world-trim] not configured (missing DEPLOYKUBE_WORLD_TRIM_ID or DEPLOYKUBE_WORLD_TRIM_KEEP_CHUNKS); skipping"
+                exit 0
+              fi
+
+              WORLD_DIR="/data/world"
+              if [ ! -d "${WORLD_DIR}" ]; then
+                echo "[world-trim] missing ${WORLD_DIR}; skipping"
+                exit 0
+              fi
+
+              MARKER_DIR="/data/.deploykube"
+              MARKER_FILE="${MARKER_DIR}/world-trim-${TRIM_ID}.done"
+              MARKER_VALUE="${TRIM_ID}:${KEEP}"
+              if [ -f "${MARKER_FILE}" ] && [ "$(cat "${MARKER_FILE}" 2>/dev/null || true)" = "${MARKER_VALUE}" ]; then
+                echo "[world-trim] already applied (${MARKER_VALUE}); skipping"
+                exit 0
+              fi
+
+              if [ ! -f /scripts/trim_world_keep_chunks.py ]; then
+                echo "[world-trim] missing /scripts/trim_world_keep_chunks.py (ConfigMap mount)" >&2
+                exit 1
+              fi
+
+              ARCHIVE_DIR="${MARKER_DIR}/archive/world-trim-${TRIM_ID}"
+              REPORT_PATH="${MARKER_DIR}/world-trim-${TRIM_ID}-report.json"
+              mkdir -p "${MARKER_DIR}"
+
+              echo "[world-trim] trimming world: keep_overworld_chunks=${KEEP} (this is destructive, but archived under ${ARCHIVE_DIR})"
+              python3 /scripts/trim_world_keep_chunks.py "${WORLD_DIR}" "${KEEP}" "${ARCHIVE_DIR}" "${REPORT_PATH}"
+
+              printf '%s' "${MARKER_VALUE}" >"${MARKER_FILE}"
+              echo "[world-trim] done; report at ${REPORT_PATH}"
+          volumeMounts:
+            - name: nuked-items-ban-scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: data
+              mountPath: /data
+        - name: mods-prune
+          image: itzg/minecraft-server:java17
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              (set -o pipefail 2>/dev/null) || true
+
+              MODS_DIR="/data/mods"
+              if [ ! -d "${MODS_DIR}" ]; then
+                echo "[mods-prune] ${MODS_DIR} missing; skipping"
+                exit 0
+              fi
+
+              # Remove previously-added mods that are no longer desired.
+              # This is intentionally explicit to avoid deleting modpack-managed jars.
+              find "${MODS_DIR}" -maxdepth 1 -type f \( \
+                -name 'create-*.jar' -o \
+                -name 'Steam_Rails-*.jar' -o \
+                -name 'peaceful_hunger-*.jar' \
+              \) -print -delete || true
+
+              echo "[mods-prune] done"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+        - name: emi-override
+          image: itzg/minecraft-server:java17
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: minecraft-monifactory-config
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              (set -o pipefail 2>/dev/null) || true
+
+              URL="${DEPLOYKUBE_EMI_OVERRIDE_URL:-}"
+              SHA="${DEPLOYKUBE_EMI_OVERRIDE_SHA256:-}"
+              if [ -z "${URL}" ]; then
+                echo "[emi-override] not configured (DEPLOYKUBE_EMI_OVERRIDE_URL empty); skipping"
+                exit 0
+              fi
+
+              MODS_DIR="/data/mods"
+              if [ ! -d "${MODS_DIR}" ]; then
+                echo "[emi-override] ${MODS_DIR} missing; skipping"
+                exit 0
+              fi
+
+              WORKDIR="/data/.deploykube/tmp/emi-override"
+              mkdir -p "${WORKDIR}"
+              JAR_TMP="${WORKDIR}/emi.jar"
+
+              echo "[emi-override] downloading ${URL}"
+              curl -fsSL -o "${JAR_TMP}" "${URL}"
+
+              if [ -n "${SHA}" ]; then
+                if command -v sha256sum >/dev/null 2>&1; then
+                  echo "${SHA}  ${JAR_TMP}" | sha256sum -c -
+                elif command -v shasum >/dev/null 2>&1; then
+                  echo "${SHA}  ${JAR_TMP}" | shasum -a 256 -c -
+                else
+                  echo "[emi-override] missing sha256sum/shasum to verify DEPLOYKUBE_EMI_OVERRIDE_SHA256" >&2
+                  exit 1
+                fi
+              fi
+
+              # Ensure only a single EMI jar is present. Keep EMI addons like emi_loot.
+              find "${MODS_DIR}" -maxdepth 1 -type f -name 'emi-*.jar' -print -delete || true
+
+              install -m 0644 "${JAR_TMP}" "${MODS_DIR}/emi-override.jar"
+              echo "[emi-override] installed ${MODS_DIR}/emi-override.jar"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+        - name: monifactory-pack-config-sync
+          image: itzg/minecraft-server:java17
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: minecraft-monifactory-config
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              (set -o pipefail 2>/dev/null) || true
+
+              # Pack-authored configs we consider safe + important to enforce on the persistent PVC.
+              # These are extracted from the pinned server pack zip (CF_FILE_ID) and copied into /data/config.
+              #
+              # Note: this is intentionally an allowlist (NOT "copy all pack config/") because the server pack also
+              # contains client-only configs and assets that we do not want on the dedicated server.
+              CONFIG_ALLOWLIST='
+              NuclearCraft/common.toml
+              NuclearCraft/fission.toml
+              NuclearCraft/fission_fuel/americium.json
+              NuclearCraft/fission_fuel/berkelium.json
+              NuclearCraft/fission_fuel/californium.json
+              NuclearCraft/fission_fuel/curium.json
+              NuclearCraft/fission_fuel/mixed.json
+              NuclearCraft/fission_fuel/neptunium.json
+              NuclearCraft/fission_fuel/plutonium.json
+              NuclearCraft/fission_fuel/thorium.json
+              NuclearCraft/fission_fuel/uranium.json
+              NuclearCraft/heat_sinks/active_cryotheum.json
+              NuclearCraft/heat_sinks/cryotheum.json
+              NuclearCraft/materials.toml
+              NuclearCraft/world.toml
+              ad_astra.jsonc
+              compactmachines-common.toml
+              connectivity.json
+              create-common.toml
+              custom-item-despawn-duration.json
+              ae2/common.json
+              almostunified/unify.json
+              emi_loot_config.toml
+              bountiful/bounty_decrees/engineer.json
+              enderio/base-common.toml
+              enderio/machines-common.toml
+              extendedcrafting-common.toml
+              functionalstorage/functionalstorage-common.toml
+              hammerlib/main.cfg
+              hammerlib/recipes/modded/hammerlib.json
+              hammerlib/recipes/modded/solarflux.json
+              hammerlib/tags/modded/hammerlib.json
+              hammerlib/tags/modded/solarflux.json
+              hostilenetworks.cfg
+              inventoryessentials-common.toml
+              ironjetpacks/jetpacks/conductiveiron.json
+              ironjetpacks/jetpacks/creative.json
+              ironjetpacks/jetpacks/darksoularium.json
+              ironjetpacks/jetpacks/electricalsteel.json
+              ironjetpacks/jetpacks/energetic.json
+              ironjetpacks/jetpacks/fluxed.json
+              ironjetpacks/jetpacks/hardened.json
+              ironjetpacks/jetpacks/leadstone.json
+              ironjetpacks/jetpacks/reinforced.json
+              ironjetpacks/jetpacks/resonant.json
+              ironjetpacks/jetpacks/vibrant.json
+              ironjetpacks-common.toml
+              laserio-common.toml
+              lostcities/common.toml
+              lostcities/profiles/monidefault.json
+              modernfix-mixins.properties
+              quark-common.toml
+              solarflux/custom_panels.js
+              solarflux/main.cfg
+              solarflux/panels.cfg
+              solarflux/recipes.cfg
+              sophisticatedcore-common.toml
+              telepastries-common.toml
+              tempad.jsonc
+              thermal-common.toml
+              ulvcovm-common.toml
+              watercollector-common.toml
+              wirelesschargers-common.toml
+              '
+
+              SYNC_REV="${DEPLOYKUBE_PACK_CONFIG_SYNC_REV:-0}"
+              if [ -z "${SYNC_REV}" ] || [ "${SYNC_REV}" = "0" ]; then
+                echo "[pack-config-sync] not configured (DEPLOYKUBE_PACK_CONFIG_SYNC_REV=0); skipping"
+                exit 0
+              fi
+
+              CURRENT_CF_FILE_ID="${CF_FILE_ID:-}"
+              if [ -z "${CURRENT_CF_FILE_ID}" ]; then
+                echo "[pack-config-sync] missing CF_FILE_ID env" >&2
+                exit 1
+              fi
+              case "${CURRENT_CF_FILE_ID}" in
+                *[!0-9]*)
+                  echo "[pack-config-sync] CF_FILE_ID is not numeric: ${CURRENT_CF_FILE_ID}" >&2
+                  exit 1
+                  ;;
+              esac
+
+              MARKER_DIR="/data/.deploykube"
+              MARKER_FILE="${MARKER_DIR}/monifactory-pack-config-sync"
+              MARKER_VALUE="${CURRENT_CF_FILE_ID}:${SYNC_REV}"
+              EXPECTED="/data/config/telepastries-common.toml"
+              if [ -f "${MARKER_FILE}" ] && [ "$(cat "${MARKER_FILE}" 2>/dev/null || true)" = "${MARKER_VALUE}" ] && [ -f "${EXPECTED}" ]; then
+                echo "[pack-config-sync] already applied for marker=${MARKER_VALUE}; skipping"
+                exit 0
+              fi
+
+              CF_DIR="$((CURRENT_CF_FILE_ID / 1000))"
+              CF_FILE="$((CURRENT_CF_FILE_ID % 1000))"
+              ZIP_URL="https://edge.forgecdn.net/files/${CF_DIR}/${CF_FILE}/server.zip"
+              ZIP_PATH="${MARKER_DIR}/monifactory-server-${CURRENT_CF_FILE_ID}.zip"
+              mkdir -p "${MARKER_DIR}"
+              if [ -s "${ZIP_PATH}" ]; then
+                echo "[pack-config-sync] reusing cached server pack zip at ${ZIP_PATH}"
+              else
+                echo "[pack-config-sync] fetching server pack zip from ${ZIP_URL}"
+                curl -fsSL -o "${ZIP_PATH}" "${ZIP_URL}"
+              fi
+
+              WORKDIR="${MARKER_DIR}/tmp/pack-config-sync"
+              rm -rf "${WORKDIR}"
+              mkdir -p "${WORKDIR}"
+
+              echo "[pack-config-sync] extracting pack configs from server pack zip"
+              UNZIP_CONFIG_ARGS=""
+              for rel in ${CONFIG_ALLOWLIST}; do
+                UNZIP_CONFIG_ARGS="${UNZIP_CONFIG_ARGS} config/${rel}"
+              done
+              if command -v unzip >/dev/null 2>&1; then
+                # Note: we intentionally only sync a small allowlist of config files + all defaultconfigs/.
+                # This avoids accidentally overwriting on-PVC, server-generated configs that the pack doesn't author.
+                # shellcheck disable=SC2086
+                (cd "${WORKDIR}" && unzip -q -o "${ZIP_PATH}" ${UNZIP_CONFIG_ARGS})
+
+                # Extract the entire defaultconfigs/ tree. Some unzip builds return a non-zero exit code when a wildcard
+                # pattern doesn't match exactly, so we validate the expected files afterwards instead of relying on unzip's
+                # exit code alone.
+                (cd "${WORKDIR}" && unzip -q -o "${ZIP_PATH}" \
+                  "defaultconfigs/*" \
+                  "defaultconfigs/*/*" \
+                  "defaultconfigs/*/*/*" \
+                ) || true
+              elif command -v jar >/dev/null 2>&1; then
+                # shellcheck disable=SC2086
+                (cd "${WORKDIR}" && jar xf "${ZIP_PATH}" ${UNZIP_CONFIG_ARGS} "defaultconfigs/")
+              else
+                echo "[pack-config-sync] neither unzip nor jar is available to extract pack configs" >&2
+                exit 1
+              fi
+
+              for rel in ${CONFIG_ALLOWLIST}; do
+                if [ ! -f "${WORKDIR}/config/${rel}" ]; then
+                  echo "[pack-config-sync] missing extracted config/${rel}" >&2
+                  exit 1
+                fi
+              done
+
+              DEFAULTCONFIGS_EXPECTED='
+              create-server.toml
+              ensorcellation-server.toml
+              framedblocks-server.toml
+              lostcities-server.toml
+              sophisticatedbackpacks-server.toml
+              systeams-server.toml
+              thermal-server.toml
+              toolbelt-server.toml
+              waterframes-server.toml
+              ftbessentials-server.snbt
+              ftbchunks/client-config.snbt
+              ftbchunks/ftbchunks-world.snbt
+              ftblibrary/ftblibrary-client.snbt
+              ftbquests/client-config.snbt
+              ftbxmodcompat/ftbxmodcompat.snbt
+              gag/gag.snbt
+              '
+              for rel in ${DEFAULTCONFIGS_EXPECTED}; do
+                if [ ! -f "${WORKDIR}/defaultconfigs/${rel}" ]; then
+                  echo "[pack-config-sync] missing extracted defaultconfigs/${rel}" >&2
+                  exit 1
+                fi
+              done
+
+              TS="$(date -u +"%Y%m%dT%H%M%SZ")"
+              ARCHIVE_DIR="${MARKER_DIR}/archive/pack-config-sync-${TS}-$(printf '%s' "${MARKER_VALUE}" | tr ':' '_')"
+              mkdir -p "${ARCHIVE_DIR}"
+
+              sync_one() {
+                src="$1"
+                dest_rel="$2"
+                dest_base="$3"
+                dest="${dest_base}/${dest_rel}"
+
+                mkdir -p "$(dirname "${dest}")"
+                if [ -f "${dest}" ] && ! cmp -s "${src}" "${dest}"; then
+                  mkdir -p "${ARCHIVE_DIR}/$(dirname "${dest_rel}")"
+                  cp -a "${dest}" "${ARCHIVE_DIR}/${dest_rel}"
+                fi
+                cp -a "${src}" "${dest}"
+              }
+
+              echo "[pack-config-sync] syncing config allowlist -> /data/config"
+              for rel in ${CONFIG_ALLOWLIST}; do
+                sync_one "${WORKDIR}/config/${rel}" "${rel}" "/data/config"
+              done
+
+              if [ -d "${WORKDIR}/defaultconfigs" ]; then
+                echo "[pack-config-sync] syncing pack defaultconfigs -> /data/defaultconfigs"
+                find "${WORKDIR}/defaultconfigs" -type f | while read -r src; do
+                  rel="${src#${WORKDIR}/defaultconfigs/}"
+                  sync_one "${src}" "${rel}" "/data/defaultconfigs"
+                done
+              fi
+
+              printf '%s' "${MARKER_VALUE}" >"${MARKER_FILE}"
+              echo "[pack-config-sync] done (marker=${MARKER_VALUE}); archives under ${ARCHIVE_DIR}"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+        - name: quark-disable-color-runes
+          image: itzg/minecraft-server:java17
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: minecraft-monifactory-config
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              (set -o pipefail 2>/dev/null) || true
+
+              if [ "${ENABLE_DEPLOYKUBE_QUARK_DISABLE_COLOR_RUNES:-true}" != "true" ]; then
+                echo "[quark-disable-color-runes] skipping (disabled)"
+                exit 0
+              fi
+
+              CFG="/data/config/quark-common.toml"
+              if [ ! -f "${CFG}" ]; then
+                echo "[quark-disable-color-runes] missing ${CFG}; skipping"
+                exit 0
+              fi
+
+              # Work around a startup deadlock between Quark's SmithingRuneRecipe and MoreJS/KubeJS during recipe processing.
+              # This disables Quark's Color Runes module on the server (clients will receive server-side recipes anyway).
+              if grep -qE '^[[:space:]]*"Color Runes"[[:space:]]*=' "${CFG}"; then
+                sed -i -E 's/^[[:space:]]*"Color Runes"[[:space:]]*=.*/\t\"Color Runes\" = false/' "${CFG}"
+                echo "[quark-disable-color-runes] set Color Runes=false in ${CFG}"
+              else
+                echo "[quark-disable-color-runes] Color Runes key not found in ${CFG}; skipping"
+              fi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+        - name: laserio-enable-energy-overclocker-tiers
+          image: itzg/minecraft-server:java17
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: minecraft-monifactory-config
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              (set -o pipefail 2>/dev/null) || true
+
+              if [ "${ENABLE_DEPLOYKUBE_LASERIO_ENABLE_ENERGY_OVERCLOCKER_TIERS:-true}" != "true" ]; then
+                echo "[laserio-enable-energy-overclocker-tiers] skipping (disabled)"
+                exit 0
+              fi
+
+              CFG="/data/config/laserio-common.toml"
+              if [ ! -f "${CFG}" ]; then
+                echo "[laserio-enable-energy-overclocker-tiers] missing ${CFG}; skipping"
+                exit 0
+              fi
+
+              # Monifactory expects LaserIO UEL energy overclocker tiers (items laserio:energy_overclocker_card_tier_<n>).
+              # If tiers are not generated on the dedicated server, Forge registry sync will remove them client-side and
+              # LaserIO can crash when building creative tabs.
+              #
+              # Ensure 9 tiers exist (Monifactory scripts reference tiers 1..9).
+              perl -pi -e 's/^\s*max_fe_tiers\s*=.*$/\t\t\tmax_fe_tiers = [1000000, 2000000, 4000000, 8000000, 16000000, 32000000, 64000000, 128000000, 256000000]/' "${CFG}"
+
+              echo "[laserio-enable-energy-overclocker-tiers] ensured max_fe_tiers is non-empty in ${CFG}"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+        - name: monifactory-kubejs-sync
+          image: itzg/minecraft-server:java17
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: minecraft-monifactory-config
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              (set -o pipefail 2>/dev/null) || true
+
+              EXPECTED="/data/kubejs/startup_scripts/_packmode.js"
+              MARKER_DIR="/data/.deploykube"
+              MARKER_FILE="${MARKER_DIR}/monifactory-kubejs-cf-file-id"
+
+              CURRENT_CF_FILE_ID="${CF_FILE_ID:-}"
+              SYNC_REV="${DEPLOYKUBE_KUBEJS_SYNC_REV:-0}"
+              MARKER_VALUE="${CURRENT_CF_FILE_ID}:${SYNC_REV}"
+              if [ -z "${CURRENT_CF_FILE_ID}" ]; then
+                echo "[monifactory-kubejs-sync] missing CF_FILE_ID env" >&2
+                exit 1
+              fi
+
+              enforce_kubejs_server_config() {
+                # KubeJS async streams can deadlock/hang the dedicated server during heavy recipe processing.
+                # Prefer deterministic single-threaded streams on the server.
+                KUBEJS_CFG="/data/kubejs/config/common.properties"
+                if [ -f "${KUBEJS_CFG}" ]; then
+                  if grep -qE '^allowAsyncStreams=' "${KUBEJS_CFG}"; then
+                    sed -i -E 's/^allowAsyncStreams=.*/allowAsyncStreams=false/' "${KUBEJS_CFG}"
+                  else
+                    printf '\nallowAsyncStreams=false\n' >>"${KUBEJS_CFG}"
+                  fi
+                  echo "[monifactory-kubejs-sync] enforced allowAsyncStreams=false in ${KUBEJS_CFG}"
+                fi
+              }
+
+              if [ -f "${MARKER_FILE}" ] && [ "$(cat "${MARKER_FILE}" 2>/dev/null || true)" = "${MARKER_VALUE}" ] && [ -f "${EXPECTED}" ]; then
+                enforce_kubejs_server_config
+                echo "[monifactory-kubejs-sync] kubejs already present for marker=${MARKER_VALUE}; skipping"
+                exit 0
+              fi
+
+              case "${CURRENT_CF_FILE_ID}" in
+                *[!0-9]*)
+                  echo "[monifactory-kubejs-sync] CF_FILE_ID is not numeric: ${CURRENT_CF_FILE_ID}" >&2
+                  exit 1
+                  ;;
+              esac
+
+              CF_DIR="$((CURRENT_CF_FILE_ID / 1000))"
+              CF_FILE="$((CURRENT_CF_FILE_ID % 1000))"
+              ZIP_URL="https://edge.forgecdn.net/files/${CF_DIR}/${CF_FILE}/server.zip"
+              ZIP_PATH="${MARKER_DIR}/monifactory-server-${CURRENT_CF_FILE_ID}.zip"
+              mkdir -p "${MARKER_DIR}"
+              if [ -s "${ZIP_PATH}" ]; then
+                echo "[monifactory-kubejs-sync] reusing cached server pack zip at ${ZIP_PATH}"
+              else
+                echo "[monifactory-kubejs-sync] fetching server pack zip from ${ZIP_URL}"
+                curl -fsSL -o "${ZIP_PATH}" "${ZIP_URL}"
+              fi
+
+              if [ -d "/data/kubejs" ]; then
+                TS="$(date -u +"%Y%m%dT%H%M%SZ")"
+                SAFE_MARKER="$(printf '%s' "${MARKER_VALUE}" | tr ':' '_')"
+                ARCHIVE_DIR="${MARKER_DIR}/archive"
+                ARCHIVE_PATH="${ARCHIVE_DIR}/kubejs-${TS}-${SAFE_MARKER}"
+                mkdir -p "${ARCHIVE_DIR}"
+                echo "[monifactory-kubejs-sync] archiving existing kubejs/ -> ${ARCHIVE_PATH}"
+                mv "/data/kubejs" "${ARCHIVE_PATH}"
+              fi
+
+              echo "[monifactory-kubejs-sync] extracting kubejs/ from server pack zip"
+              if command -v jar >/dev/null 2>&1; then
+                (cd /data && jar xf "${ZIP_PATH}" "kubejs/")
+              elif command -v unzip >/dev/null 2>&1; then
+                (cd /data && unzip -q -o "${ZIP_PATH}" "kubejs/*" "kubejs/**" || true)
+              else
+                echo "[monifactory-kubejs-sync] neither jar nor unzip is available to extract kubejs" >&2
+                exit 1
+              fi
+
+              if [ ! -f "${EXPECTED}" ]; then
+                echo "[monifactory-kubejs-sync] expected KubeJS script missing after extraction (${EXPECTED})" >&2
+                exit 1
+              fi
+
+              enforce_kubejs_server_config
+
+              printf '%s' "${MARKER_VALUE}" >"${MARKER_FILE}"
+              echo "[monifactory-kubejs-sync] kubejs synced for marker=${MARKER_VALUE}"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+        - name: monifactory-quests-sync
+          image: itzg/minecraft-server:java17
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: minecraft-monifactory-config
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              (set -o pipefail 2>/dev/null) || true
+
+              EXPECTED="/data/config/ftbquests/quests/chapters/groundwork.snbt"
+              MARKER_DIR="/data/.deploykube"
+              MARKER_FILE="${MARKER_DIR}/monifactory-quests-cf-file-id"
+
+              CURRENT_CF_FILE_ID="${CF_FILE_ID:-}"
+              SYNC_REV="${DEPLOYKUBE_KUBEJS_SYNC_REV:-0}"
+              MARKER_VALUE="${CURRENT_CF_FILE_ID}:${SYNC_REV}"
+              if [ -z "${CURRENT_CF_FILE_ID}" ]; then
+                echo "[monifactory-quests-sync] missing CF_FILE_ID env" >&2
+                exit 1
+              fi
+
+              if [ -f "${MARKER_FILE}" ] && [ "$(cat "${MARKER_FILE}" 2>/dev/null || true)" = "${MARKER_VALUE}" ] && [ -f "${EXPECTED}" ]; then
+                echo "[monifactory-quests-sync] quests already present for marker=${MARKER_VALUE}; skipping"
+                exit 0
+              fi
+
+              # In our AUTO_CURSEFORGE setup, we have seen incomplete/missing FTB Quests definitions on disk.
+              # Ensure we extract the quest definitions from the Monifactory server pack zip.
+              #
+              case "${CURRENT_CF_FILE_ID}" in
+                *[!0-9]*)
+                  echo "[monifactory-quests-sync] CF_FILE_ID is not numeric: ${CURRENT_CF_FILE_ID}" >&2
+                  exit 1
+                  ;;
+              esac
+
+              CF_DIR="$((CURRENT_CF_FILE_ID / 1000))"
+              CF_FILE="$((CURRENT_CF_FILE_ID % 1000))"
+              ZIP_URL="https://edge.forgecdn.net/files/${CF_DIR}/${CF_FILE}/server.zip"
+              mkdir -p "${MARKER_DIR}"
+              ZIP_PATH="${MARKER_DIR}/monifactory-server-${CURRENT_CF_FILE_ID}.zip"
+              if [ -s "${ZIP_PATH}" ]; then
+                echo "[monifactory-quests-sync] reusing cached server pack zip at ${ZIP_PATH}"
+              else
+                echo "[monifactory-quests-sync] fetching server pack zip from ${ZIP_URL}"
+                curl -fsSL -o "${ZIP_PATH}" "${ZIP_URL}"
+              fi
+
+              if [ -d "/data/config/ftbquests" ]; then
+                TS="$(date -u +"%Y%m%dT%H%M%SZ")"
+                SAFE_MARKER="$(printf '%s' "${MARKER_VALUE}" | tr ':' '_')"
+                ARCHIVE_DIR="${MARKER_DIR}/archive"
+                ARCHIVE_PATH="${ARCHIVE_DIR}/ftbquests-config-${TS}-${SAFE_MARKER}"
+                mkdir -p "${ARCHIVE_DIR}"
+                echo "[monifactory-quests-sync] archiving existing config/ftbquests -> ${ARCHIVE_PATH}"
+                mv "/data/config/ftbquests" "${ARCHIVE_PATH}"
+              fi
+
+              echo "[monifactory-quests-sync] extracting config/ftbquests/ from server pack zip"
+              if command -v jar >/dev/null 2>&1; then
+                (cd /data && jar xf "${ZIP_PATH}" "config/ftbquests/")
+              elif command -v unzip >/dev/null 2>&1; then
+                # Some unzip builds treat path globs differently; match broadly and validate by checking EXPECTED.
+                # We intentionally do not fail the script on unzip's "filename not matched" exit codes.
+                (cd /data && unzip -q -o "${ZIP_PATH}" "*ftbquests*" || true)
+              else
+                echo "[monifactory-quests-sync] neither jar nor unzip is available to extract config/ftbquests" >&2
+                exit 1
+              fi
+
+              if [ ! -f "${EXPECTED}" ]; then
+                echo "[monifactory-quests-sync] expected quest chapter missing after extraction (${EXPECTED})" >&2
+                exit 1
+              fi
+
+              printf '%s' "${MARKER_VALUE}" >"${MARKER_FILE}"
+              echo "[monifactory-quests-sync] quest definitions synced for marker=${MARKER_VALUE}"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+
+        - name: monifactory-packmode
+          image: itzg/minecraft-server:java17
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: minecraft-monifactory-config
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              (set -o pipefail 2>/dev/null) || true
+
+              MODE="${DEPLOYKUBE_MONIFACTORY_MODE:-}"
+              case "${MODE}" in
+                N|H|E) ;;
+                *)
+                  echo "[monifactory-packmode] invalid DEPLOYKUBE_MONIFACTORY_MODE='${MODE}' (expected N/H/E)" >&2
+                  exit 1
+                  ;;
+              esac
+
+              MARKER_DIR="/data/.deploykube"
+              CURRENT_CF_FILE_ID="${CF_FILE_ID:-}"
+              SYNC_REV="${DEPLOYKUBE_KUBEJS_SYNC_REV:-0}"
+              if [ -z "${CURRENT_CF_FILE_ID}" ]; then
+                echo "[monifactory-packmode] missing CF_FILE_ID env" >&2
+                exit 1
+              fi
+              case "${CURRENT_CF_FILE_ID}" in
+                *[!0-9]*)
+                  echo "[monifactory-packmode] CF_FILE_ID is not numeric: ${CURRENT_CF_FILE_ID}" >&2
+                  exit 1
+                  ;;
+              esac
+
+              # monilabs expects the modpack's config-overrides to exist in the server root.
+              # In our setup (AUTO_CURSEFORGE), that directory is not always present; if missing,
+              # we extract it from the Monifactory server pack zip.
+              CONFIG_OVERRIDES_MARKER_FILE="${MARKER_DIR}/monifactory-config-overrides"
+              CONFIG_OVERRIDES_MARKER_VALUE="${CURRENT_CF_FILE_ID}:${SYNC_REV}"
+              if [ -f "${CONFIG_OVERRIDES_MARKER_FILE}" ] && [ "$(cat "${CONFIG_OVERRIDES_MARKER_FILE}" 2>/dev/null || true)" = "${CONFIG_OVERRIDES_MARKER_VALUE}" ] && [ -d "/data/config-overrides/hardmode" ] && [ -d "/data/config-overrides/normal" ]; then
+                echo "[monifactory-packmode] config-overrides already present for marker=${CONFIG_OVERRIDES_MARKER_VALUE}; skipping extract"
+              else
+                CF_DIR="$((CURRENT_CF_FILE_ID / 1000))"
+                CF_FILE="$((CURRENT_CF_FILE_ID % 1000))"
+                ZIP_URL="https://edge.forgecdn.net/files/${CF_DIR}/${CF_FILE}/server.zip"
+                ZIP_PATH="${MARKER_DIR}/monifactory-server-${CURRENT_CF_FILE_ID}.zip"
+                mkdir -p "${MARKER_DIR}"
+                if [ -s "${ZIP_PATH}" ]; then
+                  echo "[monifactory-packmode] reusing cached server pack zip at ${ZIP_PATH}"
+                else
+                  echo "[monifactory-packmode] fetching server pack zip from ${ZIP_URL}"
+                  curl -fsSL -o "${ZIP_PATH}" "${ZIP_URL}"
+                fi
+
+                if [ -d "/data/config-overrides" ]; then
+                  TS="$(date -u +"%Y%m%dT%H%M%SZ")"
+                  SAFE_MARKER="$(printf '%s' "${CONFIG_OVERRIDES_MARKER_VALUE}" | tr ':' '_')"
+                  ARCHIVE_DIR="${MARKER_DIR}/archive"
+                  ARCHIVE_PATH="${ARCHIVE_DIR}/config-overrides-${TS}-${SAFE_MARKER}"
+                  mkdir -p "${ARCHIVE_DIR}"
+                  echo "[monifactory-packmode] archiving existing config-overrides -> ${ARCHIVE_PATH}"
+                  mv "/data/config-overrides" "${ARCHIVE_PATH}"
+                fi
+
+                echo "[monifactory-packmode] extracting config-overrides/ from server pack zip"
+                if command -v unzip >/dev/null 2>&1; then
+                  (cd /data && unzip -q -o "${ZIP_PATH}" "config-overrides/*")
+                elif command -v jar >/dev/null 2>&1; then
+                  (cd /data && jar xf "${ZIP_PATH}" "config-overrides/")
+                else
+                  echo "[monifactory-packmode] neither unzip nor jar is available to extract config-overrides" >&2
+                  exit 1
+                fi
+
+                if [ ! -d "/data/config-overrides/hardmode" ] || [ ! -d "/data/config-overrides/normal" ]; then
+                  echo "[monifactory-packmode] expected config-overrides subfolders missing after extraction" >&2
+                  exit 1
+                fi
+
+                printf '%s' "${CONFIG_OVERRIDES_MARKER_VALUE}" >"${CONFIG_OVERRIDES_MARKER_FILE}"
+                echo "[monifactory-packmode] config-overrides extracted for marker=${CONFIG_OVERRIDES_MARKER_VALUE}"
+              fi
+
+              PACKMODE_MARKER_FILE="${MARKER_DIR}/monifactory-packmode"
+              PACKMODE_MARKER_VALUE="${MODE}:${CURRENT_CF_FILE_ID}:${SYNC_REV}"
+              if [ -f "${PACKMODE_MARKER_FILE}" ] && [ "$(cat "${PACKMODE_MARKER_FILE}" 2>/dev/null || true)" = "${PACKMODE_MARKER_VALUE}" ]; then
+                echo "[monifactory-packmode] already set for marker=${PACKMODE_MARKER_VALUE}; skipping monilabs packmode switch"
+              else
+                JAR="$(ls -1 /data/mods/monilabs-*.jar 2>/dev/null | head -n 1 || true)"
+                if [ -z "${JAR}" ] || [ ! -f "${JAR}" ]; then
+                  echo "[monifactory-packmode] monilabs jar not found at /data/mods/monilabs-*.jar" >&2
+                  exit 1
+                fi
+
+                echo "[monifactory-packmode] setting Monifactory pack mode -> ${MODE}"
+                java -jar "${JAR}" "${MODE}"
+
+                mkdir -p "${MARKER_DIR}"
+                printf '%s' "${PACKMODE_MARKER_VALUE}" >"${PACKMODE_MARKER_FILE}"
+                echo "[monifactory-packmode] done"
+              fi
+
+              # Ensure the mode-specific FTB Quests overrides are applied (Hard Mode differs from base).
+              MODE_DIR="normal"
+              case "${MODE}" in
+                N) MODE_DIR="normal" ;;
+                H) MODE_DIR="hardmode" ;;
+                E) MODE_DIR="expert" ;;
+              esac
+              OVERRIDE_DIR="/data/config-overrides/${MODE_DIR}/ftbquests"
+              if [ -d "${OVERRIDE_DIR}" ]; then
+                DEST_DIR="/data/config/ftbquests"
+                EXPECTED_OVERRIDE="${OVERRIDE_DIR}/quests/chapters/genesis.snbt"
+                EXPECTED_DEST="${DEST_DIR}/quests/chapters/genesis.snbt"
+                if [ -f "${EXPECTED_OVERRIDE}" ]; then
+                  echo "[monifactory-packmode] applying FTB Quests overrides from ${OVERRIDE_DIR} -> ${DEST_DIR}"
+                  mkdir -p "${DEST_DIR}"
+                  cp -a "${OVERRIDE_DIR}/." "${DEST_DIR}/"
+                  if [ ! -f "${EXPECTED_DEST}" ]; then
+                    echo "[monifactory-packmode] expected genesis.snbt missing after override copy (${EXPECTED_DEST})" >&2
+                    exit 1
+                  fi
+                fi
+              fi
+
+              # Apply Bountiful overrides (bounty pools + core config). These are mode-specific (Hard Mode uses
+              # different bounty pools), and Expert currently falls back to Normal.
+              SRC_BOUNTIFUL_DIR="/data/config-overrides/${MODE_DIR}/bountiful"
+              if [ ! -d "${SRC_BOUNTIFUL_DIR}" ]; then
+                SRC_BOUNTIFUL_DIR="/data/config-overrides/normal/bountiful"
+              fi
+              DEST_BOUNTIFUL_DIR="/data/config/bountiful"
+              if [ -d "${SRC_BOUNTIFUL_DIR}" ]; then
+                mkdir -p "${DEST_BOUNTIFUL_DIR}"
+                TS="$(date -u +"%Y%m%dT%H%M%SZ")"
+                SAFE_MARKER="$(printf '%s' "${PACKMODE_MARKER_VALUE}" | tr ':' '_')"
+                ARCHIVE_DIR="${MARKER_DIR}/archive/bountiful-config-${TS}-${SAFE_MARKER}"
+                changed="false"
+
+                find "${SRC_BOUNTIFUL_DIR}" -type f | while read -r src; do
+                  rel="${src#${SRC_BOUNTIFUL_DIR}/}"
+                  dest="${DEST_BOUNTIFUL_DIR}/${rel}"
+                  mkdir -p "$(dirname "${dest}")"
+                  if [ -f "${dest}" ] && ! cmp -s "${src}" "${dest}"; then
+                    if [ "${changed}" = "false" ]; then
+                      mkdir -p "${ARCHIVE_DIR}"
+                      changed="true"
+                    fi
+                    mkdir -p "$(dirname "${ARCHIVE_DIR}/${rel}")"
+                    cp -a "${dest}" "${ARCHIVE_DIR}/${rel}"
+                    echo "[monifactory-packmode] archived existing bountiful/${rel} -> ${ARCHIVE_DIR}/${rel}"
+                  fi
+                  cp -a "${src}" "${dest}"
+                done
+
+                echo "[monifactory-packmode] applied bountiful overrides from ${SRC_BOUNTIFUL_DIR} -> ${DEST_BOUNTIFUL_DIR}"
+              else
+                echo "[monifactory-packmode] missing bountiful overrides dir (${SRC_BOUNTIFUL_DIR}); skipping" >&2
+              fi
+
+              # Ensure the mode-specific GTCEu config is applied on every boot, then let later initContainers
+              # enforce DeployKube-required invariants (e.g., enableFEConverters=false).
+              #
+              # Rationale: GTCEu may rewrite gtceu.yaml on startup when new keys appear; we still want to converge
+              # to the packmode's intended baseline each boot.
+              SRC_GTCEU="/data/config-overrides/${MODE_DIR}/gtceu.yaml"
+              DEST_GTCEU="/data/config/gtceu.yaml"
+              if [ -f "${SRC_GTCEU}" ]; then
+                mkdir -p "/data/config"
+                if [ -f "${DEST_GTCEU}" ] && ! cmp -s "${SRC_GTCEU}" "${DEST_GTCEU}"; then
+                  TS="$(date -u +"%Y%m%dT%H%M%SZ")"
+                  SAFE_MARKER="$(printf '%s' "${PACKMODE_MARKER_VALUE}" | tr ':' '_')"
+                  ARCHIVE_DIR="${MARKER_DIR}/archive/gtceu-config-${TS}-${SAFE_MARKER}"
+                  mkdir -p "${ARCHIVE_DIR}"
+                  cp -a "${DEST_GTCEU}" "${ARCHIVE_DIR}/gtceu.yaml"
+                  echo "[monifactory-packmode] archived existing gtceu.yaml -> ${ARCHIVE_DIR}/gtceu.yaml"
+                fi
+                cp -a "${SRC_GTCEU}" "${DEST_GTCEU}"
+                echo "[monifactory-packmode] applied gtceu.yaml from ${SRC_GTCEU} -> ${DEST_GTCEU}"
+              else
+                echo "[monifactory-packmode] missing ${SRC_GTCEU}; skipping gtceu.yaml mode override" >&2
+              fi
+
+              # Apply MAE2 mode-specific config (Hard Mode disables EU P2P).
+              SRC_MAE2="/data/config-overrides/${MODE_DIR}/mae2-common.toml"
+              DEST_MAE2="/data/config/mae2-common.toml"
+              if [ -f "${SRC_MAE2}" ]; then
+                mkdir -p "/data/config"
+                if [ -f "${DEST_MAE2}" ] && ! cmp -s "${SRC_MAE2}" "${DEST_MAE2}"; then
+                  TS="$(date -u +"%Y%m%dT%H%M%SZ")"
+                  SAFE_MARKER="$(printf '%s' "${PACKMODE_MARKER_VALUE}" | tr ':' '_')"
+                  ARCHIVE_DIR="${MARKER_DIR}/archive/mae2-config-${TS}-${SAFE_MARKER}"
+                  mkdir -p "${ARCHIVE_DIR}"
+                  cp -a "${DEST_MAE2}" "${ARCHIVE_DIR}/mae2-common.toml"
+                  echo "[monifactory-packmode] archived existing mae2-common.toml -> ${ARCHIVE_DIR}/mae2-common.toml"
+                fi
+                cp -a "${SRC_MAE2}" "${DEST_MAE2}"
+                echo "[monifactory-packmode] applied mae2-common.toml from ${SRC_MAE2} -> ${DEST_MAE2}"
+              else
+                echo "[monifactory-packmode] missing ${SRC_MAE2}; skipping mae2-common.toml mode override" >&2
+              fi
+
+              # Apply DifficultyLock mode-specific config (Hard Mode forces Peaceful + locks difficulty).
+              SRC_DIFFICULTYLOCK="/data/config-overrides/${MODE_DIR}/difficultylock.json5"
+              DEST_DIFFICULTYLOCK="/data/config/difficultylock.json5"
+              if [ -f "${SRC_DIFFICULTYLOCK}" ]; then
+                mkdir -p "/data/config"
+                if [ -f "${DEST_DIFFICULTYLOCK}" ] && ! cmp -s "${SRC_DIFFICULTYLOCK}" "${DEST_DIFFICULTYLOCK}"; then
+                  TS="$(date -u +"%Y%m%dT%H%M%SZ")"
+                  SAFE_MARKER="$(printf '%s' "${PACKMODE_MARKER_VALUE}" | tr ':' '_')"
+                  ARCHIVE_DIR="${MARKER_DIR}/archive/difficultylock-config-${TS}-${SAFE_MARKER}"
+                  mkdir -p "${ARCHIVE_DIR}"
+                  cp -a "${DEST_DIFFICULTYLOCK}" "${ARCHIVE_DIR}/difficultylock.json5"
+                  echo "[monifactory-packmode] archived existing difficultylock.json5 -> ${ARCHIVE_DIR}/difficultylock.json5"
+                fi
+                cp -a "${SRC_DIFFICULTYLOCK}" "${DEST_DIFFICULTYLOCK}"
+                echo "[monifactory-packmode] applied difficultylock.json5 from ${SRC_DIFFICULTYLOCK} -> ${DEST_DIFFICULTYLOCK}"
+              else
+                echo "[monifactory-packmode] missing ${SRC_DIFFICULTYLOCK}; skipping difficultylock.json5 mode override" >&2
+              fi
+
+              # Apply GTMUtils mode-specific config.
+              SRC_GTMUTILS="/data/config-overrides/${MODE_DIR}/gtmutils.yaml"
+              DEST_GTMUTILS="/data/config/gtmutils.yaml"
+              if [ -f "${SRC_GTMUTILS}" ]; then
+                mkdir -p "/data/config"
+                if [ -f "${DEST_GTMUTILS}" ] && ! cmp -s "${SRC_GTMUTILS}" "${DEST_GTMUTILS}"; then
+                  TS="$(date -u +"%Y%m%dT%H%M%SZ")"
+                  SAFE_MARKER="$(printf '%s' "${PACKMODE_MARKER_VALUE}" | tr ':' '_')"
+                  ARCHIVE_DIR="${MARKER_DIR}/archive/gtmutils-config-${TS}-${SAFE_MARKER}"
+                  mkdir -p "${ARCHIVE_DIR}"
+                  cp -a "${DEST_GTMUTILS}" "${ARCHIVE_DIR}/gtmutils.yaml"
+                  echo "[monifactory-packmode] archived existing gtmutils.yaml -> ${ARCHIVE_DIR}/gtmutils.yaml"
+                fi
+                cp -a "${SRC_GTMUTILS}" "${DEST_GTMUTILS}"
+                echo "[monifactory-packmode] applied gtmutils.yaml from ${SRC_GTMUTILS} -> ${DEST_GTMUTILS}"
+              else
+                echo "[monifactory-packmode] missing ${SRC_GTMUTILS}; skipping gtmutils.yaml mode override" >&2
+              fi
+
+              # Apply Monilabs mode-specific config.
+              SRC_MONILABS="/data/config-overrides/${MODE_DIR}/monilabs.yaml"
+              DEST_MONILABS="/data/config/monilabs.yaml"
+              if [ -f "${SRC_MONILABS}" ]; then
+                mkdir -p "/data/config"
+                if [ -f "${DEST_MONILABS}" ] && ! cmp -s "${SRC_MONILABS}" "${DEST_MONILABS}"; then
+                  TS="$(date -u +"%Y%m%dT%H%M%SZ")"
+                  SAFE_MARKER="$(printf '%s' "${PACKMODE_MARKER_VALUE}" | tr ':' '_')"
+                  ARCHIVE_DIR="${MARKER_DIR}/archive/monilabs-config-${TS}-${SAFE_MARKER}"
+                  mkdir -p "${ARCHIVE_DIR}"
+                  cp -a "${DEST_MONILABS}" "${ARCHIVE_DIR}/monilabs.yaml"
+                  echo "[monifactory-packmode] archived existing monilabs.yaml -> ${ARCHIVE_DIR}/monilabs.yaml"
+                fi
+                cp -a "${SRC_MONILABS}" "${DEST_MONILABS}"
+                echo "[monifactory-packmode] applied monilabs.yaml from ${SRC_MONILABS} -> ${DEST_MONILABS}"
+              else
+                echo "[monifactory-packmode] missing ${SRC_MONILABS}; skipping monilabs.yaml mode override" >&2
+              fi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+
+        - name: lostcities-disable
+          image: itzg/minecraft-server:java17
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: minecraft-monifactory-config
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              (set -o pipefail 2>/dev/null) || true
+
+              if [ "${DEPLOYKUBE_DISABLE_LOSTCITIES:-false}" != "true" ]; then
+                echo "[lostcities-disable] not enabled (DEPLOYKUBE_DISABLE_LOSTCITIES!=true); skipping"
+                exit 0
+              fi
+
+              # Disable the Lost Cities teleporter bed by making the required block unobtainable in survival.
+              # This config is a Forge SERVER config and lives under world/serverconfig.
+              SERVER_CFG="/data/world/serverconfig/lostcities-server.toml"
+              if [ -f "${SERVER_CFG}" ]; then
+                python3 -c 'import pathlib,re; p=pathlib.Path("'"${SERVER_CFG}"'"); s=p.read_text(encoding="utf-8", errors="replace"); s0=s; s=re.sub("(?m)^[ \\t]*specialBedBlock\\s*=.*$", "specialBedBlock = \"minecraft:barrier\"", s); s=re.sub("(?m)^[\\\\]1minecraft:.*$", "specialBedBlock = \"minecraft:barrier\"", s); s=s if re.search("(?m)^[ \\t]*specialBedBlock\\s*=", s) else s.rstrip("\n") + "\n" + "specialBedBlock = \"minecraft:barrier\"\n"; (p.write_text(s, encoding="utf-8") if s!=s0 else None)'
+                echo "[lostcities-disable] set specialBedBlock=minecraft:barrier in ${SERVER_CFG} (python patch)"
+              else
+                echo "[lostcities-disable] missing ${SERVER_CFG}; skipping teleporter-bed disable" >&2
+              fi
+
+              # Remove the Lost Cities dimension profile mapping so the dimension won't generate cities
+              # even if created by commands/other mods.
+              COMMON_CFG="/data/config/lostcities/common.toml"
+              if [ -f "${COMMON_CFG}" ]; then
+                python3 -c 'import pathlib,re; p=pathlib.Path("'"${COMMON_CFG}"'"); s=p.read_text(encoding="utf-8", errors="replace"); s0=s; s=re.sub("(?m)^[ \\t]*dimensionsWithProfiles\\s*=.*$", "dimensionsWithProfiles = []", s); s=re.sub("(?m)^[\\\\]1 \\[\\].*$", "dimensionsWithProfiles = []", s); s=s if re.search("(?m)^[ \\t]*dimensionsWithProfiles\\s*=", s) else s.rstrip("\n") + "\n" + "dimensionsWithProfiles = []\n"; (p.write_text(s, encoding="utf-8") if s!=s0 else None)'
+                echo "[lostcities-disable] cleared dimensionsWithProfiles in ${COMMON_CFG} (python patch)"
+              else
+                echo "[lostcities-disable] missing ${COMMON_CFG}; skipping dimension mapping disable" >&2
+              fi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+        - name: gtceu-disable-fe-to-eu
+          image: itzg/minecraft-server:java17
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              (set -o pipefail 2>/dev/null) || true
+
+              CFG="/data/config/gtceu.yaml"
+              if [ ! -f "${CFG}" ]; then
+                echo "[gtceu-disable-fe-to-eu] missing ${CFG}" >&2
+                exit 1
+              fi
+
+              if ! grep -Eq '^[[:space:]]*enableFEConverters:' "${CFG}"; then
+                # The Monifactory packmode switcher may rewrite gtceu.yaml; if the key isn't present,
+                # don't block server startup.
+                echo "[gtceu-disable-fe-to-eu] enableFEConverters key not found in ${CFG}; skipping" >&2
+                exit 0
+              fi
+
+              # Disable FE(RF)->EU conversion via converters (request: disable RF->EU conversion).
+              # Note: this does not change EU->FE native conversion settings.
+              sed -i -E 's/^([[:space:]]*enableFEConverters:).*/\\1 false/' "${CFG}"
+
+              echo "[gtceu-disable-fe-to-eu] set enableFEConverters=false in ${CFG}"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+        - name: thermal-disable-ore-worldgen
+          image: itzg/minecraft-server:java17
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: minecraft-monifactory-config
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              (set -o pipefail 2>/dev/null) || true
+
+              if [ "${ENABLE_DEPLOYKUBE_THERMAL_DISABLE_ORE_WORLDGEN:-true}" != "true" ]; then
+                echo "[thermal-disable-ore-worldgen] skipping (disabled)"
+                exit 0
+              fi
+
+              # Monifactory unification intentionally nukes Thermal's raw_* resources (and Thermal niter/sulfur/etc)
+              # by removing all tags and all recipes/uses. If Thermal worldgen stays enabled, players mine
+              # now-useless ores (raw lead/tin/silver, niter, etc). Disable the Thermal ore features so GTCEu ore veins
+              # are the only source of these materials.
+
+              CURRENT_CF_FILE_ID="${CF_FILE_ID:-}"
+              if [ -z "${CURRENT_CF_FILE_ID}" ]; then
+                echo "[thermal-disable-ore-worldgen] missing CF_FILE_ID env" >&2
+                exit 1
+              fi
+              case "${CURRENT_CF_FILE_ID}" in
+                *[!0-9]*)
+                  echo "[thermal-disable-ore-worldgen] CF_FILE_ID is not numeric: ${CURRENT_CF_FILE_ID}" >&2
+                  exit 1
+                  ;;
+              esac
+
+              REV="${DEPLOYKUBE_THERMAL_CONFIG_REV:-0}"
+              MARKER_DIR="/data/.deploykube"
+              MARKER_FILE="${MARKER_DIR}/thermal-config-rev"
+              MARKER_VALUE="${CURRENT_CF_FILE_ID}:${REV}"
+
+              CFG_DIR="/data/config"
+              CFG="${CFG_DIR}/thermal-common.toml"
+
+              mkdir -p "${MARKER_DIR}"
+
+              if [ -f "${MARKER_FILE}" ] && [ "$(cat "${MARKER_FILE}" 2>/dev/null || true)" = "${MARKER_VALUE}" ] && [ -f "${CFG}" ]; then
+                echo "[thermal-disable-ore-worldgen] already applied for marker=${MARKER_VALUE}; skipping"
+                exit 0
+              fi
+
+              # Ensure we have a baseline config file (extract from server pack zip if missing).
+              if [ ! -f "${CFG}" ]; then
+                CF_DIR="$((CURRENT_CF_FILE_ID / 1000))"
+                CF_FILE="$((CURRENT_CF_FILE_ID % 1000))"
+                ZIP_URL="https://edge.forgecdn.net/files/${CF_DIR}/${CF_FILE}/server.zip"
+                ZIP_PATH="${MARKER_DIR}/monifactory-server-${CURRENT_CF_FILE_ID}.zip"
+
+                if [ -s "${ZIP_PATH}" ]; then
+                  echo "[thermal-disable-ore-worldgen] reusing cached server pack zip at ${ZIP_PATH}"
+                else
+                  echo "[thermal-disable-ore-worldgen] fetching server pack zip from ${ZIP_URL}"
+                  curl -fsSL -o "${ZIP_PATH}" "${ZIP_URL}"
+                fi
+
+                mkdir -p "${CFG_DIR}"
+                echo "[thermal-disable-ore-worldgen] extracting config/thermal-common.toml from server pack zip"
+                if command -v jar >/dev/null 2>&1; then
+                  (cd /data && jar xf "${ZIP_PATH}" "config/thermal-common.toml")
+                elif command -v unzip >/dev/null 2>&1; then
+                  (cd /data && unzip -q -o "${ZIP_PATH}" "config/thermal-common.toml")
+                else
+                  echo "[thermal-disable-ore-worldgen] neither jar nor unzip is available to extract thermal-common.toml" >&2
+                  exit 1
+                fi
+              fi
+
+              if [ ! -f "${CFG}" ]; then
+                echo "[thermal-disable-ore-worldgen] missing ${CFG} after extraction attempt" >&2
+                exit 1
+              fi
+
+              # Patch the config to disable Thermal ore features (keep oil sand + rubberwood trees).
+              # We keep the file format stable and only flip boolean flags under specific sections.
+              for feature in Silver Lead Nickel Tin Cinnabar Sulfur Niter; do
+                if ! grep -qE "^\\s*\\[World\\.Features\\.${feature}\\]\\s*$" "${CFG}"; then
+                  echo "[thermal-disable-ore-worldgen] missing section [World.Features.${feature}] in ${CFG}" >&2
+                  exit 1
+                fi
+                if ! perl -0777 -i -pe 's/(\n\s*\[World\.Features\.'"${feature}"'\]\s*\n(?:[^\n]*\n)*?\s*Enable\s*=\s*)(true|false)(\s*\n)/$1false$3/s' "${CFG}"; then
+                  echo "[thermal-disable-ore-worldgen] failed to patch ${feature} Enable flag in ${CFG}" >&2
+                  exit 1
+                fi
+              done
+
+              printf '%s' "${MARKER_VALUE}" >"${MARKER_FILE}"
+              echo "[thermal-disable-ore-worldgen] disabled Thermal ore features for marker=${MARKER_VALUE}"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+        - name: nuclearcraft-disable-ore-worldgen
+          image: itzg/minecraft-server:java17
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: minecraft-monifactory-config
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              (set -o pipefail 2>/dev/null) || true
+
+              if [ "${ENABLE_DEPLOYKUBE_NUCLEARCRAFT_DISABLE_ORE_WORLDGEN:-true}" != "true" ]; then
+                echo "[nuclearcraft-disable-ore-worldgen] skipping (disabled)"
+                exit 0
+              fi
+
+              # Monifactory unification nukes many NuclearCraft resources (tags + recipes/uses removed).
+              # Ensure NuclearCraft's own ore generation is disabled so players cannot mine dead ores.
+
+              CURRENT_CF_FILE_ID="${CF_FILE_ID:-}"
+              if [ -z "${CURRENT_CF_FILE_ID}" ]; then
+                echo "[nuclearcraft-disable-ore-worldgen] missing CF_FILE_ID env" >&2
+                exit 1
+              fi
+              case "${CURRENT_CF_FILE_ID}" in
+                *[!0-9]*)
+                  echo "[nuclearcraft-disable-ore-worldgen] CF_FILE_ID is not numeric: ${CURRENT_CF_FILE_ID}" >&2
+                  exit 1
+                  ;;
+              esac
+
+              REV="${DEPLOYKUBE_NUCLEARCRAFT_OREGEN_REV:-0}"
+              MARKER_DIR="/data/.deploykube"
+              MARKER_FILE="${MARKER_DIR}/nuclearcraft-oregen-rev"
+              MARKER_VALUE="${CURRENT_CF_FILE_ID}:${REV}"
+
+              CFG_DIR="/data/config/NuclearCraft"
+              CFG="${CFG_DIR}/ore_generation.toml"
+
+              mkdir -p "${MARKER_DIR}"
+
+              if [ -f "${MARKER_FILE}" ] && [ "$(cat "${MARKER_FILE}" 2>/dev/null || true)" = "${MARKER_VALUE}" ] && [ -f "${CFG}" ]; then
+                echo "[nuclearcraft-disable-ore-worldgen] already applied for marker=${MARKER_VALUE}; skipping"
+                exit 0
+              fi
+
+              if [ ! -f "${CFG}" ]; then
+                echo "[nuclearcraft-disable-ore-worldgen] missing ${CFG}; skipping (pack may not include NuclearCraft configs yet)"
+                printf '%s' "${MARKER_VALUE}" >"${MARKER_FILE}"
+                exit 0
+              fi
+
+              if [ ! -f /scripts/patch_nuclearcraft_ore_generation.py ]; then
+                echo "[nuclearcraft-disable-ore-worldgen] missing /scripts/patch_nuclearcraft_ore_generation.py (ConfigMap mount)" >&2
+                exit 1
+              fi
+
+              python3 /scripts/patch_nuclearcraft_ore_generation.py "${CFG}"
+
+              printf '%s' "${MARKER_VALUE}" >"${MARKER_FILE}"
+              echo "[nuclearcraft-disable-ore-worldgen] disabled NuclearCraft ore generation in ${CFG} for marker=${MARKER_VALUE}"
+          volumeMounts:
+            - name: nuked-items-ban-scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: data
+              mountPath: /data
+        - name: deploykube-ban-nuked-items
+          image: itzg/minecraft-server:java17
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: minecraft-monifactory-config
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              (set -o pipefail 2>/dev/null) || true
+
+              # Make nuked items unobtainable by chance:
+              # - Filter all LootJS outputs to drop nothing for nuked items (blocks/chests/entities/gameplay).
+              # - Remove nuked items from non-loot sources we control (Hostile Networks data models).
+
+              CURRENT_CF_FILE_ID="${CF_FILE_ID:-}"
+              if [ -z "${CURRENT_CF_FILE_ID}" ]; then
+                echo "[deploykube-ban-nuked-items] missing CF_FILE_ID env" >&2
+                exit 1
+              fi
+              case "${CURRENT_CF_FILE_ID}" in
+                *[!0-9]*)
+                  echo "[deploykube-ban-nuked-items] CF_FILE_ID is not numeric: ${CURRENT_CF_FILE_ID}" >&2
+                  exit 1
+                  ;;
+              esac
+
+              REV="${DEPLOYKUBE_NUKED_ITEMS_BAN_REV:-0}"
+              MARKER_DIR="/data/.deploykube"
+              MARKER_FILE="${MARKER_DIR}/nuked-items-ban-rev"
+              MARKER_VALUE="${CURRENT_CF_FILE_ID}:${REV}"
+
+              KUBEJS_DIR="/data/kubejs"
+              SERVER_SCRIPTS_DIR="${KUBEJS_DIR}/server_scripts/deploykube"
+              LOOT_FILTER_JS="${SERVER_SCRIPTS_DIR}/ban_nuked_items_loot.js"
+
+              mkdir -p "${MARKER_DIR}"
+
+              if [ -f "${MARKER_FILE}" ] && [ "$(cat "${MARKER_FILE}" 2>/dev/null || true)" = "${MARKER_VALUE}" ] && [ -f "${LOOT_FILTER_JS}" ]; then
+                echo "[deploykube-ban-nuked-items] already applied for marker=${MARKER_VALUE}; skipping"
+                exit 0
+              fi
+
+              if [ ! -d "${KUBEJS_DIR}" ]; then
+                echo "[deploykube-ban-nuked-items] missing ${KUBEJS_DIR}; expected monifactory-kubejs-sync to have run" >&2
+                exit 1
+              fi
+
+              if [ ! -f /scripts/ban_nuked_items_loot.js ]; then
+                echo "[deploykube-ban-nuked-items] missing /scripts/ban_nuked_items_loot.js (ConfigMap mount)" >&2
+                exit 1
+              fi
+
+              mkdir -p "${SERVER_SCRIPTS_DIR}"
+              cp /scripts/ban_nuked_items_loot.js "${LOOT_FILTER_JS}"
+
+              if [ -f /scripts/patch_hostilenetworks_thermal_elemental.py ]; then
+                python3 /scripts/patch_hostilenetworks_thermal_elemental.py
+              else
+                echo "[deploykube-ban-nuked-items] missing /scripts/patch_hostilenetworks_thermal_elemental.py; skipping Hostile Networks cleanup" >&2
+              fi
+
+              printf '%s' "${MARKER_VALUE}" >"${MARKER_FILE}"
+              echo "[deploykube-ban-nuked-items] installed LootJS nuked-item filter at ${LOOT_FILTER_JS} for marker=${MARKER_VALUE}"
+          volumeMounts:
+            - name: nuked-items-ban-scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: data
+              mountPath: /data
+        - name: deploykube-mv-maceration-tower
+          image: itzg/minecraft-server:java17
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: minecraft-monifactory-config
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              (set -o pipefail 2>/dev/null) || true
+
+              KUBEJS_DIR="/data/kubejs"
+              STARTUP_DST_DIR="${KUBEJS_DIR}/startup_scripts/deploykube"
+              SERVER_DST_DIR="${KUBEJS_DIR}/server_scripts/deploykube"
+              STARTUP_DST="${STARTUP_DST_DIR}/mv_maceration_tower.js"
+              SERVER_DST="${SERVER_DST_DIR}/mv_maceration_tower.js"
+
+              MARKER_DIR="/data/.deploykube"
+              MARKER_FILE="${MARKER_DIR}/mv-maceration-tower-rev"
+
+              if [ "${ENABLE_DEPLOYKUBE_MV_MACERATION_TOWER:-false}" != "true" ]; then
+                # Ensure this divergence is fully removed when disabled, since the scripts live on the persistent PVC.
+                if [ -d "${KUBEJS_DIR}" ]; then
+                  rm -f "${STARTUP_DST}" "${SERVER_DST}" || true
+                  rmdir "${STARTUP_DST_DIR}" 2>/dev/null || true
+                  rmdir "${SERVER_DST_DIR}" 2>/dev/null || true
+                fi
+                rm -f "${MARKER_FILE}" || true
+                echo "[deploykube-mv-maceration-tower] disabled; removed any previously installed scripts"
+                exit 0
+              fi
+
+              CURRENT_CF_FILE_ID="${CF_FILE_ID:-}"
+              if [ -z "${CURRENT_CF_FILE_ID}" ]; then
+                echo "[deploykube-mv-maceration-tower] missing CF_FILE_ID env" >&2
+                exit 1
+              fi
+              case "${CURRENT_CF_FILE_ID}" in
+                *[!0-9]*)
+                  echo "[deploykube-mv-maceration-tower] CF_FILE_ID is not numeric: ${CURRENT_CF_FILE_ID}" >&2
+                  exit 1
+                  ;;
+              esac
+
+              REV="${DEPLOYKUBE_MV_MACERATION_TOWER_REV:-0}"
+              MARKER_VALUE="${CURRENT_CF_FILE_ID}:${REV}"
+
+              STARTUP_SRC="/scripts/deploykube_mv_maceration_tower_startup.js"
+              SERVER_SRC="/scripts/deploykube_mv_maceration_tower_server.js"
+
+              mkdir -p "${MARKER_DIR}"
+
+              if [ -f "${MARKER_FILE}" ] && [ "$(cat "${MARKER_FILE}" 2>/dev/null || true)" = "${MARKER_VALUE}" ] && [ -f "${STARTUP_DST}" ] && [ -f "${SERVER_DST}" ]; then
+                echo "[deploykube-mv-maceration-tower] already applied for marker=${MARKER_VALUE}; skipping"
+                exit 0
+              fi
+
+              if [ ! -d "${KUBEJS_DIR}" ]; then
+                echo "[deploykube-mv-maceration-tower] missing ${KUBEJS_DIR}; expected monifactory-kubejs-sync to have run" >&2
+                exit 1
+              fi
+
+              if [ ! -f "${STARTUP_SRC}" ] || [ ! -f "${SERVER_SRC}" ]; then
+                echo "[deploykube-mv-maceration-tower] missing expected ConfigMap-mounted scripts under /scripts" >&2
+                ls -la /scripts || true
+                exit 1
+              fi
+
+              mkdir -p "${STARTUP_DST_DIR}" "${SERVER_DST_DIR}"
+              cp "${STARTUP_SRC}" "${STARTUP_DST}"
+              cp "${SERVER_SRC}" "${SERVER_DST}"
+
+              printf '%s' "${MARKER_VALUE}" >"${MARKER_FILE}"
+              echo "[deploykube-mv-maceration-tower] installed MV Maceration Tower scripts for marker=${MARKER_VALUE}"
+          volumeMounts:
+            - name: deploykube-kubejs-scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: data
+              mountPath: /data
+        - name: purge-nuked-items-once
+          image: itzg/minecraft-server:java17
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: minecraft-monifactory-config
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              (set -o pipefail 2>/dev/null) || true
+
+              PURGE_ID="${DEPLOYKUBE_PURGE_NUKED_ITEMS_ID:-}"
+              if [ -z "${PURGE_ID}" ]; then
+                echo "[purge-nuked-items-once] no DEPLOYKUBE_PURGE_NUKED_ITEMS_ID set; skipping"
+                exit 0
+              fi
+
+              CURRENT_CF_FILE_ID="${CF_FILE_ID:-}"
+              if [ -z "${CURRENT_CF_FILE_ID}" ]; then
+                echo "[purge-nuked-items-once] missing CF_FILE_ID env" >&2
+                exit 1
+              fi
+
+              WORLD_DIR="/data/world"
+              KUBEJS_DIR="/data/kubejs"
+
+              if [ ! -d "${WORLD_DIR}" ]; then
+                echo "[purge-nuked-items-once] missing ${WORLD_DIR}; skipping"
+                exit 0
+              fi
+              if [ ! -d "${KUBEJS_DIR}" ]; then
+                echo "[purge-nuked-items-once] missing ${KUBEJS_DIR}; skipping"
+                exit 0
+              fi
+
+              MARKER_DIR="/data/.deploykube"
+              MARKER_FILE="${MARKER_DIR}/purge-nuked-items-${PURGE_ID}.done"
+              MARKER_VALUE="${CURRENT_CF_FILE_ID}:${PURGE_ID}"
+
+              if [ -f "${MARKER_FILE}" ] && [ "$(cat "${MARKER_FILE}" 2>/dev/null || true)" = "${MARKER_VALUE}" ]; then
+                echo "[purge-nuked-items-once] already applied (${MARKER_VALUE}); skipping"
+                exit 0
+              fi
+
+              if [ ! -f /scripts/purge_nuked_items_world.py ]; then
+                echo "[purge-nuked-items-once] missing /scripts/purge_nuked_items_world.py (ConfigMap mount)" >&2
+                exit 1
+              fi
+
+              mkdir -p "${MARKER_DIR}"
+              ARCHIVE_DIR="${MARKER_DIR}/archive/purge-nuked-items-${PURGE_ID}"
+              REPORT_PATH="${MARKER_DIR}/purge-nuked-items-${PURGE_ID}-report.json"
+
+              echo "[purge-nuked-items-once] starting purge id=${PURGE_ID} (this may take a while)..."
+              python3 /scripts/purge_nuked_items_world.py "${WORLD_DIR}" "${KUBEJS_DIR}" "${ARCHIVE_DIR}" "${REPORT_PATH}"
+
+              printf '%s' "${MARKER_VALUE}" >"${MARKER_FILE}"
+              echo "[purge-nuked-items-once] done; report at ${REPORT_PATH}"
+          volumeMounts:
+            - name: nuked-items-ban-scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: data
+              mountPath: /data
+        - name: server-properties-enforce
+          image: itzg/minecraft-server:java17
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: minecraft-monifactory-config
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              (set -o pipefail 2>/dev/null) || true
+
+              PROPS="/data/server.properties"
+              touch "${PROPS}"
+
+              set_prop() {
+                key="$1"
+                value="$2"
+                if grep -qE "^${key}=" "${PROPS}"; then
+                  sed -i -E "s|^${key}=.*|${key}=${value}|" "${PROPS}"
+                else
+                  printf '%s=%s\n' "${key}" "${value}" >>"${PROPS}"
+                fi
+              }
+
+              # Monifactory hard mode expects a forced peaceful server difficulty.
+              # We still treat difficulty as GitOps-controlled, but derive the desired value from the selected pack mode.
+              # (The Monifactory packmode switcher can also adjust difficulty; ensure we converge deterministically.)
+              DESIRED_DIFFICULTY="${DIFFICULTY:-normal}"
+              if [ "${DEPLOYKUBE_MONIFACTORY_MODE:-}" = "H" ]; then
+                DESIRED_DIFFICULTY="peaceful"
+              fi
+              set_prop "difficulty" "${DESIRED_DIFFICULTY}"
+              set_prop "hardcore" "false"
+
+              if [ -n "${LEVEL_SEED:-}" ]; then
+                set_prop "level-seed" "${LEVEL_SEED}"
+              fi
+
+              echo "[server-properties-enforce] applied difficulty=${DESIRED_DIFFICULTY} level-seed=${LEVEL_SEED:-<unset>}"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+        - name: restic-unlock
+          image: itzg/mc-backup:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: RESTIC_REPOSITORY
+              valueFrom:
+                secretKeyRef:
+                  name: minecraft-monifactory-backup
+                  key: RESTIC_REPOSITORY
+            - name: RESTIC_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: minecraft-monifactory-backup
+                  key: RESTIC_PASSWORD
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: minecraft-monifactory-backup
+                  key: S3_ACCESS_KEY
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: minecraft-monifactory-backup
+                  key: S3_SECRET_KEY
+            - name: AWS_DEFAULT_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: minecraft-monifactory-backup
+                  key: S3_REGION
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              echo "[restic-unlock] removing any leftover locks (best-effort)..."
+              restic unlock --remove-all || true
+      containers:
+        - name: minecraft
+          image: itzg/minecraft-server:java17
+          ports:
+            - name: minecraft
+              containerPort: 25565
+              protocol: TCP
+            - name: rcon
+              containerPort: 25575
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: minecraft-monifactory-config
+          env:
+            - name: CF_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: minecraft-monifactory-secrets
+                  key: curseforgeApiKey
+            - name: RCON_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: minecraft-monifactory-secrets
+                  key: rconPassword
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: "1"
+              memory: 10Gi
+            limits:
+              memory: 12Gi
+          readinessProbe:
+            tcpSocket:
+              port: minecraft
+            initialDelaySeconds: 120
+            periodSeconds: 10
+          startupProbe:
+            tcpSocket:
+              port: minecraft
+            # Monifactory cold-start can exceed the liveness initial delay on a busy cluster.
+            # Use startupProbe so liveness doesn't restart the pod during long JVM/modpack startup.
+            initialDelaySeconds: 120
+            periodSeconds: 10
+            failureThreshold: 180 # 30min
+          livenessProbe:
+            tcpSocket:
+              port: minecraft
+            initialDelaySeconds: 600
+            periodSeconds: 20
+        - name: access-seed
+          image: itzg/minecraft-server:java17
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+
+              ACCESS_DIR="/access"
+              WHITELIST_FILE="${ACCESS_DIR}/whitelist"
+              OPS_FILE="${ACCESS_DIR}/ops"
+              MARKER_DIR="/data/.deploykube"
+              MARKER_FILE="${MARKER_DIR}/access-seeded-v1"
+
+              normalize_list() {
+                # one entry per line, trim whitespace, drop blanks and comments
+                sed -e 's/#.*$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^$/d' | sort -u
+              }
+
+              valid_player_names() {
+                # Minecraft usernames are typically 3-16 chars, alnum + underscore.
+                # Filter to avoid acting on RCON status messages / ANSI escapes.
+                grep -E '^[A-Za-z0-9_]{3,16}$' || true
+              }
+
+              while true; do
+                if [ -f "${MARKER_FILE}" ]; then
+                  echo "[access-seed] already seeded (${MARKER_FILE}); staying idle"
+                  sleep 3600
+                  continue
+                fi
+
+                if ! rcon-cli "list" >/dev/null 2>&1; then
+                  echo "[access-seed] waiting for RCON..."
+                  sleep 10
+                  continue
+                fi
+
+                desired_whitelist="$(
+                  if [ -f "${WHITELIST_FILE}" ]; then
+                    cat "${WHITELIST_FILE}" | normalize_list | valid_player_names
+                  fi
+                )"
+                desired_ops="$(
+                  if [ -f "${OPS_FILE}" ]; then
+                    cat "${OPS_FILE}" | normalize_list | valid_player_names
+                  fi
+                )"
+
+                if [ -z "${desired_whitelist}" ] && [ -z "${desired_ops}" ]; then
+                  echo "[access-seed] no seed users found in ${ACCESS_DIR} (missing/empty whitelist + ops); waiting..."
+                  sleep 30
+                  continue
+                fi
+
+                rcon-cli "whitelist on" >/dev/null 2>&1 || true
+
+                # One-time seed only: add initial whitelist entries and ops, then never touch access again.
+                printf '%s\n' "${desired_whitelist}" | normalize_list | while read -r player; do
+                  [ -n "${player}" ] || continue
+                  echo "[access-seed] whitelist add ${player}"
+                  rcon-cli "whitelist add ${player}" >/dev/null 2>&1 || true
+                done
+
+                printf '%s\n' "${desired_ops}" | normalize_list | while read -r player; do
+                  [ -n "${player}" ] || continue
+                  echo "[access-seed] op ${player}"
+                  rcon-cli "op ${player}" >/dev/null 2>&1 || true
+                done
+
+                mkdir -p "${MARKER_DIR}"
+                date -u +"%Y-%m-%dT%H:%M:%SZ" >"${MARKER_FILE}"
+                echo "[access-seed] seed complete; marker written (${MARKER_FILE}); staying idle"
+              done
+          env:
+            - name: RCON_HOST
+              value: "127.0.0.1"
+            - name: RCON_PORT
+              value: "25575"
+            - name: RCON_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: minecraft-monifactory-secrets
+                  key: rconPassword
+          volumeMounts:
+            - name: access
+              mountPath: /access
+              readOnly: true
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+        - name: backup
+          image: itzg/mc-backup:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: BACKUP_METHOD
+              value: restic
+            # Prevent the one-time archived worlds from being included in remote backups by default.
+            # (They still live on the PVC until you explicitly delete them.)
+            - name: EXCLUDES
+              value: "*.jar,cache,logs,*.tmp,world-archive/**"
+            - name: BACKUP_INTERVAL
+              value: 10m
+            - name: INITIAL_DELAY
+              value: 2m
+            - name: RESTIC_RETRY_LOCK
+              value: 5m
+            - name: BACKUP_NAME
+              value: minecraft-monifactory
+            - name: RESTIC_HOSTNAME
+              value: minecraft-monifactory
+            - name: PRUNE_RESTIC_RETENTION
+              value: --keep-within 2h --keep-hourly 24 --keep-daily 7 --keep-weekly 52
+            - name: RESTIC_REPOSITORY
+              valueFrom:
+                secretKeyRef:
+                  name: minecraft-monifactory-backup
+                  key: RESTIC_REPOSITORY
+            - name: RESTIC_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: minecraft-monifactory-backup
+                  key: RESTIC_PASSWORD
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: minecraft-monifactory-backup
+                  key: S3_ACCESS_KEY
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: minecraft-monifactory-backup
+                  key: S3_SECRET_KEY
+            - name: AWS_DEFAULT_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: minecraft-monifactory-backup
+                  key: S3_REGION
+            - name: RCON_HOST
+              value: "127.0.0.1"
+            - name: RCON_PORT
+              value: "25575"
+            - name: RCON_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: minecraft-monifactory-secrets
+                  key: rconPassword
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: minecraft-data
+        - name: nuked-items-ban-scripts
+          configMap:
+            name: minecraft-monifactory-nuked-items-ban-scripts
+            defaultMode: 0444
+        - name: deploykube-kubejs-scripts
+          configMap:
+            name: minecraft-monifactory-deploykube-kubejs-scripts
+            defaultMode: 0444
+        - name: access
+          secret:
+            secretName: minecraft-monifactory-access
+            optional: true

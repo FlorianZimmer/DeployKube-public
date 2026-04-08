@@ -1,0 +1,23 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: shared-rbac
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  project: platform
+  destination:
+    name: in-cluster
+    namespace: rbac-system
+  source:
+    repoURL: https://forgejo-https.forgejo.svc.cluster.local/platform/cluster-config.git
+    targetRevision: main
+    path: components/shared/rbac
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground

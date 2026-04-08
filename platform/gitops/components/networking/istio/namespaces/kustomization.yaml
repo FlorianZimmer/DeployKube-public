@@ -1,0 +1,29 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - argocd.yaml
+  - cert-manager.yaml
+  - cnpg-system.yaml
+  - forgejo.yaml
+  - harbor.yaml
+  - keycloak.yaml
+  - platform-ops.yaml
+  - vault-system.yaml
+  - external-secrets.yaml
+  - step-system.yaml
+  - dns-system.yaml
+  - tests
+
+# Istio sidecar injection traditionally relies on an init container ("istio-init")
+# which requires elevated Linux capabilities (NET_ADMIN/NET_RAW) to program iptables.
+# On clusters with Pod Security Admission defaulting to baseline/restricted (Talos
+# often does), these pods will be rejected unless the namespace is labeled
+# "pod-security.kubernetes.io/enforce=privileged" (or Istio CNI is used).
+patches:
+  - target:
+      kind: Namespace
+    path: patches/patch-psa-privileged.yaml
+  - target:
+      kind: Namespace
+      name: cnpg-system
+    path: patches/patch-cnpg-system-psa-restricted.yaml

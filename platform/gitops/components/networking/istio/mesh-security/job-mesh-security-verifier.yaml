@@ -1,0 +1,49 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mesh-security-verifier
+  namespace: istio-system
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+    argocd.argoproj.io/sync-wave: "4"
+    deploykube.gitops/job: mesh-security-verifier
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 900
+  ttlSecondsAfterFinished: 900
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mesh-security-verifier
+      annotations:
+        sidecar.istio.io/inject: "false"
+        sidecar.istio.io/nativeSidecar: 'true'
+    spec:
+      restartPolicy: Never
+      serviceAccountName: mesh-security-verifier
+      containers:
+      - name: verifier
+        image: registry.example.internal/deploykube/bootstrap-tools:1.4
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/bash
+        - /scripts/mesh-security-verifier.sh
+        env:
+        - name: MESH_NAMESPACES
+          value: "forgejo keycloak vault-system dns-system"
+        - name: MESH_REPORT_PATH
+          value: /tmp/mesh-security/report.json
+        volumeMounts:
+        - name: mesh-security-scripts
+          mountPath: /scripts/mesh-security-verifier.sh
+          subPath: mesh-security-verifier.sh
+        - name: mesh-security-report
+          mountPath: /tmp/mesh-security
+      volumes:
+      - name: mesh-security-scripts
+        configMap:
+          name: mesh-security-verifier-script
+          defaultMode: 0555
+      - name: mesh-security-report
+        emptyDir: {}

@@ -1,0 +1,82 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: harbor-smoke
+  namespace: harbor
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: HookSucceeded,BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "13"
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 300
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      serviceAccountName: harbor-smoke
+      restartPolicy: Never
+      containers:
+        - name: smoke
+          image: registry.example.internal/deploykube/bootstrap-tools:1.4
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - -lc
+            - |
+              set -euo pipefail
+
+              dump_on_error() {
+                echo "[harbor-smoke] diagnostics (best-effort)" >&2
+                kubectl -n harbor get pods -o wide >&2 || true
+                kubectl -n harbor get svc harbor -o yaml >&2 || true
+                kubectl -n harbor get endpoints harbor -o yaml >&2 || true
+              }
+              trap dump_on_error ERR
+
+              echo "[harbor-smoke] reading deployment config + CA bundle"
+              cfg="$(mktemp)"
+              kubectl -n argocd get configmap deploykube-deployment-config -o jsonpath='{.data.deployment-config\.yaml}' > "${cfg}"
+              HARBOR_HOST="$(yq -re '.spec.dns.hostnames.harbor' "${cfg}")"
+              REGISTRY_HOST="$(yq -re '.spec.dns.hostnames.registry' "${cfg}")"
+              test -n "${HARBOR_HOST}"
+              test -n "${REGISTRY_HOST}"
+
+              ca="$(mktemp)"
+              kubectl -n argocd get secret argocd-oidc-ca -o jsonpath='{.data.ca\.crt}' | base64 -d > "${ca}"
+              test -s "${ca}"
+
+              echo "[harbor-smoke] harbor service endpoints exist"
+              kubectl -n harbor get endpoints harbor -o jsonpath='{.subsets[0].addresses[0].ip}' >/dev/null
+
+              echo "[harbor-smoke] gateway harbor ping"
+              curl --cacert "${ca}" -fsS \
+                --retry 10 \
+                --retry-delay 1 \
+                --retry-all-errors \
+                --retry-connrefused \
+                --connect-to "${HARBOR_HOST}:443:public-gateway-istio.istio-system.svc.cluster.local:443" \
+                "https://${HARBOR_HOST}/api/v2.0/ping" | grep -qi "pong"
+
+              echo "[harbor-smoke] registry /v2 responds (expect 200 or 401)"
+              code="$(curl --cacert "${ca}" -sS -o /dev/null -w '%{http_code}' \
+                --connect-to "${REGISTRY_HOST}:443:public-gateway-istio.istio-system.svc.cluster.local:443" \
+                "https://${REGISTRY_HOST}/v2/")"
+              echo "[harbor-smoke] /v2 status: ${code}"
+              test "${code}" = "200" -o "${code}" = "401"
+
+              echo "[harbor-smoke] admin API auth (best-effort)"
+              admin_pw="$(kubectl -n harbor get secret harbor-admin-password -o jsonpath='{.data.HARBOR_ADMIN_PASSWORD}' | base64 -d)"
+              test -n "${admin_pw}"
+              curl --cacert "${ca}" -fsS \
+                --retry 10 \
+                --retry-delay 1 \
+                --retry-all-errors \
+                --retry-connrefused \
+                --connect-to "${HARBOR_HOST}:443:public-gateway-istio.istio-system.svc.cluster.local:443" \
+                -u "admin:${admin_pw}" \
+                "https://${HARBOR_HOST}/api/v2.0/users/current" | jq -e '.username == "admin"' >/dev/null
+
+              echo "[harbor-smoke] ok"

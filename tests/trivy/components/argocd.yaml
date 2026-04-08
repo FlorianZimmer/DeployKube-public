@@ -1,0 +1,25 @@
+schemaVersion: v1alpha1
+description: Component-owned Trivy targets for Argo CD.
+watch_paths:
+  - platform/gitops/artifacts/runtime-artifact-index.yaml
+  - platform/gitops/components/platform/argocd
+  - tests/trivy/components/argocd.yaml
+image_targets:
+  - id: argocd-server
+    artifact_catalog: runtime-artifacts
+    artifact_name: argocd-server
+  - id: argocd-dex
+    artifact_catalog: runtime-artifacts
+    artifact_name: argocd-dex
+  - id: argocd-redis
+    artifact_catalog: runtime-artifacts
+    artifact_name: argocd-redis
+  - id: argocd-haproxy
+    artifact_catalog: runtime-artifacts
+    artifact_name: argocd-haproxy
+  - id: argocd-ui-extensions
+    artifact_catalog: runtime-artifacts
+    artifact_name: argocd-ui-extensions
+config_targets:
+  - id: argocd-manifests
+    path: platform/gitops/components/platform/argocd

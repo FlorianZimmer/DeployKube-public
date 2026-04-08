@@ -1,0 +1,147 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: tenant-ingress-gateway-api-guardrails
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  admission: true
+  validationFailureAction: Enforce
+  background: false
+  emitWarning: false
+  rules:
+    - name: deny-tenant-gateways
+      match:
+        any:
+          - resources:
+              kinds: ["Gateway"]
+              namespaceSelector:
+                matchLabels:
+                  darksite.cloud/rbac-profile: tenant
+      skipBackgroundRequests: true
+      validate:
+        failureAction: Enforce
+        allowExistingViolations: true
+        cel:
+          generate: false
+          expressions:
+            - expression: "!has(object.spec)"
+              message: "Tenants may not create Gateway resources (Gateways are platform-managed; tenants publish via HTTPRoute only)."
+
+    - name: deny-tenant-referencegrants
+      match:
+        any:
+          - resources:
+              kinds: ["ReferenceGrant"]
+              namespaceSelector:
+                matchLabels:
+                  darksite.cloud/rbac-profile: tenant
+      skipBackgroundRequests: true
+      validate:
+        failureAction: Enforce
+        allowExistingViolations: true
+        cel:
+          generate: false
+          expressions:
+            - expression: "!has(object.spec)"
+              message: "Tenants may not create ReferenceGrant objects (cross-namespace backend references are disabled by default)."
+
+    - name: deny-httproute-parentref-public-gateway
+      match:
+        any:
+          - resources:
+              kinds: ["HTTPRoute"]
+              namespaceSelector:
+                matchLabels:
+                  darksite.cloud/rbac-profile: tenant
+      skipBackgroundRequests: true
+      validate:
+        failureAction: Enforce
+        allowExistingViolations: true
+        cel:
+          generate: false
+          expressions:
+            - expression: "!has(object.spec) || !has(object.spec.parentRefs) || object.spec.parentRefs.all(pr, pr.name != 'public-gateway')"
+              message: "Tenant HTTPRoutes must not attach to Gateway/public-gateway (route hijack prevention)."
+
+    - name: require-httproute-parentref-tenant-gateway
+      match:
+        any:
+          - resources:
+              kinds: ["HTTPRoute"]
+              namespaceSelector:
+                matchLabels:
+                  darksite.cloud/rbac-profile: tenant
+      skipBackgroundRequests: true
+      validate:
+        failureAction: Enforce
+        allowExistingViolations: true
+        cel:
+          generate: false
+          variables:
+            - name: tenantId
+              expression: "'darksite.cloud/tenant-id' in namespaceObject.metadata.labels ? namespaceObject.metadata.labels['darksite.cloud/tenant-id'] : ''"
+          expressions:
+            - expression: |
+                !has(object.spec) ||
+                !has(object.spec.parentRefs) ||
+                variables.tenantId != '' &&
+                object.spec.parentRefs.size() > 0 &&
+                object.spec.parentRefs.all(pr,
+                  pr.name == 'tenant-' + variables.tenantId + '-gateway' &&
+                  has(pr.namespace) && pr.namespace == 'istio-system' &&
+                  (!has(pr.group) || pr.group == 'gateway.networking.k8s.io') &&
+                  (!has(pr.kind) || pr.kind == 'Gateway') &&
+                  (!has(pr.sectionName) || pr.sectionName in ['http', 'https'])
+                )
+              message: "Tenant HTTPRoutes must attach only to the org's tenant gateway (Gateway/istio-system/tenant-<tenantId>-gateway; sectionName must be http/https when set)."
+
+    - name: deny-httproute-cross-namespace-backendrefs
+      match:
+        any:
+          - resources:
+              kinds: ["HTTPRoute"]
+              namespaceSelector:
+                matchLabels:
+                  darksite.cloud/rbac-profile: tenant
+      skipBackgroundRequests: true
+      validate:
+        failureAction: Enforce
+        allowExistingViolations: true
+        cel:
+          generate: false
+          expressions:
+            - expression: |
+                !has(object.spec) ||
+                !has(object.spec.rules) ||
+                object.spec.rules.all(r,
+                  !has(r.backendRefs) ||
+                  r.backendRefs.all(br, !has(br.namespace) || br.namespace == namespaceObject.metadata.name)
+                )
+              message: "Tenant HTTPRoutes must not use cross-namespace backendRefs by default."
+
+    - name: require-httproute-hostname-ownership
+      match:
+        any:
+          - resources:
+              kinds: ["HTTPRoute"]
+              namespaceSelector:
+                matchLabels:
+                  darksite.cloud/rbac-profile: tenant
+      skipBackgroundRequests: true
+      validate:
+        failureAction: Enforce
+        allowExistingViolations: true
+        cel:
+          generate: false
+          variables:
+            - name: tenantId
+              expression: "'darksite.cloud/tenant-id' in namespaceObject.metadata.labels ? namespaceObject.metadata.labels['darksite.cloud/tenant-id'] : ''"
+          expressions:
+            - expression: |
+                !has(object.spec) ||
+                variables.tenantId != '' &&
+                has(object.spec.hostnames) &&
+                object.spec.hostnames.size() > 0 &&
+                object.spec.hostnames.all(h, h.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?\\.' + variables.tenantId + '\\.workloads\\..*\\.internal\\.[a-z0-9.-]+$'))
+              message: "Tenant HTTPRoutes must declare owned hostnames under the tenant workloads zone (<app>.<tenantId>.workloads.<baseDomain>)."

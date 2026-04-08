@@ -1,0 +1,103 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: harbor-oidc-config
+  namespace: harbor
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: HookSucceeded,BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "12.5"
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 300
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      serviceAccountName: harbor-oidc-config
+      restartPolicy: Never
+      containers:
+        - name: configure
+          image: registry.example.internal/deploykube/bootstrap-tools:1.4
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - -lc
+            - |
+              set -euo pipefail
+
+              echo "[harbor-oidc-config] reading deployment config"
+              cfg="$(mktemp)"
+              ca="$(mktemp)"
+              payload="$(mktemp)"
+              trap 'rm -f "${cfg}" "${ca}" "${payload}"' EXIT
+
+              kubectl -n argocd get configmap deploykube-deployment-config -o jsonpath='{.data.deployment-config\.yaml}' > "${cfg}"
+              HARBOR_HOST="$(yq -re '.spec.dns.hostnames.harbor' "${cfg}")"
+              KEYCLOAK_HOST="$(yq -re '.spec.dns.hostnames.keycloak' "${cfg}")"
+              test -n "${HARBOR_HOST}"
+              test -n "${KEYCLOAK_HOST}"
+
+              kubectl -n harbor get secret harbor-oidc-ca -o jsonpath='{.data.ca\.crt}' | base64 -d > "${ca}"
+              test -s "${ca}"
+
+              echo "[harbor-oidc-config] reading OIDC + admin credentials"
+              admin_pw="$(kubectl -n harbor get secret harbor-admin-password -o jsonpath='{.data.HARBOR_ADMIN_PASSWORD}' | base64 -d)"
+              oidc_client_id="$(kubectl -n harbor get secret harbor-oidc-client -o jsonpath='{.data.clientId}' | base64 -d)"
+              oidc_client_secret="$(kubectl -n harbor get secret harbor-oidc-client -o jsonpath='{.data.clientSecret}' | base64 -d)"
+              test -n "${admin_pw}"
+              test -n "${oidc_client_id}"
+              test -n "${oidc_client_secret}"
+
+              echo "[harbor-oidc-config] waiting for Harbor service endpoint"
+              kubectl -n harbor get endpoints harbor -o jsonpath='{.subsets[0].addresses[0].ip}' >/dev/null
+
+              jq -n \
+                --arg endpoint "https://${KEYCLOAK_HOST}" \
+                --arg client_id "${oidc_client_id}" \
+                --arg client_secret "${oidc_client_secret}" \
+                '{
+                  "auth_mode":"oidc_auth",
+                  "oidc_name":"Keycloak",
+                  "oidc_endpoint":$endpoint,
+                  "oidc_client_id":$client_id,
+                  "oidc_client_secret":$client_secret,
+                  "oidc_scope":"openid,profile,email,groups",
+                  "oidc_groups_claim":"groups",
+                  "oidc_user_claim":"preferred_username",
+                  "oidc_admin_group":"dk-platform-admins",
+                  "oidc_auto_onboard":false,
+                  "oidc_verify_cert":true
+                }' > "${payload}"
+
+              echo "[harbor-oidc-config] applying Harbor OIDC configuration"
+              curl --cacert "${ca}" -fsS \
+                --retry 10 \
+                --retry-delay 1 \
+                --retry-all-errors \
+                --retry-connrefused \
+                -u "admin:${admin_pw}" \
+                -H 'Content-Type: application/json' \
+                -X PUT \
+                "https://${HARBOR_HOST}/api/v2.0/configurations" \
+                --data @"${payload}" >/dev/null
+
+              echo "[harbor-oidc-config] verifying Harbor OIDC configuration"
+              cfg_json="$(curl --cacert "${ca}" -fsS -u "admin:${admin_pw}" "https://${HARBOR_HOST}/api/v2.0/configurations")"
+              auth_mode="$(printf '%s' "${cfg_json}" | jq -r '.auth_mode.value // empty')"
+              admin_group="$(printf '%s' "${cfg_json}" | jq -r '.oidc_admin_group.value // empty')"
+              endpoint="$(printf '%s' "${cfg_json}" | jq -r '.oidc_endpoint.value // empty')"
+              client_id="$(printf '%s' "${cfg_json}" | jq -r '.oidc_client_id.value // empty')"
+              groups_claim="$(printf '%s' "${cfg_json}" | jq -r '.oidc_groups_claim.value // empty')"
+              verify_cert="$(printf '%s' "${cfg_json}" | jq -r '.oidc_verify_cert.value // empty')"
+
+              test "${auth_mode}" = "oidc_auth"
+              test "${admin_group}" = "dk-platform-admins"
+              test "${endpoint}" = "https://${KEYCLOAK_HOST}"
+              test "${client_id}" = "${oidc_client_id}"
+              test "${groups_claim}" = "groups"
+              test "${verify_cert}" = "true"
+
+              echo "[harbor-oidc-config] ok"

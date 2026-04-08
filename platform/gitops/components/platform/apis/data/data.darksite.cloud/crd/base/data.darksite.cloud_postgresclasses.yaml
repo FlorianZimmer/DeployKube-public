@@ -1,0 +1,152 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: postgresclasses.data.darksite.cloud
+spec:
+  group: data.darksite.cloud
+  names:
+    kind: PostgresClass
+    listKind: PostgresClassList
+    plural: postgresclasses
+    singular: postgresclass
+    shortNames:
+      - pgclass
+  scope: Cluster
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          required:
+            - spec
+          properties:
+            spec:
+              type: object
+              required:
+                - engine
+                - compute
+                - storage
+                - backup
+              properties:
+                serviceLevel:
+                  type: string
+                engine:
+                  type: object
+                  required:
+                    - family
+                    - majorVersion
+                    - imageName
+                  properties:
+                    family:
+                      type: string
+                    majorVersion:
+                      type: integer
+                      minimum: 1
+                    imageName:
+                      type: string
+                      minLength: 1
+                compute:
+                  type: object
+                  required:
+                    - instances
+                  properties:
+                    instances:
+                      type: integer
+                      minimum: 1
+                    resources:
+                      type: object
+                      properties:
+                        requests:
+                          type: object
+                          properties:
+                            cpu:
+                              type: string
+                            memory:
+                              type: string
+                        limits:
+                          type: object
+                          properties:
+                            cpu:
+                              type: string
+                            memory:
+                              type: string
+                    sharedBuffers:
+                      type: string
+                    maxConnections:
+                      type: integer
+                      minimum: 0
+                    enableSuperuserAccess:
+                      type: boolean
+                storage:
+                  type: object
+                  required:
+                    - data
+                  properties:
+                    data:
+                      type: object
+                      required:
+                        - size
+                      properties:
+                        size:
+                          type: string
+                          minLength: 1
+                        storageClassName:
+                          type: string
+                    wal:
+                      type: object
+                      properties:
+                        size:
+                          type: string
+                          minLength: 1
+                        storageClassName:
+                          type: string
+                backup:
+                  type: object
+                  required:
+                    - mode
+                  properties:
+                    mode:
+                      type: string
+                      enum:
+                        - pgDump
+                        - Disabled
+                    schedule:
+                      type: string
+                    retentionPolicy:
+                      type: string
+                    skipReason:
+                      type: string
+                    volume:
+                      type: object
+                      properties:
+                        size:
+                          type: string
+                          minLength: 1
+                        storageClassName:
+                          type: string
+                monitoring:
+                  type: object
+                  properties:
+                    enablePodMonitor:
+                      type: boolean
+                service:
+                  type: object
+                  properties:
+                    accessMode:
+                      type: string
+                      enum:
+                        - SameNamespace
+            status:
+              type: object
+              properties:
+                observedGeneration:
+                  type: integer
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+      subresources:
+        status: {}

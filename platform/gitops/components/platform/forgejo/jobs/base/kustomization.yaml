@@ -1,0 +1,29 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: forgejo
+resources:
+  - ../../../../shared/bootstrap-scripts/istio-native-exit
+  - job-cache-switch.yaml
+  - job-admin-vault-sync.yaml
+  - job-db-seed.yaml
+  - job-db-switch.yaml
+  - job-oidc-config.yaml
+  - networkpolicy-forgejo-ingress.yaml
+  - networkpolicy-forgejo-egress.yaml
+  - poddisruptionbudget-forgejo.yaml
+configMapGenerator:
+  - name: forgejo-admin-vault-sync-script
+    files:
+      - admin-vault-sync.sh
+  - name: forgejo-cache-switch-script
+    files:
+      - cache-switch.sh
+  - name: forgejo-db-job-scripts
+    files:
+      - db-seed.sh
+      - db-switch.sh
+  - name: forgejo-oidc-config-script
+    files:
+      - oidc-config.sh
+generatorOptions:
+  disableNameSuffixHash: true

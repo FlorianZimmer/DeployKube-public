@@ -1,0 +1,129 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: access-guardrails-smoke-oidc-runtime
+  namespace: access-guardrails-system
+  labels:
+    sidecar.istio.io/inject: "false"
+spec:
+  # Patched per-environment.
+  schedule: "0 */6 * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      ttlSecondsAfterFinished: 3600
+      backoffLimit: 0
+      activeDeadlineSeconds: 300
+      template:
+        metadata:
+          annotations:
+            sidecar.istio.io/inject: "false"
+        spec:
+          serviceAccountName: access-guardrails-oidc-runtime-smoke
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: smoke
+              image: registry.example.internal/deploykube/bootstrap-tools:1.4
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+                runAsNonRoot: true
+                runAsUser: 65534
+                runAsGroup: 65534
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  memory: 256Mi
+              env:
+                # Patched per-environment.
+                - name: OIDC_ISSUER_URL
+                  value: https://keycloak.placeholder.invalid/realms/deploykube-admin
+                - name: OIDC_CLIENT_ID
+                  value: k8s-oidc-runtime-smoke
+                - name: EXPECTED_GROUP
+                  value: dk-platform-admins
+                - name: HOME
+                  value: /tmp
+                - name: OIDC_CLIENT_SECRET
+                  valueFrom:
+                    secretKeyRef:
+                      name: k8s-oidc-runtime-smoke-client
+                      key: clientSecret
+              volumeMounts:
+                - name: root-ca
+                  mountPath: /etc/deploykube-ca
+                  readOnly: true
+              command:
+                - /bin/bash
+                - -lc
+                - |
+                  set -euo pipefail
+
+                  issuer="${OIDC_ISSUER_URL:?missing OIDC_ISSUER_URL}"
+                  client_id="${OIDC_CLIENT_ID:?missing OIDC_CLIENT_ID}"
+                  client_secret="${OIDC_CLIENT_SECRET:?missing OIDC_CLIENT_SECRET}"
+                  expected_group="${EXPECTED_GROUP:?missing EXPECTED_GROUP}"
+
+                  token_url="${issuer%/}/protocol/openid-connect/token"
+
+                  echo "[oidc-runtime] requesting access token (client_credentials)"
+                  token="$(
+                    curl -sSf -X POST \
+                      --cacert /etc/deploykube-ca/ca.crt \
+                      --data-urlencode "grant_type=client_credentials" \
+                      --data-urlencode "client_id=${client_id}" \
+                      --data-urlencode "client_secret=${client_secret}" \
+                      --data-urlencode "scope=openid" \
+                      "${token_url}" | jq -r '.access_token // empty'
+                  )"
+                  if [[ -z "${token}" ]]; then
+                    echo "[oidc-runtime] FAIL: Keycloak token endpoint returned no access_token" >&2
+                    exit 1
+                  fi
+
+                  kube_ca="/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+                  kube_server="https://kubernetes.default.svc"
+                  kubectl_args=(
+                    --server="${kube_server}"
+                    --certificate-authority="${kube_ca}"
+                    --token="${token}"
+                  )
+
+                  echo "[oidc-runtime] kubectl auth whoami"
+                  whoami="$(kubectl "${kubectl_args[@]}" auth whoami 2>&1)" || {
+                    printf '%s\n' "${whoami}" >&2
+                    echo "[oidc-runtime] FAIL: whoami failed" >&2
+                    exit 1
+                  }
+                  printf '%s\n' "${whoami}"
+
+                  if ! printf '%s\n' "${whoami}" | grep -qE "\\b${expected_group}\\b"; then
+                    echo "[oidc-runtime] FAIL: expected group '${expected_group}' not present in whoami output" >&2
+                    exit 1
+                  fi
+
+                  echo "[oidc-runtime] RBAC evaluation (kubectl auth can-i)"
+                  kubectl "${kubectl_args[@]}" auth can-i list namespaces | grep -q "^yes$"
+                  kubectl "${kubectl_args[@]}" auth can-i get clusterrolebinding/platform-admins-cluster-admin | grep -q "^yes$"
+                  kubectl "${kubectl_args[@]}" auth can-i create validatingwebhookconfigurations.admissionregistration.k8s.io | grep -q "^yes$"
+
+                  echo "[oidc-runtime] success"
+          volumes:
+            - name: root-ca
+              configMap:
+                name: access-guardrails-root-ca
+                items:
+                  - key: ca.crt
+                    path: ca.crt

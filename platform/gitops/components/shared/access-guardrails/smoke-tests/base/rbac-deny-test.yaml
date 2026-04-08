@@ -1,0 +1,56 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: access-guardrails-smoke
+  namespace: access-guardrails-system
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: access-guardrails-smoke
+  namespace: access-guardrails-system
+rules:
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: access-guardrails-smoke
+  namespace: access-guardrails-system
+subjects:
+  - kind: ServiceAccount
+    name: access-guardrails-smoke
+    namespace: access-guardrails-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: access-guardrails-smoke
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: access-guardrails-smoke-bind-view
+rules:
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles"]
+    resourceNames: ["view"]
+    verbs: ["bind"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: access-guardrails-smoke-bind-view
+subjects:
+  - kind: ServiceAccount
+    name: access-guardrails-smoke
+    namespace: access-guardrails-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: access-guardrails-smoke-bind-view

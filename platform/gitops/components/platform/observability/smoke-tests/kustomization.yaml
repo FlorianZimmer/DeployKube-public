@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: observability
+resources:
+  - serviceaccount-offenders-snapshot.yaml
+  - rbac-offenders-snapshot.yaml
+  - cronjob-log-smoke.yaml
+  - cronjob-trace-smoke.yaml
+  - cronjob-metric-smoke.yaml
+  - cronjob-loki-ring-smoke.yaml
+  - cronjob-mimir-ring-smoke.yaml
+  - cronjob-alloy-metrics-scrape-smoke.yaml
+  - cronjob-mimir-alerting-pipeline-smoke.yaml
+  - cronjob-offenders-snapshot.yaml

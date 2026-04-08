@@ -1,0 +1,23 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: platform-keycloak-realms
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2.5"
+spec:
+  project: platform
+  destination:
+    name: in-cluster
+    namespace: keycloak
+  source:
+    repoURL: https://forgejo-https.forgejo.svc.cluster.local/platform/cluster-config.git
+    targetRevision: main
+    path: components/platform/keycloak/realms
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ApplyOutOfSyncOnly=true

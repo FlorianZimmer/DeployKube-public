@@ -1,0 +1,23 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: platform
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-100"
+spec:
+  description: DeployKube platform applications
+  sourceRepos:
+    - https://forgejo-https.forgejo.svc.cluster.local/platform/cluster-config.git
+    # Platform-owned upstream Helm repos (platform Applications use repoURL=... + chart=...).
+    - https://metallb.github.io/metallb
+    - https://kubernetes-sigs.github.io/nfs-subdir-external-provisioner
+  destinations:
+    - name: in-cluster
+      namespace: "*"
+  clusterResourceWhitelist:
+    - group: "*"
+      kind: "*"
+  namespaceResourceWhitelist:
+    - group: "*"
+      kind: "*"

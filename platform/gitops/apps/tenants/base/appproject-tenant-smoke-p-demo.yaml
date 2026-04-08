@@ -1,0 +1,90 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: tenant-smoke-p-demo
+  namespace: argocd
+  labels:
+    darksite.cloud/tenant-id: smoke
+    darksite.cloud/project-id: demo
+  annotations:
+    argocd.argoproj.io/sync-wave: "-98"
+spec:
+  description: Tenant project smoke/demo
+
+  # Tenant self-service (no per-tenant growth in global argocd-rbac-cm):
+  # Bind Keycloak groups to Argo roles inside the tenant AppProject.
+  roles:
+    - name: admin
+      description: Tenant project admin (smoke/demo)
+      policies:
+        - p, proj:tenant-smoke-p-demo:admin, applications, get, tenant-smoke-p-demo/*, allow
+        - p, proj:tenant-smoke-p-demo:admin, applications, sync, tenant-smoke-p-demo/*, allow
+        - p, proj:tenant-smoke-p-demo:admin, logs, get, tenant-smoke-p-demo/*, allow
+        - p, proj:tenant-smoke-p-demo:admin, projects, get, tenant-smoke-p-demo, allow
+      groups:
+        - dk-tenant-smoke-project-demo-admins
+
+    - name: developer
+      description: Tenant project developer (smoke/demo)
+      policies:
+        - p, proj:tenant-smoke-p-demo:developer, applications, get, tenant-smoke-p-demo/*, allow
+        - p, proj:tenant-smoke-p-demo:developer, applications, sync, tenant-smoke-p-demo/*, allow
+        - p, proj:tenant-smoke-p-demo:developer, logs, get, tenant-smoke-p-demo/*, allow
+        - p, proj:tenant-smoke-p-demo:developer, projects, get, tenant-smoke-p-demo, allow
+      groups:
+        - dk-tenant-smoke-project-demo-developers
+
+    - name: viewer
+      description: Tenant project viewer (smoke/demo)
+      policies:
+        - p, proj:tenant-smoke-p-demo:viewer, applications, get, tenant-smoke-p-demo/*, allow
+        - p, proj:tenant-smoke-p-demo:viewer, logs, get, tenant-smoke-p-demo/*, allow
+        - p, proj:tenant-smoke-p-demo:viewer, projects, get, tenant-smoke-p-demo, allow
+      groups:
+        - dk-tenant-smoke-project-demo-viewers
+
+  # Repo-per-project product mode:
+  # - Forgejo org: tenant-smoke
+  # - Repo: apps-demo.git
+  sourceRepos:
+    - https://forgejo-https.forgejo.svc.cluster.local/tenant-smoke/apps-demo.git
+
+  # Namespace boundary (project-scoped):
+  destinations:
+    - name: in-cluster
+      namespace: t-smoke-p-demo-*
+
+  # Tenants must not apply cluster-scoped resources via GitOps.
+  # Keep this list empty by using a non-existent API group/kind.
+  clusterResourceWhitelist:
+    - group: do-not-use
+      kind: DoNotUse
+
+  # Namespaced workload-plane allowlist (tight by default; expand with evidence).
+  namespaceResourceWhitelist:
+    - group: ""
+      kind: ConfigMap
+    - group: ""
+      kind: PersistentVolumeClaim
+    - group: ""
+      kind: Service
+    - group: ""
+      kind: ServiceAccount
+    - group: apps
+      kind: Deployment
+    - group: apps
+      kind: DaemonSet
+    - group: apps
+      kind: StatefulSet
+    - group: autoscaling
+      kind: HorizontalPodAutoscaler
+    - group: batch
+      kind: Job
+    - group: batch
+      kind: CronJob
+    - group: networking.k8s.io
+      kind: NetworkPolicy
+    - group: policy
+      kind: PodDisruptionBudget
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute

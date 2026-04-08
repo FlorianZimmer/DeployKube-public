@@ -1,0 +1,249 @@
+apiVersion: darksite.cloud/v1alpha1
+kind: RuntimeArtifactIndex
+metadata:
+  name: deploykube-runtime
+spec:
+  # Curated third-party runtime artifacts that are part of the supported platform baseline.
+  # These entries are consumed by centralized Trivy CI first, then later by bundle/export and
+  # mirror/preflight tooling as the two-surface artifact contract is implemented end to end.
+  images:
+    - name: argocd-server
+      component: argocd
+      class: platform-service
+      source_ref: quay.io/argoproj/argocd:v3.2.0
+      distribution_ref: quay.io/argoproj/argocd:v3.2.0
+    - name: argocd-dex
+      component: argocd
+      class: platform-service
+      source_ref: ghcr.io/dexidp/dex:v2.44.0
+      distribution_ref: registry.example.internal/dexidp/dex:v2.44.0
+    - name: argocd-redis
+      component: argocd
+      class: platform-service
+      source_ref: ecr-public.aws.com/docker/library/redis:8.2.2-alpine
+      distribution_ref: ecr-public.aws.com/docker/library/redis:8.2.2-alpine
+    - name: argocd-haproxy
+      component: argocd
+      class: platform-service
+      source_ref: ecr-public.aws.com/docker/library/haproxy:3.0.8-alpine
+      distribution_ref: ecr-public.aws.com/docker/library/haproxy:3.0.8-alpine
+    - name: argocd-ui-extensions
+      component: argocd
+      class: platform-service
+      source_ref: nginxinc/nginx-unprivileged:1.27-alpine@sha256:65e3e85dbaed8ba248841d9d58a899b6197106c23cb0ff1a132b7bfe0547e4c0
+      distribution_ref: nginxinc/nginx-unprivileged:1.27-alpine@sha256:65e3e85dbaed8ba248841d9d58a899b6197106c23cb0ff1a132b7bfe0547e4c0
+    - name: forgejo-app
+      component: forgejo
+      class: platform-service
+      source_ref: codeberg.org/forgejo/forgejo:13.0.2-rootless
+      distribution_ref: codeberg.org/forgejo/forgejo:13.0.2-rootless
+    - name: forgejo-server
+      component: forgejo
+      class: platform-service
+      source_ref: code.forgejo.org/forgejo/forgejo:13.0.2-rootless
+      distribution_ref: code.forgejo.org/forgejo/forgejo:13.0.2-rootless
+    - name: keycloak-operator
+      component: keycloak
+      class: platform-service
+      source_ref: quay.io/keycloak/keycloak-operator:26.4.4
+      distribution_ref: quay.io/keycloak/keycloak-operator:26.4.4
+    - name: keycloak-server
+      component: keycloak
+      class: platform-service
+      source_ref: quay.io/keycloak/keycloak:26.4.4
+      distribution_ref: quay.io/keycloak/keycloak:26.4.4
+    - name: powerdns-authoritative
+      component: dns
+      class: platform-foundation
+      source_ref: powerdns/pdns-auth-46:4.6.4
+      distribution_ref: powerdns/pdns-auth-46:4.6.4
+    - name: external-dns
+      component: dns
+      class: platform-foundation
+      source_ref: registry.k8s.io/external-dns/external-dns:v0.14.1
+      distribution_ref: registry.k8s.io/external-dns/external-dns:v0.14.1
+    - name: coredns-busybox
+      component: dns
+      class: platform-foundation
+      source_ref: docker.io/library/busybox:1.36@sha256:b9598f8c98e24d0ad42c1742c32516772c3aa2151011ebaf639089bd18c605b8
+      distribution_ref: docker.io/library/busybox:1.36@sha256:b9598f8c98e24d0ad42c1742c32516772c3aa2151011ebaf639089bd18c605b8
+    - name: istio-operator
+      component: istio
+      class: platform-foundation
+      source_ref: docker.io/istio/operator:1.23.3
+      distribution_ref: docker.io/istio/operator:1.23.3
+    - name: kiali-server
+      component: istio
+      class: platform-foundation
+      source_ref: quay.io/kiali/kiali:v2.15.0
+      distribution_ref: quay.io/kiali/kiali:v2.15.0
+    - name: step-ca-server
+      component: step-ca
+      class: platform-foundation
+      source_ref: cr.smallstep.com/smallstep/step-ca:0.28.4
+      distribution_ref: cr.smallstep.com/smallstep/step-ca:0.28.4
+    - name: external-secrets-operator
+      component: external-secrets
+      class: platform-foundation
+      source_ref: oci.external-secrets.io/external-secrets/external-secrets:v1.0.0
+      distribution_ref: oci.external-secrets.io/external-secrets/external-secrets:v1.0.0
+    - name: cnpg-operator
+      component: postgres
+      class: platform-foundation
+      source_ref: registry.example.internal/cloudnative-pg/cloudnative-pg:1.27.1@sha256:cfa380de51377fa61122d43c1214d43d3268c3c17da57612ee8fea1d46b61856
+      distribution_ref: registry.example.internal/cloudnative-pg/cloudnative-pg:1.27.1@sha256:cfa380de51377fa61122d43c1214d43d3268c3c17da57612ee8fea1d46b61856
+    - name: cnpg-postgresql
+      component: postgres
+      class: platform-foundation
+      source_ref: registry.example.internal/cloudnative-pg/postgresql:16.3
+      distribution_ref: registry.example.internal/cloudnative-pg/postgresql:16.3
+    - name: istiod
+      component: istio
+      class: platform-foundation
+      source_ref: docker.io/istio/pilot:1.23.3
+      distribution_ref: docker.io/istio/pilot:1.23.3
+    - name: istio-proxyv2
+      component: istio
+      class: platform-foundation
+      source_ref: docker.io/istio/proxyv2:1.23.3
+      distribution_ref: docker.io/istio/proxyv2:1.23.3
+    - name: kyverno
+      component: kyverno
+      class: platform-core
+      source_ref: reg.kyverno.io/kyverno/kyverno:v1.16.1
+      distribution_ref: registry.example.internal/kyverno/kyverno:v1.16.1
+    - name: kyverno-background-controller
+      component: kyverno
+      class: platform-core
+      source_ref: reg.kyverno.io/kyverno/background-controller:v1.16.1
+      distribution_ref: registry.example.internal/kyverno/background-controller:v1.16.1
+    - name: kyverno-cleanup-controller
+      component: kyverno
+      class: platform-core
+      source_ref: reg.kyverno.io/kyverno/cleanup-controller:v1.16.1
+      distribution_ref: registry.example.internal/kyverno/cleanup-controller:v1.16.1
+    - name: kyvernopre
+      component: kyverno
+      class: platform-core
+      source_ref: reg.kyverno.io/kyverno/kyvernopre:v1.16.1
+      distribution_ref: registry.example.internal/kyverno/kyvernopre:v1.16.1
+    - name: kyverno-reports-controller
+      component: kyverno
+      class: platform-core
+      source_ref: reg.kyverno.io/kyverno/reports-controller:v1.16.1
+      distribution_ref: registry.example.internal/kyverno/reports-controller:v1.16.1
+    - name: harbor-core
+      component: harbor
+      class: platform-core
+      source_ref: goharbor/harbor-core:v2.14.2
+      distribution_ref: goharbor/harbor-core:v2.14.2
+    - name: harbor-jobservice
+      component: harbor
+      class: platform-core
+      source_ref: goharbor/harbor-jobservice:v2.14.2
+      distribution_ref: goharbor/harbor-jobservice:v2.14.2
+    - name: harbor-portal
+      component: harbor
+      class: platform-core
+      source_ref: goharbor/harbor-portal:v2.14.2
+      distribution_ref: goharbor/harbor-portal:v2.14.2
+    - name: harbor-registryctl
+      component: harbor
+      class: platform-core
+      source_ref: goharbor/harbor-registryctl:v2.14.2
+      distribution_ref: goharbor/harbor-registryctl:v2.14.2
+    - name: harbor-nginx
+      component: harbor
+      class: platform-core
+      source_ref: goharbor/nginx-photon:v2.14.2
+      distribution_ref: goharbor/nginx-photon:v2.14.2
+    - name: harbor-redis
+      component: harbor
+      class: platform-core
+      source_ref: goharbor/redis-photon:v2.14.2
+      distribution_ref: goharbor/redis-photon:v2.14.2
+    - name: harbor-registry
+      component: harbor
+      class: platform-core
+      source_ref: goharbor/registry-photon:v2.14.2
+      distribution_ref: goharbor/registry-photon:v2.14.2
+    - name: openbao-server
+      component: vault
+      class: platform-core
+      source_ref: registry.example.internal/openbao/openbao:2.1.0
+      distribution_ref: registry.example.internal/openbao/openbao:2.1.0
+    - name: vault-busybox
+      component: vault
+      class: platform-core
+      source_ref: docker.io/library/busybox:1.36
+      distribution_ref: docker.io/library/busybox:1.36
+    - name: observability-grafana
+      component: observability
+      class: platform-foundation
+      source_ref: docker.io/grafana/grafana:12.2.1
+      distribution_ref: docker.io/grafana/grafana:12.2.1
+    - name: observability-loki
+      component: observability
+      class: platform-foundation
+      source_ref: docker.io/grafana/loki:3.5.7
+      distribution_ref: docker.io/grafana/loki:3.5.7
+    - name: observability-loki-canary
+      component: observability
+      class: platform-foundation
+      source_ref: docker.io/grafana/loki-canary:3.5.7
+      distribution_ref: docker.io/grafana/loki-canary:3.5.7
+    - name: observability-mimir
+      component: observability
+      class: platform-foundation
+      source_ref: grafana/mimir:3.0.1
+      distribution_ref: grafana/mimir:3.0.1
+    - name: observability-mimir-gateway
+      component: observability
+      class: platform-foundation
+      source_ref: docker.io/nginxinc/nginx-unprivileged:1.29-alpine
+      distribution_ref: docker.io/nginxinc/nginx-unprivileged:1.29-alpine
+    - name: observability-memcached
+      component: observability
+      class: platform-foundation
+      source_ref: memcached:1.6.39-alpine
+      distribution_ref: memcached:1.6.39-alpine
+    - name: observability-memcached-exporter
+      component: observability
+      class: platform-foundation
+      source_ref: prom/memcached-exporter:v0.15.3
+      distribution_ref: prom/memcached-exporter:v0.15.3
+    - name: observability-busybox
+      component: observability
+      class: platform-foundation
+      source_ref: docker.io/library/busybox:1.31.1
+      distribution_ref: docker.io/library/busybox:1.31.1
+    - name: metallb-controller
+      component: metallb
+      class: platform-foundation
+      source_ref: quay.io/metallb/controller:v0.15.2
+      distribution_ref: quay.io/metallb/controller:v0.15.2
+    - name: metallb-speaker
+      component: metallb
+      class: platform-foundation
+      source_ref: quay.io/metallb/speaker:v0.15.2
+      distribution_ref: quay.io/metallb/speaker:v0.15.2
+    - name: metallb-frr
+      component: metallb
+      class: platform-foundation
+      source_ref: quay.io/frrouting/frr:9.1.0
+      distribution_ref: quay.io/frrouting/frr:9.1.0
+    - name: valkey
+      component: valkey
+      class: platform-service
+      source_ref: valkey/valkey:9.0.0-alpine
+      distribution_ref: valkey/valkey:9.0.0-alpine
+    - name: nfs-subdir-external-provisioner
+      component: nfs-provisioner
+      class: platform-foundation
+      source_ref: registry.k8s.io/sig-storage/nfs-subdir-external-provisioner:v4.0.2
+      distribution_ref: registry.k8s.io/sig-storage/nfs-subdir-external-provisioner:v4.0.2
+    - name: garage
+      component: garage
+      class: platform-foundation
+      source_ref: docker.io/dxflrs/garage:v2.1.0
+      distribution_ref: docker.io/dxflrs/garage:v2.1.0

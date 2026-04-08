@@ -1,0 +1,334 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cert-smoke-gateway-sni
+  namespace: cert-manager
+  labels:
+    app.kubernetes.io/name: cert-smoke
+    app.kubernetes.io/component: gateway-sni
+spec:
+  # Intentionally offset from :00 to avoid top-of-hour kube-apiserver contention.
+  schedule: "27 * * * *"  # hourly, overridden in overlays
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 900
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: cert-smoke
+            app.kubernetes.io/component: gateway-sni
+          annotations:
+            sidecar.istio.io/inject: "false"
+        spec:
+          restartPolicy: Never
+          enableServiceLinks: false
+          serviceAccountName: cert-smoke
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: smoke
+              image: registry.example.internal/deploykube/validation-tools-core@sha256:babdd8ea44c3f169da4b55458061729329880fdf5c00194906d2dd6cdc655347
+              imagePullPolicy: IfNotPresent
+              env:
+                # Gateway service endpoint (in-cluster)
+                - name: GATEWAY_SERVICE
+                  value: "public-gateway-istio.istio-system.svc.cluster.local"
+                - name: GATEWAY_PORT
+                  value: "443"
+                - name: HOME
+                  value: /tmp
+                - name: XDG_CONFIG_HOME
+                  value: /tmp/.config
+              resources:
+                requests:
+                  cpu: 25m
+                  memory: 64Mi
+                limits:
+                  cpu: 250m
+                  memory: 256Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+              command:
+                - /bin/sh
+                - -c
+              args:
+                - |
+                  set -euo pipefail
+
+                  gateway_ns="istio-system"
+                  gateway_name="public-gateway"
+
+                  dep_cfg_json="$(kubectl get deploymentconfigs.platform.darksite.cloud -o json 2>/dev/null || true)"
+                  if [ -z "${dep_cfg_json}" ]; then
+                    echo "FAIL: could not read DeploymentConfig objects (requires platform.darksite.cloud permissions)" >&2
+                    exit 1
+                  fi
+                  dep_cfg_count="$(echo "${dep_cfg_json}" | jq -r '.items | length')"
+                  if [ "${dep_cfg_count}" -ne 1 ]; then
+                    echo "FAIL: expected exactly one DeploymentConfig, found ${dep_cfg_count}" >&2
+                    exit 1
+                  fi
+
+                  platform_mode="$(echo "${dep_cfg_json}" | jq -r '.items[0].spec.certificates.platformIngress.mode // "subCa"')"
+                  wildcard_ca_secret="$(echo "${dep_cfg_json}" | jq -r '.items[0].spec.certificates.platformIngress.wildcard.caBundleSecretName // ""')"
+                  wildcard_ca_key="$(echo "${dep_cfg_json}" | jq -r '.items[0].spec.certificates.platformIngress.wildcard.caBundleProperty // "ca.crt"')"
+
+                  echo "=== Gateway SNI Handshake Smoke Test ==="
+                  echo "Verifying TLS presentation for Gateway/${gateway_name} listeners"
+                  echo "Platform ingress mode: ${platform_mode}"
+                  echo ""
+
+                  wait_for_ca_secret_key() {
+                    namespace="$1"
+                    secret_name="$2"
+                    secret_key="$3"
+                    timeout_s="${4:-600}"
+                    start_s="$(date +%s)"
+
+                    while true; do
+                      jsonpath="{.data.${secret_key//./\\.}}"
+                      crt_b64="$(kubectl -n "${namespace}" get secret "${secret_name}" -o jsonpath="${jsonpath}" 2>/dev/null || true)"
+                      if [ -n "${crt_b64}" ]; then
+                        echo "${crt_b64}" | base64 -d > /tmp/root-ca.crt
+                        return 0
+                      fi
+
+                      now_s="$(date +%s)"
+                      if [ $((now_s - start_s)) -ge "${timeout_s}" ]; then
+                        return 1
+                      fi
+
+                      echo "   Waiting for CA bundle secret ${namespace}/${secret_name} (${secret_key})..."
+                      sleep 5
+                    done
+                  }
+
+                  wait_for_gateway() {
+                    timeout_s="${1:-600}"
+                    start_s="$(date +%s)"
+
+                    while true; do
+                      if kubectl -n "${gateway_ns}" get gateway "${gateway_name}" >/dev/null 2>&1; then
+                        return 0
+                      fi
+
+                      now_s="$(date +%s)"
+                      if [ $((now_s - start_s)) -ge "${timeout_s}" ]; then
+                        return 1
+                      fi
+
+                      echo "   Waiting for Gateway/${gateway_name} to exist..."
+                      sleep 5
+                    done
+                  }
+
+                  verify_mode="skip"
+                  ca_bundle_ns=""
+                  ca_bundle_secret=""
+                  ca_bundle_key=""
+                  case "${platform_mode}" in
+                    subCa|vault)
+                      verify_mode="strict-ca"
+                      ca_bundle_ns="cert-manager"
+                      ca_bundle_secret="step-ca-root-ca"
+                      ca_bundle_key="tls.crt"
+                      ;;
+                    wildcard)
+                      if [ -n "${wildcard_ca_secret}" ]; then
+                        verify_mode="strict-ca"
+                        ca_bundle_ns="${gateway_ns}"
+                        ca_bundle_secret="${wildcard_ca_secret}"
+                        ca_bundle_key="${wildcard_ca_key}"
+                      fi
+                      ;;
+                    acme)
+                      if [ -n "${wildcard_ca_secret}" ]; then
+                        verify_mode="strict-ca"
+                        ca_bundle_ns="${gateway_ns}"
+                        ca_bundle_secret="${wildcard_ca_secret}"
+                        ca_bundle_key="${wildcard_ca_key}"
+                      else
+                        verify_mode="system-ca-optional"
+                      fi
+                      ;;
+                    *)
+                      echo "FAIL: unsupported platform ingress certificates mode '${platform_mode}'" >&2
+                      exit 1
+                      ;;
+                  esac
+
+                  if [ "${verify_mode}" = "strict-ca" ]; then
+                    echo "1. Waiting for and extracting CA bundle for strict chain verification..."
+                    if ! wait_for_ca_secret_key "${ca_bundle_ns}" "${ca_bundle_secret}" "${ca_bundle_key}" 600; then
+                      echo "FAIL: Could not extract CA bundle from ${ca_bundle_ns}/${ca_bundle_secret} key ${ca_bundle_key} (timeout)" >&2
+                      kubectl -n "${ca_bundle_ns}" describe secret "${ca_bundle_secret}" 2>/dev/null || true
+                      exit 1
+                    fi
+                    if [ ! -s /tmp/root-ca.crt ]; then
+                      echo "FAIL: CA bundle file is empty" >&2
+                      exit 1
+                    fi
+                    echo "   CA bundle extracted"
+                  else
+                    echo "1. Strict CA chain verification disabled (mode=${verify_mode})"
+                  fi
+
+                  echo "2. Waiting for Gateway/${gateway_name}..."
+                  if ! wait_for_gateway 600; then
+                    echo "FAIL: Gateway/${gateway_name} did not appear (timeout)" >&2
+                    kubectl -n "${gateway_ns}" get gateways 2>/dev/null || true
+                    exit 1
+                  fi
+
+                  echo "3. Extracting HTTPS hostnames from Gateway/${gateway_name}..."
+                  hostnames="$(kubectl -n "${gateway_ns}" get gateway "${gateway_name}" -o json 2>/dev/null | \
+                    jq -r '.spec.listeners[] | select(.protocol == "HTTPS") | .hostname // empty' | \
+                    sort -u)"
+
+                  if [ -z "${hostnames}" ]; then
+                    echo "FAIL: No HTTPS listeners found on Gateway/${gateway_name}" >&2
+                    kubectl -n "${gateway_ns}" get gateway "${gateway_name}" -o yaml 2>/dev/null || true
+                    exit 1
+                  fi
+
+                  hostname_count=$(echo "${hostnames}" | wc -l | tr -d ' ')
+                  echo "   Found ${hostname_count} HTTPS hostname(s):"
+                  echo "${hostnames}" | sed 's/^/     - /'
+                  echo ""
+
+                  echo "4. Resolving gateway endpoint..."
+                  gateway_endpoint="${GATEWAY_SERVICE}"
+                  gateway_ip="$(getent hosts "${GATEWAY_SERVICE}" 2>/dev/null | awk '{print $1}' | head -1 || true)"
+                  if [ -n "${gateway_ip}" ]; then
+                    echo "   Resolved to: ${gateway_ip}"
+                    gateway_endpoint="${gateway_ip}"
+                  else
+                    echo "   Using service DNS: ${GATEWAY_SERVICE}:${GATEWAY_PORT}"
+                  fi
+                  echo ""
+
+                  echo "5. Testing TLS handshake for each hostname..."
+                  failed=0
+                  while IFS= read -r hostname; do
+                    [ -z "${hostname}" ] && continue
+
+                    echo "   Testing: ${hostname}"
+
+                    safe_hostname="$(echo "${hostname}" | tr -c 'A-Za-z0-9._-' '_' | tr '.' '_')"
+                    out_file="/tmp/openssl-${safe_hostname}.out"
+                    verify_file="/tmp/openssl-verify-${safe_hostname}.out"
+                    cert_file="/tmp/${safe_hostname}.crt"
+
+                    attempt=1
+                    max_attempts=6
+                    while true; do
+                      if timeout 10 openssl s_client \
+                        -connect "${gateway_endpoint}:${GATEWAY_PORT}" \
+                        -servername "${hostname}" \
+                        -brief \
+                        </dev/null >"${out_file}" 2>&1; then
+                        break
+                      fi
+
+                      if [ "${attempt}" -ge "${max_attempts}" ]; then
+                        echo "     FAIL: TLS handshake failed" >&2
+                        cat "${out_file}" >&2
+                        failed=$((failed + 1))
+                        continue 2
+                      fi
+
+                      sleep_s="$((attempt * 3))"
+                      echo "     Handshake not ready, retrying in ${sleep_s}s (${attempt}/${max_attempts})..."
+                      sleep "${sleep_s}"
+                      attempt="$((attempt + 1))"
+                    done
+                    echo "     Handshake: OK"
+
+                    if ! timeout 10 openssl s_client \
+                      -connect "${gateway_endpoint}:${GATEWAY_PORT}" \
+                      -servername "${hostname}" \
+                      -showcerts \
+                      </dev/null 2>/dev/null | \
+                      awk 'BEGIN{inside=0} /BEGIN CERTIFICATE/{inside=1} {if(inside) print} /END CERTIFICATE/{exit}' \
+                      > "${cert_file}"; then
+                      echo "     FAIL: Could not extract server certificate" >&2
+                      failed=$((failed + 1))
+                      continue
+                    fi
+                    if [ ! -s "${cert_file}" ]; then
+                      echo "     FAIL: Extracted server certificate is empty" >&2
+                      failed=$((failed + 1))
+                      continue
+                    fi
+
+                    if ! openssl x509 -in "${cert_file}" -noout -checkhost "${hostname}" >/dev/null 2>&1; then
+                      echo "     FAIL: Presented certificate does not match hostname ${hostname}" >&2
+                      echo "     --- cert subject/issuer ---" >&2
+                      openssl x509 -in "${cert_file}" -noout -subject -issuer 2>/dev/null >&2 || true
+                      echo "     --- cert SAN ---" >&2
+                      openssl x509 -in "${cert_file}" -noout -ext subjectAltName 2>/dev/null >&2 || true
+                      failed=$((failed + 1))
+                      continue
+                    fi
+                    echo "     Hostname: Verified"
+
+                    case "${verify_mode}" in
+                      strict-ca)
+                        if ! timeout 10 openssl s_client \
+                          -connect "${gateway_endpoint}:${GATEWAY_PORT}" \
+                          -servername "${hostname}" \
+                          -CAfile /tmp/root-ca.crt \
+                          -verify_return_error \
+                          </dev/null >"${verify_file}" 2>&1; then
+                          echo "     FAIL: Certificate chain verification failed against configured CA bundle" >&2
+                          cat "${verify_file}" >&2
+                          failed=$((failed + 1))
+                          continue
+                        fi
+                        echo "     Chain: Verified against configured CA bundle"
+                        ;;
+                      system-ca-optional)
+                        if openssl verify -CApath /etc/ssl/certs "${cert_file}" >/dev/null 2>&1; then
+                          echo "     Chain: Verified against system trust store"
+                        else
+                          echo "     WARN: Chain did not verify against system trust store (allowed in mode ${platform_mode})" >&2
+                        fi
+                        ;;
+                      *)
+                        echo "     Chain: Skipped (no CA bundle configured)"
+                        ;;
+                    esac
+                  done <<EOF
+                  ${hostnames}
+                  EOF
+
+                  echo ""
+                  echo "6. Final validation..."
+                  if [ "${failed}" -ne 0 ]; then
+                    echo "FAIL: ${failed} hostname(s) failed TLS/SNI verification" >&2
+                    exit 1
+                  fi
+
+                  echo "   All ${hostname_count} hostnames passed TLS handshake and hostname verification"
+                  echo ""
+                  echo "=== Gateway SNI Handshake Smoke Test PASSED ==="
+          volumes:
+            - name: tmp
+              emptyDir: {}

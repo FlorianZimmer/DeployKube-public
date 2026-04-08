@@ -1,0 +1,58 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Include non-overlay apps from base
+resources:
+  - deployment-secrets-bundle.yaml
+  - ../../base
+  - ../../tenants/overlays/prod
+  # Optional workload bundle (Minecraft + Factorio). This is intentionally a local copy
+  # because Argo CD runs Kustomize with load-restrictions and cannot reference files
+  # outside this environment directory.
+  - resources/examples-apps-prod.yaml
+  # Prod-only: off-cluster backup plane (Synology NFS target).
+  - resources/storage-backup-system.yaml
+
+# Proxmox-specific patches
+patches:
+  # Point MetalLB config at the Proxmox overlay (which patches the IPAddressPool range)
+  - path: patches/patch-app-networking-metallb-config.yaml
+  # Override NFS provisioner values for the Proxmox NFS server.
+  - path: patches/patch-app-storage-nfs-provisioner.yaml
+  # Tier-0 backups must land on the off-cluster backup target (prod only).
+  - path: patches/patch-app-data-postgres-keycloak-backup.yaml
+  - path: patches/patch-app-data-postgres-powerdns-backup.yaml
+  - path: patches/patch-app-platform-forgejo-postgres-backup.yaml
+  # Prod: tune Vault Helm values/patches independently of dev overlays.
+  - path: patches/patch-secrets-vault.yaml
+  # Ensure bootstrap Jobs pull bootstrap-tools from the local registry (Talos nodes can't load local images).
+  # Apply to all Argo Applications by construction, so newly-added apps can't accidentally miss it.
+  - path: patches/patch-all-apps-bootstrap-tools-image.yaml
+    target:
+      group: argoproj.io
+      version: v1alpha1
+      kind: Application
+      namespace: argocd
+  # Helm-source apps must not carry spec.source.kustomize (Argo rejects mixed source types).
+  - target:
+      group: argoproj.io
+      version: v1alpha1
+      kind: Application
+      name: networking-metallb
+      namespace: argocd
+    patch: |-
+      - op: remove
+        path: /spec/source/kustomize
+  - target:
+      group: argoproj.io
+      version: v1alpha1
+      kind: Application
+      name: storage-nfs-provisioner
+      namespace: argocd
+    patch: |-
+      - op: remove
+        path: /spec/source/kustomize
+  # VPA recommendations differ by deployment (e.g., transit vs kms-shim).
+  - path: patches/patch-platform-ops-vpa-recommendations.yaml
+  # Select deployment-specific platform-apps-controller overlay.
+  - path: patches/patch-platform-platform-apps-controller.yaml

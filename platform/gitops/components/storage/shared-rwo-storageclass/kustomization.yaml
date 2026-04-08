@@ -1,0 +1,12 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: storage-system
+resources:
+  - storageclass-rwo.yaml
+  - pvc-shared-rwo-io-smoke.yaml
+  - serviceaccount-shared-rwo-io-smoke.yaml
+  - configmap-shared-rwo-io-smoke.yaml
+  - cronjob-shared-rwo-io-smoke.yaml
+  - serviceaccount-postsync-smoke.yaml
+  - rbac-postsync-smoke.yaml
+  - job-postsync-smoke.yaml

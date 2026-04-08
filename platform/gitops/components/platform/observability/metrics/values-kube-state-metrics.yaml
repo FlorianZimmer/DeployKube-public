@@ -1,0 +1,170 @@
+fullnameOverride: kube-state-metrics
+
+prometheus:
+  monitor:
+    enabled: false
+
+rbac:
+  create: true
+  extraRules:
+    # Required for custom resource state metrics.
+    - apiGroups: ["apiextensions.k8s.io"]
+      resources: ["customresourcedefinitions"]
+      verbs: ["list", "watch"]
+    - apiGroups: ["autoscaling.k8s.io"]
+      resources: ["verticalpodautoscalers"]
+      verbs: ["list", "watch"]
+
+serviceAccount:
+  create: true
+
+podAnnotations:
+  # Kubernetes API access can be unreliable when Envoy intercepts in-cluster TLS.
+  # Exclude the API ports from redirection so kube-state-metrics can always talk
+  # directly to kube-apiserver.
+  traffic.sidecar.istio.io/excludeOutboundPorts: "443,6443"
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    memory: 256Mi
+
+# kube-state-metrics may take a while to initialize its collectors (especially on
+# constrained dev clusters). Use a generous startup probe so liveness doesn't
+# restart it before the HTTP server is reachable.
+startupProbe:
+  enabled: true
+  failureThreshold: 60
+  periodSeconds: 5
+  timeoutSeconds: 5
+
+livenessProbe:
+  initialDelaySeconds: 60
+
+readinessProbe:
+  initialDelaySeconds: 10
+
+customResourceState:
+  enabled: true
+  config:
+    kind: CustomResourceStateMetrics
+    spec:
+      resources:
+        - groupVersionKind:
+            group: autoscaling.k8s.io
+            kind: "VerticalPodAutoscaler"
+            version: "v1"
+          metricNamePrefix: "kube"
+          labelsFromPath:
+            namespace: [metadata, namespace]
+            target_api_version: [spec, targetRef, apiVersion]
+            target_kind: [spec, targetRef, kind]
+            target_name: [spec, targetRef, name]
+            verticalpodautoscaler: [metadata, name]
+          metrics:
+            - name: "verticalpodautoscaler_spec_updatepolicy_updatemode"
+              help: "Update mode of the VerticalPodAutoscaler."
+              each:
+                type: StateSet
+                stateSet:
+                  labelName: "update_mode"
+                  path: [spec, updatePolicy, updateMode]
+                  list: ["Auto", "Initial", "Off", "Recreate"]
+            - name: "verticalpodautoscaler_status_recommendation_containerrecommendations_lowerbound_memory"
+              help: "Minimum memory resources the container can use before the VerticalPodAutoscaler updater evicts it."
+              commonLabels:
+                unit: "byte"
+                resource: "memory"
+              each:
+                type: Gauge
+                gauge:
+                  path: [status, recommendation, containerRecommendations]
+                  labelsFromPath:
+                    container: [containerName]
+                  valueFrom: [lowerBound, memory]
+            - name: "verticalpodautoscaler_status_recommendation_containerrecommendations_lowerbound_cpu"
+              help: "Minimum cpu resources the container can use before the VerticalPodAutoscaler updater evicts it."
+              commonLabels:
+                unit: "core"
+                resource: "cpu"
+              each:
+                type: Gauge
+                gauge:
+                  path: [status, recommendation, containerRecommendations]
+                  labelsFromPath:
+                    container: [containerName]
+                  valueFrom: [lowerBound, cpu]
+            - name: "verticalpodautoscaler_status_recommendation_containerrecommendations_upperbound_memory"
+              help: "Maximum memory resources the container can use before the VerticalPodAutoscaler updater evicts it."
+              commonLabels:
+                unit: "byte"
+                resource: "memory"
+              each:
+                type: Gauge
+                gauge:
+                  path: [status, recommendation, containerRecommendations]
+                  labelsFromPath:
+                    container: [containerName]
+                  valueFrom: [upperBound, memory]
+            - name: "verticalpodautoscaler_status_recommendation_containerrecommendations_upperbound_cpu"
+              help: "Maximum cpu resources the container can use before the VerticalPodAutoscaler updater evicts it."
+              commonLabels:
+                unit: "core"
+                resource: "cpu"
+              each:
+                type: Gauge
+                gauge:
+                  path: [status, recommendation, containerRecommendations]
+                  labelsFromPath:
+                    container: [containerName]
+                  valueFrom: [upperBound, cpu]
+            - name: "verticalpodautoscaler_status_recommendation_containerrecommendations_target_memory"
+              help: "Target memory resources the VerticalPodAutoscaler recommends for the container."
+              commonLabels:
+                unit: "byte"
+                resource: "memory"
+              each:
+                type: Gauge
+                gauge:
+                  path: [status, recommendation, containerRecommendations]
+                  labelsFromPath:
+                    container: [containerName]
+                  valueFrom: [target, memory]
+            - name: "verticalpodautoscaler_status_recommendation_containerrecommendations_target_cpu"
+              help: "Target cpu resources the VerticalPodAutoscaler recommends for the container."
+              commonLabels:
+                unit: "core"
+                resource: "cpu"
+              each:
+                type: Gauge
+                gauge:
+                  path: [status, recommendation, containerRecommendations]
+                  labelsFromPath:
+                    container: [containerName]
+                  valueFrom: [target, cpu]
+            - name: "verticalpodautoscaler_status_recommendation_containerrecommendations_uncappedtarget_memory"
+              help: "Target memory resources the VerticalPodAutoscaler recommends for the container ignoring bounds."
+              commonLabels:
+                unit: "byte"
+                resource: "memory"
+              each:
+                type: Gauge
+                gauge:
+                  path: [status, recommendation, containerRecommendations]
+                  labelsFromPath:
+                    container: [containerName]
+                  valueFrom: [uncappedTarget, memory]
+            - name: "verticalpodautoscaler_status_recommendation_containerrecommendations_uncappedtarget_cpu"
+              help: "Target cpu resources the VerticalPodAutoscaler recommends for the container ignoring bounds."
+              commonLabels:
+                unit: "core"
+                resource: "cpu"
+              each:
+                type: Gauge
+                gauge:
+                  path: [status, recommendation, containerRecommendations]
+                  labelsFromPath:
+                    container: [containerName]
+                  valueFrom: [uncappedTarget, cpu]

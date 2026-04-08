@@ -1,0 +1,142 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loki-distributor
+  namespace: loki
+  labels:
+    darksite.cloud/ha-tier: tier-2
+spec:
+  template:
+    metadata:
+      labels:
+        darksite.cloud/ha-tier: tier-2
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loki-gateway
+  namespace: loki
+  labels:
+    darksite.cloud/ha-tier: tier-2
+spec:
+  template:
+    metadata:
+      labels:
+        darksite.cloud/ha-tier: tier-2
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loki-querier
+  namespace: loki
+  labels:
+    darksite.cloud/ha-tier: tier-1
+spec:
+  template:
+    metadata:
+      labels:
+        darksite.cloud/ha-tier: tier-1
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loki-query-frontend
+  namespace: loki
+  labels:
+    darksite.cloud/ha-tier: tier-2
+spec:
+  template:
+    metadata:
+      labels:
+        darksite.cloud/ha-tier: tier-2
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loki-query-scheduler
+  namespace: loki
+  labels:
+    darksite.cloud/ha-tier: tier-2
+spec:
+  template:
+    metadata:
+      labels:
+        darksite.cloud/ha-tier: tier-2
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: loki-chunks-cache
+  namespace: loki
+  labels:
+    darksite.cloud/ha-tier: tier-2
+spec:
+  template:
+    metadata:
+      labels:
+        darksite.cloud/ha-tier: tier-2
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: loki-compactor
+  namespace: loki
+  labels:
+    darksite.cloud/ha-tier: tier-2
+spec:
+  template:
+    metadata:
+      labels:
+        darksite.cloud/ha-tier: tier-2
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: loki-index-gateway
+  namespace: loki
+  labels:
+    darksite.cloud/ha-tier: tier-2
+spec:
+  template:
+    metadata:
+      labels:
+        darksite.cloud/ha-tier: tier-2
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: loki-ingester
+  namespace: loki
+  labels:
+    darksite.cloud/ha-tier: tier-0
+spec:
+  template:
+    metadata:
+      labels:
+        darksite.cloud/ha-tier: tier-0
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: loki-results-cache
+  namespace: loki
+  labels:
+    darksite.cloud/ha-tier: tier-2
+spec:
+  template:
+    metadata:
+      labels:
+        darksite.cloud/ha-tier: tier-2
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: loki-ruler
+  namespace: loki
+  labels:
+    darksite.cloud/ha-tier: tier-2
+spec:
+  template:
+    metadata:
+      labels:
+        darksite.cloud/ha-tier: tier-2

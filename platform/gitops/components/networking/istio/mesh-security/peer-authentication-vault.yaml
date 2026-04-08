@@ -1,0 +1,14 @@
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: vault-permissive
+  namespace: vault-system
+  annotations:
+    # External Secrets is intentionally out-of-mesh; allow plaintext to Vault.
+    argocd.argoproj.io/sync-wave: "4.4"
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vault
+  mtls:
+    mode: PERMISSIVE

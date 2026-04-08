@@ -1,0 +1,4 @@
+# Talos VM configuration is generated during bootstrap
+# Do not commit generated files to version control
+*.yaml
+!../.gitkeep

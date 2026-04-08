@@ -1,0 +1,77 @@
+apiVersion: platform.darksite.cloud/v1alpha1
+kind: DeploymentConfig
+metadata:
+  name: mac-orbstack-single
+spec:
+  deploymentId: mac-orbstack-single
+  environmentId: dev
+
+  # This profile is a variant of mac-orbstack with a single-node storage profile.
+  # It intentionally uses a distinct baseDomain so multiple dev deployments can coexist and
+  # DeploymentConfig validation can treat baseDomain as a unique deployment identity.
+  dns:
+    baseDomain: dev-single.internal.example.com
+    authority:
+      nameServers:
+        - ns1.dev-single.internal.example.com
+    delegation:
+      mode: manual
+      parentZone: internal.example.com
+    cloudDNS:
+      tenantWorkloadZones:
+        enabled: true
+        zoneSuffix: workloads
+    hostnames:
+      argocd: argocd.dev-single.internal.example.com
+      forgejo: forgejo.dev-single.internal.example.com
+      garage: garage.dev-single.internal.example.com
+      harbor: harbor.dev-single.internal.example.com
+      keycloak: keycloak.dev-single.internal.example.com
+      registry: registry.dev-single.internal.example.com
+      vault: vault.dev-single.internal.example.com
+      grafana: grafana.dev-single.internal.example.com
+      kiali: kiali.dev-single.internal.example.com
+      hubble: hubble.dev-single.internal.example.com
+
+  certificates:
+    platformIngress:
+      mode: subCa
+    tenants:
+      mode: subCa
+
+  iam:
+    mode: standalone
+    primaryRealm: deploykube-admin
+    secondaryRealms:
+      - deploykube-apps
+
+  trustRoots:
+    stepCaRootCertPath: shared/certs/deploykube-root-ca.crt
+
+  secrets:
+    rootOfTrust:
+      provider: kmsShim
+      mode: inCluster
+      assurance: low
+
+  time:
+    ntp:
+      upstreamServers:
+        - time.cloudflare.com
+
+  network:
+    handoffMode: l2
+    metallb:
+      pools:
+        public:
+          - 203.0.113.240-203.0.113.250
+    vip:
+      powerdnsIP: 203.0.113.245
+
+  backup:
+    enabled: false
+
+  observability:
+    loki:
+      limits:
+        retentionPeriod: 24h

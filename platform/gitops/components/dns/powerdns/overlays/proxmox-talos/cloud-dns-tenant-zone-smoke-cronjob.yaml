@@ -1,0 +1,153 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cloud-dns-tenant-smoke
+  namespace: dns-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cloud-dns-tenant-smoke
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces", "services", "secrets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["dns.darksite.cloud"]
+    resources: ["dnszones"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["external-secrets.io"]
+    resources: ["externalsecrets", "clusterexternalsecrets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cloud-dns-tenant-smoke
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cloud-dns-tenant-smoke
+subjects:
+  - kind: ServiceAccount
+    name: cloud-dns-tenant-smoke
+    namespace: dns-system
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cloud-dns-tenant-zone-smoke
+  namespace: dns-system
+spec:
+  schedule: "*/20 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  startingDeadlineSeconds: 300
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 300
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: cloud-dns-tenant-zone-smoke
+          annotations:
+            sidecar.istio.io/inject: "false"
+        spec:
+          serviceAccountName: cloud-dns-tenant-smoke
+          restartPolicy: Never
+          containers:
+            - name: smoke
+              image: registry.example.internal/deploykube/bootstrap-tools:1.4
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: TENANT_ID
+                  value: smoke
+                - name: ZONE_OBJECT_NAME
+                  value: tenant-smoke-workloads
+                - name: DNS_DOMAIN
+                  valueFrom:
+                    configMapKeyRef:
+                      name: deploykube-dns-wiring
+                      key: DNS_DOMAIN
+                - name: PDNS_API
+                  value: http://powerdns.dns-system.svc.cluster.local:8081/api/v1
+                - name: PDNS_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: powerdns-api
+                      key: api_key
+              command:
+                - /bin/bash
+                - -c
+                - |
+                  set -euo pipefail
+
+                  : "${TENANT_ID:?missing TENANT_ID}"
+                  : "${ZONE_OBJECT_NAME:?missing ZONE_OBJECT_NAME}"
+                  : "${DNS_DOMAIN:?missing DNS_DOMAIN}"
+                  : "${PDNS_API:?missing PDNS_API}"
+                  : "${PDNS_API_KEY:?missing PDNS_API_KEY}"
+
+                  zone="$(kubectl get dnszones.dns.darksite.cloud "${ZONE_OBJECT_NAME}" -o jsonpath='{.spec.zoneName}')"
+                  if [[ -z "${zone}" ]]; then
+                    echo "[cloud-dns-smoke] DNSZone ${ZONE_OBJECT_NAME} has empty spec.zoneName" >&2
+                    exit 1
+                  fi
+                  zone_fqdn="${zone%.}."
+                  parent_fqdn="${DNS_DOMAIN%.}."
+
+                  echo "[cloud-dns-smoke] zone=${zone_fqdn} parent=${parent_fqdn}"
+
+                  # Validate child zone exists in PowerDNS.
+                  if ! curl -fsS -H "X-API-Key: ${PDNS_API_KEY}" "${PDNS_API}/servers/localhost/zones/${zone_fqdn}" >/tmp/cloud-dns-zone.json 2>/dev/null; then
+                    if ! curl -fsS -H "X-API-Key: ${PDNS_API_KEY}" "${PDNS_API}/servers/localhost/zones/${zone}" >/tmp/cloud-dns-zone.json 2>/dev/null; then
+                      echo "[cloud-dns-smoke] zone not found in PowerDNS: ${zone}" >&2
+                      exit 1
+                    fi
+                  fi
+
+                  # Validate parent delegation NS rrset exists.
+                  if ! curl -fsS -H "X-API-Key: ${PDNS_API_KEY}" "${PDNS_API}/servers/localhost/zones/${parent_fqdn}" >/tmp/cloud-dns-parent-zone.json 2>/dev/null; then
+                    curl -fsS -H "X-API-Key: ${PDNS_API_KEY}" "${PDNS_API}/servers/localhost/zones/${DNS_DOMAIN}" >/tmp/cloud-dns-parent-zone.json
+                  fi
+
+                  ns_count="$(jq -r --arg zone "${zone_fqdn}" '
+                    [ .rrsets[]? | select(.name==$zone and .type=="NS") | .records[]? ] | length
+                  ' /tmp/cloud-dns-parent-zone.json)"
+                  if [[ "${ns_count}" -lt 1 ]]; then
+                    echo "[cloud-dns-smoke] parent zone missing NS delegation for ${zone_fqdn}" >&2
+                    exit 1
+                  fi
+
+                  tenant_ns="$(kubectl get ns -l "darksite.cloud/tenant-id=${TENANT_ID},darksite.cloud/rbac-profile=tenant" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+                  if [[ -z "${tenant_ns}" ]]; then
+                    echo "[cloud-dns-smoke] no tenant namespace found for tenant ${TENANT_ID}" >&2
+                    exit 1
+                  fi
+
+                  kubectl get clusterexternalsecret.external-secrets.io "tenant-${TENANT_ID}-dns-rfc2136" >/dev/null
+                  kubectl -n "${tenant_ns}" get externalsecret.external-secrets.io tenant-dns-rfc2136 >/dev/null
+                  kubectl -n "${tenant_ns}" get secret tenant-dns-rfc2136 >/tmp/cloud-dns-tenant-secret.json
+
+                  for key in zone server tsigKeyName tsigSecret tsigAlgorithm txtOwnerId; do
+                    val="$(kubectl -n "${tenant_ns}" get secret tenant-dns-rfc2136 -o "jsonpath={.data.${key}}" 2>/dev/null || true)"
+                    if [[ -z "${val}" ]]; then
+                      echo "[cloud-dns-smoke] tenant secret missing key: ${key}" >&2
+                      exit 1
+                    fi
+                  done
+
+                  tenant_gateway_ip="$(kubectl -n istio-system get svc "tenant-${TENANT_ID}-gateway-istio" -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)"
+                  if [[ -n "${tenant_gateway_ip}" ]]; then
+                    wildcard_ip="$(jq -r --arg name "*.${zone_fqdn}" '
+                      [ .rrsets[]? | select(.name==$name and .type=="A") | .records[]?.content ][0] // ""
+                    ' /tmp/cloud-dns-zone.json)"
+                    if [[ "${wildcard_ip}" != "${tenant_gateway_ip}" ]]; then
+                      echo "[cloud-dns-smoke] wildcard mismatch: expected ${tenant_gateway_ip} got ${wildcard_ip}" >&2
+                      exit 1
+                    fi
+                  fi
+
+                  echo "[cloud-dns-smoke] OK tenant=${TENANT_ID} namespace=${tenant_ns} zone=${zone_fqdn} delegated=true credentials=true"

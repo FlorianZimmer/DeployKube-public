@@ -1,0 +1,16 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kyverno-admission-controller
+  namespace: policy-system
+spec:
+  template:
+    spec:
+      containers:
+        - name: kyverno
+          resources:
+            requests:
+              cpu: "15m"
+              memory: "80Mi"
+            limits:
+              memory: "120Mi"

@@ -1,0 +1,81 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: keycloak-postgres-smoke
+  namespace: keycloak
+  labels:
+    app.kubernetes.io/name: keycloak-postgres-smoke
+spec:
+  # Intentionally offset from :00 to avoid top-of-hour kube-apiserver contention.
+  schedule: "41 * * * *" # hourly
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 300
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: keycloak-postgres-smoke
+          annotations:
+            sidecar.istio.io/inject: "false"
+        spec:
+          serviceAccountName: keycloak-postgres-smoke
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: smoke
+              image: registry.example.internal/deploykube/bootstrap-tools:1.4
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              env:
+                - name: PGHOST
+                  value: keycloak-postgres-rw
+                - name: PGPORT
+                  value: "5432"
+                - name: PGDATABASE
+                  valueFrom:
+                    secretKeyRef:
+                      name: keycloak-db
+                      key: database
+                - name: PGUSER
+                  valueFrom:
+                    secretKeyRef:
+                      name: keycloak-db
+                      key: username
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: keycloak-db
+                      key: password
+              command:
+                - /bin/sh
+                - -c
+              args:
+                - |
+                  set -euo pipefail
+
+                  command -v pg_isready >/dev/null 2>&1 || { echo "missing dependency: pg_isready" >&2; exit 1; }
+                  command -v psql >/dev/null 2>&1 || { echo "missing dependency: psql" >&2; exit 1; }
+
+                  : "${PGHOST:?missing PGHOST}"
+                  : "${PGPORT:?missing PGPORT}"
+                  : "${PGDATABASE:?missing PGDATABASE}"
+                  : "${PGUSER:?missing PGUSER}"
+                  : "${PGPASSWORD:?missing PGPASSWORD}"
+
+                  pg_isready -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" -t 5
+                  psql -v ON_ERROR_STOP=1 -tAc 'select 1' >/dev/null

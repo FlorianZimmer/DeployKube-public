@@ -1,0 +1,81 @@
+# Resource contract runtime detection (strict namespaces)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mimir-rules-resource-contract-runtime
+  namespace: mimir
+  labels:
+    mimir.grafana.com/rules: "true"
+    app.kubernetes.io/component: ruler
+data:
+  resource-contract-runtime.yaml: |
+    # yaml-language-server: $schema=https://json.schemastore.org/prometheus-rule.json
+    groups:
+      - name: resource.contract.runtime
+        interval: 1m
+        rules:
+          - alert: ResourceContractStrictMissingRequestsCPU
+            expr: |
+              count by (namespace, pod, container) (
+                (
+                  kube_pod_container_info{container!="POD"}
+                  and on(namespace, pod) (kube_pod_status_phase{phase="Running"} == 1)
+                  and on(namespace) kube_namespace_labels{label_deploykube_dev_resource_contract="strict"}
+                )
+                unless on(namespace, pod, container)
+                kube_pod_container_resource_requests{resource="cpu"}
+              ) > 0
+            for: 15m
+            labels:
+              severity: critical
+              team: platform
+              service: policy
+              cluster: deploykube
+              runbook_url: docs/runbooks/resource-contract-runtime-alerts.md
+            annotations:
+              summary: "Strict namespace container missing requests.cpu ({{ $labels.namespace }}/{{ $labels.pod }}:{{ $labels.container }})"
+              description: "A running container in a strict namespace is missing requests.cpu. This should be prevented by admission; investigate operator-created pods or drift."
+
+          - alert: ResourceContractStrictMissingRequestsMemory
+            expr: |
+              count by (namespace, pod, container) (
+                (
+                  kube_pod_container_info{container!="POD"}
+                  and on(namespace, pod) (kube_pod_status_phase{phase="Running"} == 1)
+                  and on(namespace) kube_namespace_labels{label_deploykube_dev_resource_contract="strict"}
+                )
+                unless on(namespace, pod, container)
+                kube_pod_container_resource_requests{resource="memory"}
+              ) > 0
+            for: 15m
+            labels:
+              severity: critical
+              team: platform
+              service: policy
+              cluster: deploykube
+              runbook_url: docs/runbooks/resource-contract-runtime-alerts.md
+            annotations:
+              summary: "Strict namespace container missing requests.memory ({{ $labels.namespace }}/{{ $labels.pod }}:{{ $labels.container }})"
+              description: "A running container in a strict namespace is missing requests.memory. This should be prevented by admission; investigate operator-created pods or drift."
+
+          - alert: ResourceContractStrictMissingLimitsMemory
+            expr: |
+              count by (namespace, pod, container) (
+                (
+                  kube_pod_container_info{container!="POD"}
+                  and on(namespace, pod) (kube_pod_status_phase{phase="Running"} == 1)
+                  and on(namespace) kube_namespace_labels{label_deploykube_dev_resource_contract="strict"}
+                )
+                unless on(namespace, pod, container)
+                kube_pod_container_resource_limits{resource="memory"}
+              ) > 0
+            for: 15m
+            labels:
+              severity: critical
+              team: platform
+              service: policy
+              cluster: deploykube
+              runbook_url: docs/runbooks/resource-contract-runtime-alerts.md
+            annotations:
+              summary: "Strict namespace container missing limits.memory ({{ $labels.namespace }}/{{ $labels.pod }}:{{ $labels.container }})"
+              description: "A running container in a strict namespace is missing limits.memory. This should be prevented by admission; investigate operator-created pods or drift."

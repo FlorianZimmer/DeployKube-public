@@ -1,0 +1,79 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: tenant-smoke
+  namespace: argocd
+  labels:
+    darksite.cloud/tenant-id: smoke
+  annotations:
+    argocd.argoproj.io/sync-wave: "-98"
+spec:
+  description: Tenant org smoke
+
+  # Tenant self-service (no per-tenant growth in global argocd-rbac-cm):
+  # Bind Keycloak groups to Argo roles inside the tenant AppProject.
+  roles:
+    - name: admin
+      description: Tenant org admin (smoke)
+      policies:
+        - p, proj:tenant-smoke:admin, applications, get, tenant-smoke/*, allow
+        - p, proj:tenant-smoke:admin, applications, sync, tenant-smoke/*, allow
+        - p, proj:tenant-smoke:admin, logs, get, tenant-smoke/*, allow
+        - p, proj:tenant-smoke:admin, projects, get, tenant-smoke, allow
+      groups:
+        - dk-tenant-smoke-admins
+
+    - name: viewer
+      description: Tenant org viewer (smoke)
+      policies:
+        - p, proj:tenant-smoke:viewer, applications, get, tenant-smoke/*, allow
+        - p, proj:tenant-smoke:viewer, logs, get, tenant-smoke/*, allow
+        - p, proj:tenant-smoke:viewer, projects, get, tenant-smoke, allow
+      groups:
+        - dk-tenant-smoke-viewers
+
+  # Repo-per-project product mode:
+  # - Forgejo org: tenant-smoke
+  # - Repos: apps-<projectId>.git
+  sourceRepos:
+    - https://forgejo-https.forgejo.svc.cluster.local/tenant-smoke/*
+
+  # Namespace boundary (org-scoped):
+  destinations:
+    - name: in-cluster
+      namespace: t-smoke-p-*-*
+
+  # Tenants must not apply cluster-scoped resources via GitOps.
+  # Keep this list empty by using a non-existent API group/kind.
+  clusterResourceWhitelist:
+    - group: do-not-use
+      kind: DoNotUse
+
+  # Namespaced workload-plane allowlist (tight by default; expand with evidence).
+  namespaceResourceWhitelist:
+    - group: ""
+      kind: ConfigMap
+    - group: ""
+      kind: PersistentVolumeClaim
+    - group: ""
+      kind: Service
+    - group: ""
+      kind: ServiceAccount
+    - group: apps
+      kind: Deployment
+    - group: apps
+      kind: DaemonSet
+    - group: apps
+      kind: StatefulSet
+    - group: autoscaling
+      kind: HorizontalPodAutoscaler
+    - group: batch
+      kind: Job
+    - group: batch
+      kind: CronJob
+    - group: networking.k8s.io
+      kind: NetworkPolicy
+    - group: policy
+      kind: PodDisruptionBudget
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute

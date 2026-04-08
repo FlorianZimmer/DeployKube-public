@@ -1,0 +1,59 @@
+# Tenant prohibited kinds contract (static PR gate input)
+#
+# This list defines apiGroups/kinds that must never appear in rendered tenant manifests.
+# It is intentionally conservative until the tenant security model productizes additional capabilities.
+#
+# Used by:
+# - shared/scripts/tenant/validate-prohibited-kinds.sh
+items:
+  # Access-plane APIs (must be platform-owned / GitOps-only)
+  - group: admissionregistration.k8s.io
+    kind: "*"
+  - group: apiextensions.k8s.io
+    kind: "*"
+  - group: apiregistration.k8s.io
+    kind: "*"
+  - group: argoproj.io
+    kind: "*"
+  - group: external-secrets.io
+    kind: "*"
+  - group: kyverno.io
+    kind: "*"
+  - group: rbac.authorization.k8s.io
+    kind: "*"
+  - group: storage.k8s.io
+    kind: "*"
+
+  # Core cluster-scoped resources (partial list; keep adding with evidence)
+  - group: ""
+    kind: Namespace
+  - group: ""
+    kind: Node
+  - group: ""
+    kind: PersistentVolume
+  - group: ""
+    kind: Secret
+
+  # Gateway API escape hatches (tenant routes must not attach/bridge across namespaces by default)
+  - group: gateway.networking.k8s.io
+    kind: GatewayClass
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+  - group: gateway.networking.k8s.io
+    kind: ReferenceGrant
+
+  # cert-manager: cluster-wide issuers are platform-owned
+  - group: cert-manager.io
+    kind: ClusterIssuer
+  # Tenant endpoint TLS is platform-owned. Tenants do not author cert-manager APIs directly;
+  # the platform reconciles endpoint certificates from higher-level tenant intent.
+  - group: cert-manager.io
+    kind: Certificate
+  - group: cert-manager.io
+    kind: Issuer
+  - group: cert-manager.io
+    kind: CertificateRequest
+  - group: acme.cert-manager.io
+    kind: Order
+  - group: acme.cert-manager.io
+    kind: Challenge

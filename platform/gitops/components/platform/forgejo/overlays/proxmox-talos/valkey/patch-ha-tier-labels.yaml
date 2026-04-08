@@ -1,0 +1,25 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: forgejo-valkey
+  namespace: forgejo
+  labels:
+    darksite.cloud/ha-tier: tier-0
+spec:
+  template:
+    metadata:
+      labels:
+        darksite.cloud/ha-tier: tier-0
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: forgejo-valkey-sentinel
+  namespace: forgejo
+  labels:
+    darksite.cloud/ha-tier: tier-0
+spec:
+  template:
+    metadata:
+      labels:
+        darksite.cloud/ha-tier: tier-0

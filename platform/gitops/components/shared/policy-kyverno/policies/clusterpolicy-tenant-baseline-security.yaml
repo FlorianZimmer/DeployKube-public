@@ -1,0 +1,36 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: tenant-baseline-security
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  admission: true
+  validationFailureAction: Enforce
+  background: false
+  emitWarning: false
+  rules:
+    - name: enforce-pss-restricted
+      match:
+        any:
+          - resources:
+              kinds: ["Pod"]
+              namespaceSelector:
+                matchLabels:
+                  darksite.cloud/rbac-profile: tenant
+      skipBackgroundRequests: true
+      preconditions:
+        all:
+          # Allow the platform-owned PVC backup plane to create temporary backup Pods in
+          # tenant namespaces. These Pods require an NFS volume, which is forbidden by
+          # PSS restricted, and are not tenant-controlled.
+          - key: "{{ request.userInfo.username }}"
+            operator: NotIn
+            value:
+              - system:serviceaccount:backup-system:backup-pvc-restic-runner
+      validate:
+        message: "Tenant pods must comply with Pod Security Standards (restricted)."
+        allowExistingViolations: true
+        podSecurity:
+          level: restricted
+          version: latest

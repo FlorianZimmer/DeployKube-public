@@ -1,0 +1,149 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: valkey-ingress
+  labels:
+    app.kubernetes.io/part-of: valkey
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: valkey
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: valkey
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: valkey-sentinel
+        - namespaceSelector:
+            matchExpressions:
+              - key: darksite.cloud/valkey-client
+                operator: In
+                values:
+                  - "true"
+      ports:
+        - port: 6379
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: valkey-egress
+  labels:
+    app.kubernetes.io/part-of: valkey
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: valkey
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: valkey-sentinel
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: valkey
+      ports:
+        - port: 6379
+          protocol: TCP
+        - port: 26379
+          protocol: TCP
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: istio-system
+      ports:
+        - port: 15012
+          protocol: TCP
+        - port: 15017
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: valkey-sentinel-ingress
+  labels:
+    app.kubernetes.io/part-of: valkey
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: valkey-sentinel
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: valkey-sentinel
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: valkey
+        - namespaceSelector:
+            matchExpressions:
+              - key: darksite.cloud/valkey-client
+                operator: In
+                values:
+                  - "true"
+      ports:
+        - port: 26379
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: valkey-sentinel-egress
+  labels:
+    app.kubernetes.io/part-of: valkey
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: valkey-sentinel
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: valkey-sentinel
+      ports:
+        - port: 26379
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: valkey
+      ports:
+        - port: 6379
+          protocol: TCP
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: istio-system
+      ports:
+        - port: 15012
+          protocol: TCP
+        - port: 15017
+          protocol: TCP

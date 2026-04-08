@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: keycloak
+resources:
+  - rbac.yaml
+  - cronjob.yaml
+  - cronjob-ldap-sync.yaml
+  - ../../../../shared/bootstrap-scripts/istio-native-exit
+configMapGenerator:
+  - name: keycloak-iam-sync-script
+    files:
+      - scripts/iam-sync.sh
+  - name: keycloak-ldap-sync-script
+    files:
+      - scripts/ldap-sync.sh
+generatorOptions:
+  disableNameSuffixHash: true

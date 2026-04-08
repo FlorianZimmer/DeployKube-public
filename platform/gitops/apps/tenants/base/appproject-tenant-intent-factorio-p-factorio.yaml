@@ -1,0 +1,37 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: tenant-intent-factorio-p-factorio
+  namespace: argocd
+  labels:
+    darksite.cloud/tenant-id: factorio
+    darksite.cloud/project-id: factorio
+  annotations:
+    argocd.argoproj.io/sync-wave: "-98"
+spec:
+  description: Tenant intent (platform-owned) factorio/factorio
+
+  # Monorepo fallback: tenant intent lives under platform/cluster-config.git.
+  # Tenants do not have write access to this repo in v1.
+  sourceRepos:
+    - https://forgejo-https.forgejo.svc.cluster.local/platform/cluster-config.git
+
+  destinations:
+    - name: in-cluster
+      namespace: t-factorio-p-factorio-*
+
+  # Tenant intent is platform-owned and may create Namespaces.
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+
+  # Tenant intent is platform-owned but must remain workload-plane only.
+  namespaceResourceWhitelist:
+    - group: rbac.authorization.k8s.io
+      kind: Role
+    - group: rbac.authorization.k8s.io
+      kind: RoleBinding
+    - group: external-secrets.io
+      kind: ExternalSecret
+    - group: networking.k8s.io
+      kind: NetworkPolicy

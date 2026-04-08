@@ -1,0 +1,10 @@
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: kubernetes-apiserver-no-mtls
+  namespace: observability
+spec:
+  host: kubernetes.default.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: DISABLE

@@ -1,0 +1,20 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: storage-backup-set-assemble
+spec:
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: assemble
+              env:
+                - name: REQUIRE_BREAKGLASS_KUBECONFIG
+                  value: "true"
+          volumes:
+            - name: recovery-breakglass
+              secret:
+                secretName: backup-breakglass-kubeconfig
+                defaultMode: 0400
+                optional: false

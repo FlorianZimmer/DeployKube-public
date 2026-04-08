@@ -1,0 +1,14 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: kiali
+  namespace: istio-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kiali
+      app.kubernetes.io/instance: kiali
+

@@ -1,0 +1,15 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minecraft
+  namespace: minecraft-monifactory
+spec:
+  template:
+    spec:
+      containers:
+        - name: minecraft
+          resources:
+            requests:
+              memory: "13500Mi"
+            limits:
+              memory: "13500Mi"

@@ -1,0 +1,16 @@
+schemaVersion: v1alpha1
+description: Component-owned Trivy targets for postgres and CNPG.
+watch_paths:
+  - platform/gitops/artifacts/runtime-artifact-index.yaml
+  - platform/gitops/components/data/postgres
+  - tests/trivy/components/postgres.yaml
+image_targets:
+  - id: cnpg-operator
+    artifact_catalog: runtime-artifacts
+    artifact_name: cnpg-operator
+  - id: cnpg-postgresql
+    artifact_catalog: runtime-artifacts
+    artifact_name: cnpg-postgresql
+config_targets:
+  - id: postgres-manifests
+    path: platform/gitops/components/data/postgres

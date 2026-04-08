@@ -1,0 +1,45 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Tenant registry is platform-owned access-plane state.
+# This base is the Git input for:
+# - tenant Argo access-plane objects (AppProjects + root Applications)
+# - platform authZ state (Keycloak/Vault) derived from tenant-registry.yaml
+resources:
+  # Platform-owned tenant intent AppProjects (monorepo fallback; Tier S0)
+  - appproject-tenant-intent-factorio-p-factorio.yaml
+  - appproject-tenant-intent-other-p-demo.yaml
+  - appproject-tenant-intent-smoke-p-demo.yaml
+
+  # Tenant workload AppProjects (repo-per-project; Tier S1 "product mode")
+  - appproject-tenant-factorio-p-factorio.yaml
+  - appproject-tenant-factorio.yaml
+  - appproject-tenant-other-p-demo.yaml
+  - appproject-tenant-other.yaml
+  - appproject-tenant-smoke-p-demo.yaml
+  - appproject-tenant-smoke.yaml
+
+generatorOptions:
+  disableNameSuffixHash: true
+
+configMapGenerator:
+  - name: deploykube-tenant-registry
+    namespace: keycloak
+    files:
+      - tenant-registry.yaml=tenant-registry.yaml
+  - name: deploykube-tenant-registry
+    namespace: vault-system
+    files:
+      - tenant-registry.yaml=tenant-registry.yaml
+  - name: deploykube-tenant-registry
+    namespace: garage
+    files:
+      - tenant-registry.yaml=tenant-registry.yaml
+  - name: deploykube-tenant-registry
+    namespace: backup-system
+    files:
+      - tenant-registry.yaml=tenant-registry.yaml
+  - name: deploykube-tenant-registry
+    namespace: rbac-system
+    files:
+      - tenant-registry.yaml=tenant-registry.yaml

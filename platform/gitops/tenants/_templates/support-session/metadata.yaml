@@ -1,0 +1,20 @@
+# Support session metadata (DeployKube internal input; not a Kubernetes object)
+apiVersion: tenancy.darksite.cloud/v1alpha1
+kind: SupportSession
+
+# Required: must match the tenant folder name.
+orgId: <orgId>
+
+# Required: bounded access levels (see docs/design/multitenancy-lifecycle-and-data-deletion.md#9-4).
+level: L1 # L1|L2|L3
+
+# Required: RFC3339 timestamp in UTC or with offset (CI enforces TTL).
+expiresAt: "2026-01-01T00:00:00Z"
+
+# Required: non-PII; include ticket/incident reference when applicable.
+requestedBy: <name>
+reason: <ticket-or-summary>
+
+# Optional: record approvals and evidence pointers (Git history is the audit trail).
+approvedBy: []
+evidenceRef: ""

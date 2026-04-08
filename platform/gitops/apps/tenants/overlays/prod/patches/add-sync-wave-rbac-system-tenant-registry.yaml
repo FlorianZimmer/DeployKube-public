@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: deploykube-tenant-registry
+  namespace: rbac-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"

@@ -1,0 +1,99 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: storage-smoke-s3-latency
+  namespace: garage
+  labels:
+    app.kubernetes.io/name: storage-smoke-s3-latency
+spec:
+  schedule: "*/10 * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 600
+      ttlSecondsAfterFinished: 900
+      template:
+        metadata:
+          annotations:
+            sidecar.istio.io/nativeSidecar: "true"
+        spec:
+          serviceAccountName: storage-smoke
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: smoke
+              image: registry.example.internal/deploykube/bootstrap-tools:1.4
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              envFrom:
+                - secretRef:
+                    name: garage-s3
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -euo pipefail
+                  ISTIO_HELPER="/helpers/istio-native-exit.sh"
+                  [ -f "${ISTIO_HELPER}" ] || { echo "missing istio-native-exit helper" >&2; exit 1; }
+                  . "${ISTIO_HELPER}"
+                  trap deploykube_istio_quit_sidecar EXIT INT TERM
+
+                  # Native-sidecar pods can start the workload container before Envoy is fully Ready.
+                  # Avoid false negatives by waiting for the local Envoy readiness endpoint.
+                  for _ in $(seq 1 60); do
+                    if curl -sf http://127.0.0.1:15021/healthz/ready >/dev/null 2>&1; then
+                      break
+                    fi
+                    sleep 1
+                  done
+
+                  : "${S3_ACCESS_KEY:?missing S3_ACCESS_KEY}"
+                  : "${S3_SECRET_KEY:?missing S3_SECRET_KEY}"
+                  : "${S3_REGION:?missing S3_REGION}"
+                  : "${S3_ENDPOINT:?missing S3_ENDPOINT}"
+
+                  # BUCKET_BACKUPS is not present in every deployment yet; keep the smoke usable
+                  # and default to the repo’s canonical backups bucket.
+                  BUCKET_BACKUPS="${BUCKET_BACKUPS:-garage-backups}"
+                  export BUCKET_BACKUPS
+
+                  python3 /scripts/storage-smoke-s3-latency.py
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  memory: 256Mi
+              volumeMounts:
+                - name: scripts
+                  mountPath: /scripts
+                  readOnly: true
+                - name: istio-native-exit
+                  mountPath: /helpers
+                  readOnly: true
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: scripts
+              configMap:
+                name: storage-smoke-s3-latency
+                defaultMode: 0444
+            - name: istio-native-exit
+              configMap:
+                name: istio-native-exit-script
+                defaultMode: 0444
+            - name: tmp
+              emptyDir: {}

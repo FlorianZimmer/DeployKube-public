@@ -1,0 +1,184 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: shared-rwo-postsync-smoke
+  namespace: storage-system
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 600
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      restartPolicy: Never
+      serviceAccountName: shared-rwo-postsync-smoke
+      containers:
+        - name: smoke
+          image: registry.example.internal/deploykube/bootstrap-tools:1.4
+          imagePullPolicy: IfNotPresent
+          command:
+            - /usr/bin/env
+            - bash
+            - -lc
+            - |
+              set -euo pipefail
+
+              NS="storage-system"
+              PVC="shared-rwo-postsync-smoke"
+              WRITER="shared-rwo-postsync-writer"
+              READER="shared-rwo-postsync-reader"
+
+              echo "[1/7] Ensure provisioner is Ready (if present)"
+              kubectl -n "${NS}" rollout status \
+                deploy/nfs-provisioner-nfs-subdir-external-provisioner \
+                --timeout=60s || true
+
+              echo "[2/7] Cleanup any previous artifacts"
+              kubectl -n "${NS}" delete job "${WRITER}" --ignore-not-found
+              kubectl -n "${NS}" delete job "${READER}" --ignore-not-found
+              kubectl -n "${NS}" delete pvc "${PVC}" --ignore-not-found
+
+              echo "[3/7] Create test PVC without storageClassName (assert default is shared-rwo)"
+              cat <<EOF | kubectl -n "${NS}" apply -f -
+              apiVersion: v1
+              kind: PersistentVolumeClaim
+              metadata:
+                name: ${PVC}
+                labels:
+                  app.kubernetes.io/name: shared-rwo-postsync-smoke
+                  darksite.cloud/backup: skip
+                  darksite.cloud/backup-skip-reason: smoke-test
+              spec:
+                accessModes: ["ReadWriteOnce"]
+                resources:
+                  requests:
+                    storage: 1Gi
+              EOF
+
+              deadline=$((SECONDS + 30))
+              while true; do
+                sc="$(kubectl -n "${NS}" get pvc "${PVC}" -o jsonpath='{.spec.storageClassName}' 2>/dev/null || true)"
+                if [[ "${sc}" == "shared-rwo" ]]; then
+                  break
+                fi
+                if (( SECONDS >= deadline )); then
+                  echo "ERROR: expected PVC/${PVC} storageClassName=shared-rwo, got '${sc}'"
+                  kubectl -n "${NS}" get pvc "${PVC}" -o yaml || true
+                  exit 1
+                fi
+                sleep 1
+              done
+
+              echo "[4/7] Create writer Job (bind + write)"
+              cat <<EOF | kubectl -n "${NS}" apply -f -
+              apiVersion: batch/v1
+              kind: Job
+              metadata:
+                name: ${WRITER}
+                labels:
+                  app.kubernetes.io/name: shared-rwo-postsync-smoke
+              spec:
+                backoffLimit: 0
+                activeDeadlineSeconds: 300
+                ttlSecondsAfterFinished: 600
+                template:
+                  metadata:
+                    annotations:
+                      sidecar.istio.io/inject: "false"
+                  spec:
+                    restartPolicy: Never
+                    containers:
+                      - name: writer
+                        image: registry.example.internal/deploykube/bootstrap-tools:1.4
+                        command:
+                          - /bin/sh
+                          - -c
+                          - |
+                            set -euo pipefail
+                            date -Is > /data/smoke.txt
+                            sync
+                        volumeMounts:
+                          - name: data
+                            mountPath: /data
+                    volumes:
+                      - name: data
+                        persistentVolumeClaim:
+                          claimName: ${PVC}
+              EOF
+
+              kubectl -n "${NS}" wait --for=condition=complete "job/${WRITER}" --timeout=240s
+              kubectl -n "${NS}" logs "job/${WRITER}" --tail=200
+
+              echo "[5/7] Create reader Job (read)"
+              cat <<EOF | kubectl -n "${NS}" apply -f -
+              apiVersion: batch/v1
+              kind: Job
+              metadata:
+                name: ${READER}
+                labels:
+                  app.kubernetes.io/name: shared-rwo-postsync-smoke
+              spec:
+                backoffLimit: 0
+                activeDeadlineSeconds: 300
+                ttlSecondsAfterFinished: 600
+                template:
+                  metadata:
+                    annotations:
+                      sidecar.istio.io/inject: "false"
+                  spec:
+                    restartPolicy: Never
+                    containers:
+                      - name: reader
+                        image: registry.example.internal/deploykube/bootstrap-tools:1.4
+                        command:
+                          - /bin/sh
+                          - -c
+                          - |
+                            set -euo pipefail
+                            test -f /data/smoke.txt
+                            cat /data/smoke.txt
+                        volumeMounts:
+                          - name: data
+                            mountPath: /data
+                    volumes:
+                      - name: data
+                        persistentVolumeClaim:
+                          claimName: ${PVC}
+              EOF
+
+              kubectl -n "${NS}" wait --for=condition=complete "job/${READER}" --timeout=240s
+              kubectl -n "${NS}" logs "job/${READER}" --tail=200
+
+              echo "[6/7] Cleanup namespaced resources"
+              pv_name="$(kubectl -n "${NS}" get pvc "${PVC}" -o jsonpath='{.spec.volumeName}' || true)"
+              kubectl -n "${NS}" delete job "${READER}" --ignore-not-found
+              kubectl -n "${NS}" delete job "${WRITER}" --ignore-not-found
+
+              echo "[7/7] Ensure the PV does not leak (StorageClass is Retain)"
+              # The default `shared-rwo` StorageClass uses `reclaimPolicy: Retain`. If we simply delete the PVC,
+              # the PV (and backend directory) will be retained and drift accumulates over time.
+              #
+              # Best effort: patch the PV reclaim policy to `Delete`, then delete the PVC and wait for PV deletion.
+              if [[ -n "${pv_name}" ]]; then
+                kubectl patch pv "${pv_name}" --type merge -p '{"spec":{"persistentVolumeReclaimPolicy":"Delete"}}' || true
+              fi
+
+              kubectl -n "${NS}" delete pvc "${PVC}" --ignore-not-found
+
+              if [[ -n "${pv_name}" ]]; then
+                deadline=$((SECONDS + 120))
+                while kubectl get pv "${pv_name}" >/dev/null 2>&1; do
+                  if (( SECONDS >= deadline )); then
+                    echo "WARN: PV/${pv_name} still exists; forcing deletion"
+                    kubectl delete pv "${pv_name}" --ignore-not-found || true
+                    break
+                  fi
+                  sleep 2
+                done
+              fi

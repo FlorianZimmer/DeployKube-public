@@ -1,0 +1,30 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: platform-argocd-config
+  namespace: argocd
+  annotations:
+    # Depends on ESO-hydrated OIDC trust bundle (argocd-oidc-ca).
+    argocd.argoproj.io/sync-wave: "9"
+spec:
+  project: platform
+  destination:
+    name: in-cluster
+    namespace: argocd
+  source:
+    repoURL: https://forgejo-https.forgejo.svc.cluster.local/platform/cluster-config.git
+    targetRevision: main
+    path: components/platform/argocd/config
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      limit: 10
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 5m
+    syncOptions:
+      - CreateNamespace=false
+      - ApplyOutOfSyncOnly=true

@@ -1,0 +1,15 @@
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: argocd-redis-ha-permissive
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "4.4"
+spec:
+  selector:
+    matchLabels:
+      app: redis-ha
+      release: argo-cd
+  mtls:
+    mode: PERMISSIVE
+

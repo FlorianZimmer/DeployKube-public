@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-https-switch-state
+  namespace: argocd
+data:
+  configVersion: ""
+  configSha256: ""
+  lastAppliedAt: ""

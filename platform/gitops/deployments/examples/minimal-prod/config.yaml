@@ -1,0 +1,59 @@
+apiVersion: platform.darksite.cloud/v1alpha1
+kind: DeploymentConfig
+metadata:
+  name: minimal-prod
+spec:
+  deploymentId: minimal-prod
+  environmentId: prod
+
+  dns:
+    baseDomain: prod.internal.example.com
+    authority:
+      nameServers:
+        - ns1.prod.internal.example.com
+    delegation:
+      mode: manual
+      parentZone: internal.example.com
+    hostnames:
+      argocd: argocd.prod.internal.example.com
+      forgejo: forgejo.prod.internal.example.com
+      keycloak: keycloak.prod.internal.example.com
+      vault: vault.prod.internal.example.com
+      grafana: grafana.prod.internal.example.com
+
+  certificates:
+    platformIngress:
+      mode: subCa
+    tenants:
+      mode: subCa
+
+  iam:
+    mode: standalone
+    primaryRealm: deploykube-admin
+    secondaryRealms:
+      - deploykube-apps
+
+  trustRoots:
+    stepCaRootCertPath: shared/certs/deploykube-root-ca.crt
+
+  secrets:
+    rootOfTrust:
+      provider: kmsShim
+      mode: inCluster
+      assurance: low
+      acknowledgeLowAssurance: true
+
+  time:
+    ntp:
+      upstreamServers:
+        - time.cloudflare.com
+
+  network:
+    handoffMode: l2
+    metallb:
+      pools:
+        public:
+          - 198.51.100.10-198.51.100.20
+
+  backup:
+    enabled: false

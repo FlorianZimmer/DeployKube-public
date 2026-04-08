@@ -1,0 +1,234 @@
+name: Security Scanning
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/security-scanning.yml
+      - platform/gitops/artifacts/package-index.yaml
+      - platform/gitops/artifacts/runtime-artifact-index.yaml
+      - platform/gitops/components/certificates/cert-manager/**
+      - platform/gitops/components/certificates/step-ca/**
+      - platform/gitops/components/data/postgres/**
+      - platform/gitops/components/data/valkey/**
+      - platform/gitops/components/dns/external-sync/**
+      - platform/gitops/components/dns/powerdns/**
+      - platform/gitops/components/networking/coredns/**
+      - platform/gitops/components/networking/metallb/**
+      - platform/gitops/components/networking/istio/**
+      - platform/gitops/components/platform/argocd/**
+      - platform/gitops/components/platform/forgejo/**
+      - platform/gitops/components/platform/observability/**
+      - platform/gitops/components/platform/registry/harbor/**
+      - platform/gitops/components/platform/keycloak/**
+      - platform/gitops/components/secrets/external-secrets/**
+      - platform/gitops/components/secrets/vault/**
+      - platform/gitops/components/storage/garage/**
+      - platform/gitops/components/storage/nfs-provisioner/**
+      - platform/gitops/components/shared/policy-kyverno/**
+      - shared/images/bootstrap-tools/**
+      - shared/images/scim-bridge/**
+      - shared/images/validation-tools-core/**
+      - shared/scripts/build-scim-bridge-image.sh
+      - shared/scripts/publish-scim-bridge-image.sh
+      - tests/scripts/publish-trivy-ci-metrics.sh
+      - tests/scripts/resolve-trivy-ci-targets.sh
+      - tests/scripts/scan-cert-manager-images.sh
+      - tests/scripts/scan-trivy-ci.sh
+      - tests/scripts/validate-security-scanning-contract.sh
+      - tests/scripts/validate-trivy-repo-owned-image-coverage.sh
+      - tests/fixtures/trivy-repo-owned-image-exemptions.txt
+      - tests/trivy/**
+      - tools/scim-bridge/**
+      - tools/tenant-provisioner/**
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      kubeconfig_path:
+        description: Optional absolute path to kubeconfig on runner
+        type: string
+        default: ""
+      target_mode:
+        description: Scan target type
+        type: choice
+        options:
+          - profile
+          - component
+        default: profile
+      target_name:
+        description: Aggregate profile or component name
+        type: string
+        default: platform-core
+
+permissions:
+  contents: read
+
+jobs:
+  resolve-targets:
+    runs-on:
+      - self-hosted
+    outputs:
+      scan_count: ${{ steps.resolve.outputs.scan_count }}
+      scan_matrix: ${{ steps.resolve.outputs.scan_matrix }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install yq (mikefarah)
+        run: |
+          set -euo pipefail
+          if command -v yq >/dev/null 2>&1; then
+            yq --version
+            exit 0
+          fi
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.47.2/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
+
+      - name: Install jq
+        run: |
+          if command -v jq >/dev/null 2>&1; then
+            jq --version
+            exit 0
+          fi
+          sudo apt-get update
+          sudo apt-get install -y jq
+          jq --version
+
+      - name: Resolve scan targets
+        id: resolve
+        run: |
+          set -euo pipefail
+          case "${{ github.event_name }}" in
+            pull_request)
+              scan_matrix="$(./tests/scripts/resolve-trivy-ci-targets.sh \
+                --event-name pull_request \
+                --base "${{ github.event.pull_request.base.sha }}" \
+                --head "${{ github.sha }}")"
+              ;;
+            workflow_dispatch)
+              scan_matrix="$(./tests/scripts/resolve-trivy-ci-targets.sh \
+                --event-name workflow_dispatch \
+                --mode "${{ github.event.inputs.target_mode }}" \
+                --target "${{ github.event.inputs.target_name }}")"
+              ;;
+            push)
+              scan_matrix="$(./tests/scripts/resolve-trivy-ci-targets.sh \
+                --event-name push \
+                --mode profile \
+                --target __default__)"
+              ;;
+            schedule)
+              scan_matrix="$(./tests/scripts/resolve-trivy-ci-targets.sh \
+                --event-name schedule \
+                --mode profile \
+                --target __default__)"
+              ;;
+            *)
+              echo "unsupported event '${{ github.event_name }}'" >&2
+              exit 1
+              ;;
+          esac
+
+          scan_count="$(printf '%s' "${scan_matrix}" | jq 'length')"
+          echo "scan_count=${scan_count}" >> "${GITHUB_OUTPUT}"
+          echo "scan_matrix=${scan_matrix}" >> "${GITHUB_OUTPUT}"
+          printf 'Resolved scan matrix: %s\n' "${scan_matrix}"
+
+  security-scan:
+    needs:
+      - resolve-targets
+    if: needs.resolve-targets.outputs.scan_count != '0'
+    runs-on:
+      - self-hosted
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.resolve-targets.outputs.scan_matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup kubectl
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        uses: azure/setup-kubectl@v4
+        with:
+          version: v1.34.2
+
+      - name: Install yq (mikefarah)
+        run: |
+          set -euo pipefail
+          if command -v yq >/dev/null 2>&1; then
+            yq --version
+            exit 0
+          fi
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.47.2/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
+
+      - name: Install jq
+        run: |
+          if command -v jq >/dev/null 2>&1; then
+            jq --version
+            exit 0
+          fi
+          sudo apt-get update
+          sudo apt-get install -y jq
+          jq --version
+
+      - name: Resolve kubeconfig
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          if [[ -n "${{ github.event.inputs.kubeconfig_path }}" ]]; then
+            echo "KUBECONFIG=${{ github.event.inputs.kubeconfig_path }}" >> "${GITHUB_ENV}"
+          elif [[ -n "${{ vars.DK_E2E_KUBECONFIG }}" ]]; then
+            echo "KUBECONFIG=${{ vars.DK_E2E_KUBECONFIG }}" >> "${GITHUB_ENV}"
+          fi
+
+      - name: Run centralized Trivy scan
+        id: scan
+        run: |
+          set +e
+          scan_args=(--output-dir tmp/trivy-ci-scan)
+          if [[ "${{ matrix.mode }}" == "component" ]]; then
+            scan_args+=(--component "${{ matrix.target }}")
+          else
+            scan_args+=(--profile "${{ matrix.target }}")
+          fi
+          ./tests/scripts/scan-trivy-ci.sh "${scan_args[@]}"
+          scan_exit=$?
+          echo "scan_exit=${scan_exit}" >> "${GITHUB_OUTPUT}"
+          exit 0
+
+      - name: Upload scan artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-ci-${{ matrix.artifact_label }}
+          path: tmp/trivy-ci-scan
+          if-no-files-found: warn
+
+      - name: Publish Mimir metrics
+        if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && env.KUBECONFIG != '' && matrix.mode == 'profile'
+        run: |
+          set -euo pipefail
+          run_success=1
+          if [[ "${{ steps.scan.outputs.scan_exit }}" != "0" ]]; then
+            run_success=0
+          fi
+          publish_args=(--run-success "${run_success}" --inventory-label "${{ matrix.target }}")
+          if [[ -f tmp/trivy-ci-scan/summary.json ]]; then
+            publish_args+=(--summary tmp/trivy-ci-scan/summary.json)
+          fi
+          ./tests/scripts/publish-trivy-ci-metrics.sh "${publish_args[@]}"
+
+      - name: Fail workflow on scan error
+        if: steps.scan.outputs.scan_exit != '0'
+        run: exit 1

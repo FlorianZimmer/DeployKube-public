@@ -1,0 +1,40 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+configMapGenerator:
+  - name: mesh-security-verifier-script
+    files:
+      - mesh-security-verifier.sh=scripts/mesh-security-verifier.sh
+
+generatorOptions:
+  disableNameSuffixHash: true
+
+resources:
+  - rbac.yaml
+  - job-mesh-security-verifier.yaml
+  - rbac-mesh-posture-smoke.yaml
+  - job-mesh-posture-smoke.yaml
+  - peer-authentication-argocd-redis.yaml
+  - peer-authentication-argocd-redis-ha.yaml
+  - peer-authentication-argocd-redis-ha-haproxy.yaml
+  - peer-authentication-argocd-repo-server.yaml
+  - peer-authentication-cert-manager-webhook.yaml
+  - peer-authentication-external-secrets-webhook.yaml
+  - peer-authentication-forgejo.yaml
+  - peer-authentication-keycloak.yaml
+  - peer-authentication-vault.yaml
+  - peer-authentication-default.yaml
+  - peer-authentication-kube-system.yaml
+  - peer-authentication-ingressgateway.yaml
+  - destination-rule-kube-apiserver.yaml
+  - destination-rule-argocd-redis-ha.yaml
+  - destination-rule-argocd-redis-ha-haproxy.yaml
+  - destination-rule-argocd-redis-ha-announce-0.yaml
+  - destination-rule-argocd-redis-ha-announce-1.yaml
+  - destination-rule-argocd-redis-ha-announce-2.yaml
+  - destination-rule-istio-ingressgateway.yaml
+  - destination-rule-public-gateway-istio.yaml
+  - destination-rule-keycloak-postgres.yaml
+  - destination-rule-powerdns-postgres.yaml
+  - destination-rule-forgejo-postgres.yaml
+  - destination-rule-harbor-postgres.yaml

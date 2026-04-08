@@ -1,0 +1,16 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: istio-operator
+  namespace: istio-operator
+spec:
+  template:
+    spec:
+      containers:
+        - name: istio-operator
+          resources:
+            requests:
+              cpu: "15m"
+              memory: "144Mi"
+            limits:
+              memory: "216Mi"

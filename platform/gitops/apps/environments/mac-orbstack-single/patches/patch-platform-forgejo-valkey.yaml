@@ -1,0 +1,9 @@
+# Patch ArgoCD app to use non-persistent Valkey overlay for dev.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: platform-forgejo-valkey
+  namespace: argocd
+spec:
+  source:
+    path: components/platform/forgejo/overlays/mac-orbstack-single/valkey

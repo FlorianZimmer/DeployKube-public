@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: dns-system
+resources:
+  - ../../base
+  - destinationrule-kube-apiserver.yaml
+  - networkpolicy-lan-dns.yaml
+  - networkpolicy-coredns.yaml
+  - networkpolicy-powerdns-api.yaml
+  - networkpolicy-observability-vip-probes.yaml
+  - dns-http-smoke-cronjob.yaml
+  - cloud-dns-tenant-zone-smoke-cronjob.yaml
+patchesStrategicMerge:
+  - patch-powerdns-service.yaml
+patches:
+  - path: patch-ha-tier-labels.yaml

@@ -1,0 +1,179 @@
+fullnameOverride: grafana
+
+admin:
+  existingSecret: grafana-admin
+  userKey: admin-user
+  passwordKey: admin-password
+
+envFromSecret: grafana-oidc
+env:
+  GF_AUTH_GENERIC_OAUTH_ENABLED: "true"
+  GF_AUTH_GENERIC_OAUTH_NAME: "Keycloak"
+  GF_AUTH_GENERIC_OAUTH_SCOPES: "openid profile email"
+  # Browser redirects must use the public Keycloak URL, but token exchange/userinfo can use
+  # the in-cluster Keycloak Service (Istio mTLS still applies) to avoid LB hairpin issues.
+  GF_AUTH_GENERIC_OAUTH_TOKEN_URL: "http://keycloak.keycloak.svc.cluster.local:8080/realms/deploykube-admin/protocol/openid-connect/token"
+  GF_AUTH_GENERIC_OAUTH_API_URL: "http://keycloak.keycloak.svc.cluster.local:8080/realms/deploykube-admin/protocol/openid-connect/userinfo"
+  GF_AUTH_GENERIC_OAUTH_USE_REFRESH_TOKEN: "true"
+  GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH: "contains(groups, 'dk-platform-admins') && 'Admin' || contains(groups, 'dk-platform-operators') && 'Editor' || contains(groups, 'dk-security-ops') && 'Editor' || contains(groups, 'dk-auditors') && 'Viewer' || 'None'"
+  GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_STRICT: "true"
+  # Allow Grafana to auto-provision users after successful OIDC login.
+  # Keep the local login form disabled; access remains controlled by Keycloak.
+  GF_AUTH_GENERIC_OAUTH_ALLOW_SIGN_UP: "true"
+
+ingress:
+  enabled: false  # HTTPRoute/mesh ingress will replace this
+
+service:
+  # Istio Gateway API (Gateway/HTTPRoute) routes to a Service port. Keep this aligned
+  # with Grafana's HTTP port to avoid Envoy `cluster_not_found` on the gateway.
+  port: 3000
+  targetPort: 3000
+  portName: http
+  appProtocol: http
+
+serviceAccount:
+  create: true
+
+deploymentStrategy:
+  type: Recreate
+
+podDisruptionBudget:
+  # Prevent voluntary disruptions from evicting the only Grafana replica unexpectedly.
+  minAvailable: 1
+
+persistence:
+  enabled: true
+  type: pvc
+  size: 5Gi
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: shared-rwo
+
+datasources:
+  # Grafana provisioning validates cross-datasource references (e.g. derivedFields,
+  # tracesToLogs, exemplarTraceIdDestinations). Since our Loki/Tempo/Mimir datasources
+  # reference each other, we provision them in two phases:
+  # 1) Create base datasources without cross references.
+  # 2) Update datasources with correlation links once all UIDs exist.
+  10-datasources-base.yaml:
+    apiVersion: 1
+    deleteDatasources:
+      - name: loki-platform
+        orgId: 1
+      - name: tempo-platform
+        orgId: 1
+      - name: mimir-prometheus
+        orgId: 1
+    datasources:
+      - name: loki-platform
+        type: loki
+        uid: lokiplatform
+        access: proxy
+        url: http://loki-gateway.loki.svc.cluster.local
+        editable: false
+        jsonData:
+          httpHeaderName1: X-Scope-OrgID
+          tlsSkipVerify: false
+        secureJsonData:
+          httpHeaderValue1: platform
+
+      - name: tempo-platform
+        type: tempo
+        uid: tempoplatform
+        access: proxy
+        url: http://tempo.tempo.svc.cluster.local:3200
+        editable: false
+        jsonData:
+          httpHeaderName1: X-Scope-OrgID
+          tlsSkipVerify: false
+          nodeGraph:
+            enabled: true
+          search:
+            hide: false
+        secureJsonData:
+          httpHeaderValue1: platform
+
+      - name: mimir-prometheus
+        type: prometheus
+        uid: mimirprometheus
+        access: proxy
+        # Query the querier directly; the gateway has been timing out on DNS lookups.
+        url: http://mimir-querier.mimir.svc.cluster.local:8080/prometheus
+        isDefault: true
+        editable: false
+        jsonData:
+          httpHeaderName1: X-Scope-OrgID
+          manageAlerts: true
+          httpMethod: POST
+          tlsSkipVerify: false
+        secureJsonData:
+          httpHeaderValue1: platform
+
+grafana.ini:
+  security:
+    # OIDC needs the oauth_state cookie to survive the Keycloak round-trip.
+    # However, in environments where clients have not imported the internal CA and only
+    # "click through" TLS warnings, browsers may refuse to persist Secure/None cookies.
+    # Use SameSite=Lax without Secure as a pragmatic workaround until we have a trusted cert strategy.
+    cookie_samesite: lax
+    cookie_secure: false
+  auth:
+    disable_login_form: true
+    oauth_auto_login: true
+  unified_alerting:
+    enabled: true
+  users:
+    # Required for first-login OIDC user provisioning. The local login form remains disabled
+    # (auth.disable_login_form=true), so access is still controlled by Keycloak.
+    allow_sign_up: true
+    auto_assign_org: true
+    auto_assign_org_role: Viewer
+
+serviceMonitor:
+  enabled: true
+
+# Resource contract Tier 1: ensure all Grafana containers declare requests and a memory limit.
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 1Gi
+
+initChownData:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      memory: 128Mi
+
+testFramework:
+  enabled: false
+
+# Dashboard provisioning from ConfigMaps
+# Dashboards are mounted from the grafana-dashboards-platform ConfigMap created by dashboards/
+dashboardProviders:
+  dashboardproviders.yaml:
+    apiVersion: 1
+    providers:
+      - name: 'platform'
+        orgId: 1
+        folder: 'Platform'
+        type: file
+        # Reload dashboards from mounted ConfigMaps without requiring a Grafana restart.
+        updateIntervalSeconds: 30
+        disableDeletion: true
+        editable: false
+        options:
+          path: /var/lib/grafana/dashboards/platform
+
+# Mount dashboard ConfigMaps
+dashboardsConfigMaps:
+  platform: "grafana-dashboards-platform"
+
+# Sidecar for dashboard discovery (alternative method, disabled for now)
+sidecar:
+  dashboards:
+    enabled: false

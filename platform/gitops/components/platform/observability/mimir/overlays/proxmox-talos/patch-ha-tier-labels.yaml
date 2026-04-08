@@ -1,0 +1,194 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mimir-distributor
+  namespace: mimir
+  labels:
+    darksite.cloud/ha-tier: tier-2
+spec:
+  template:
+    metadata:
+      labels:
+        darksite.cloud/ha-tier: tier-2
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mimir-gateway
+  namespace: mimir
+  labels:
+    darksite.cloud/ha-tier: tier-2
+spec:
+  template:
+    metadata:
+      labels:
+        darksite.cloud/ha-tier: tier-2
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mimir-overrides-exporter
+  namespace: mimir
+  labels:
+    darksite.cloud/ha-tier: tier-2
+spec:
+  template:
+    metadata:
+      labels:
+        darksite.cloud/ha-tier: tier-2
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mimir-querier
+  namespace: mimir
+  labels:
+    darksite.cloud/ha-tier: tier-1
+spec:
+  template:
+    metadata:
+      labels:
+        darksite.cloud/ha-tier: tier-1
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mimir-query-frontend
+  namespace: mimir
+  labels:
+    darksite.cloud/ha-tier: tier-2
+spec:
+  template:
+    metadata:
+      labels:
+        darksite.cloud/ha-tier: tier-2
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mimir-query-scheduler
+  namespace: mimir
+  labels:
+    darksite.cloud/ha-tier: tier-1
+spec:
+  template:
+    metadata:
+      labels:
+        darksite.cloud/ha-tier: tier-1
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mimir-ruler
+  namespace: mimir
+  labels:
+    darksite.cloud/ha-tier: tier-2
+spec:
+  template:
+    metadata:
+      labels:
+        darksite.cloud/ha-tier: tier-2
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mimir-alertmanager
+  namespace: mimir
+  labels:
+    darksite.cloud/ha-tier: tier-2
+spec:
+  template:
+    metadata:
+      labels:
+        darksite.cloud/ha-tier: tier-2
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mimir-compactor
+  namespace: mimir
+  labels:
+    darksite.cloud/ha-tier: tier-2
+spec:
+  template:
+    metadata:
+      labels:
+        darksite.cloud/ha-tier: tier-2
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mimir-ingester-zone-a
+  namespace: mimir
+  labels:
+    darksite.cloud/ha-tier: tier-2
+spec:
+  template:
+    metadata:
+      labels:
+        darksite.cloud/ha-tier: tier-2
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mimir-ingester-zone-b
+  namespace: mimir
+  labels:
+    darksite.cloud/ha-tier: tier-2
+spec:
+  template:
+    metadata:
+      labels:
+        darksite.cloud/ha-tier: tier-2
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mimir-ingester-zone-c
+  namespace: mimir
+  labels:
+    darksite.cloud/ha-tier: tier-2
+spec:
+  template:
+    metadata:
+      labels:
+        darksite.cloud/ha-tier: tier-2
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mimir-store-gateway-zone-a
+  namespace: mimir
+  labels:
+    darksite.cloud/ha-tier: tier-2
+spec:
+  template:
+    metadata:
+      labels:
+        darksite.cloud/ha-tier: tier-2
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mimir-store-gateway-zone-b
+  namespace: mimir
+  labels:
+    darksite.cloud/ha-tier: tier-2
+spec:
+  template:
+    metadata:
+      labels:
+        darksite.cloud/ha-tier: tier-2
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mimir-store-gateway-zone-c
+  namespace: mimir
+  labels:
+    darksite.cloud/ha-tier: tier-2
+spec:
+  template:
+    metadata:
+      labels:
+        darksite.cloud/ha-tier: tier-2

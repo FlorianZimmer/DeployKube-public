@@ -1,0 +1,115 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dns-verify
+  namespace: dns-system
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+    argocd.argoproj.io/sync-options: Replace=true
+    argocd.argoproj.io/hook-weight: "20"
+    deploykube.gitops/job: dns-verify
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 300
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      annotations:
+        sidecar.istio.io/inject: "false"
+      labels:
+        app.kubernetes.io/name: dns-verify
+    spec:
+      serviceAccountName: dns-sync
+      restartPolicy: Never
+      enableServiceLinks: true
+      containers:
+        - name: verify
+          image: registry.example.internal/deploykube/bootstrap-tools:1.4
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: DNS_DOMAIN
+              valueFrom:
+                configMapKeyRef:
+                  name: deploykube-dns-wiring
+                  key: DNS_DOMAIN
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -euo pipefail
+
+              status_dir="/status"
+              expected_ip="$(cat "${status_dir}/lastPublishedIP")"
+              dns_domain="${DNS_DOMAIN}"
+              dns_server="$(awk '/^nameserver/ {print $2; exit}' /etc/resolv.conf 2>/dev/null || true)"
+
+              echo "[dns-verify] expected ingress IP: ${expected_ip}"
+              echo "[dns-verify] dns domain: ${dns_domain}"
+              echo "[dns-verify] dns server (from resolv.conf): ${dns_server:-unknown}"
+
+              resolve_a() {
+                name="$1"
+                out="$(timeout 10s nslookup "${name}" 2>&1)" || {
+                  echo "[dns-verify] ERROR: nslookup failed for ${name}" >&2
+                  echo "${out}" >&2
+                  return 1
+                }
+                ip="$(echo "${out}" | awk '
+                  /^Name:/ {found=1; next}
+                  found && $1=="Address:" {print $2; exit}
+                  found && $1=="Address" && $2 ~ /^[0-9]+:$/ {print $3; exit}
+                ')"
+                if [ -z "${ip}" ]; then
+                  echo "[dns-verify] ERROR: failed to parse A record for ${name}" >&2
+                  echo "${out}" >&2
+                  return 1
+                fi
+                echo "${ip}"
+              }
+
+              prefixes="$(cat "${status_dir}/lastRecords")"
+              wildcard_enabled="$(cat "${status_dir}/wildcardEnabled" 2>/dev/null || echo "false")"
+
+              echo "[dns-verify] validating records: ${prefixes}"
+              for p in ${prefixes}; do
+                if [ "${p}" = "@" ]; then
+                  fqdn="${dns_domain}"
+                else
+                  fqdn="${p}.${dns_domain}"
+                fi
+
+                actual="$(resolve_a "${fqdn}")" || exit 1
+                if [ "${actual}" != "${expected_ip}" ]; then
+                  echo "[dns-verify] ERROR: ${fqdn} -> ${actual} (expected ${expected_ip})" >&2
+                  echo "[dns-verify] status configmap contents:"
+                  ls -la "${status_dir}" || true
+                  for f in "${status_dir}"/*; do
+                    echo "--- ${f} ---"
+                    cat "${f}" || true
+                  done
+                  exit 1
+                fi
+                echo "[dns-verify] OK: ${fqdn} -> ${actual}"
+              done
+
+              if [ "${wildcard_enabled}" = "true" ]; then
+                r="wild-$$-${RANDOM}"
+                fqdn="${r}.${dns_domain}"
+                actual="$(resolve_a "${fqdn}")" || exit 1
+                if [ "${actual}" != "${expected_ip}" ]; then
+                  echo "[dns-verify] ERROR: wildcard ${fqdn} -> ${actual} (expected ${expected_ip})" >&2
+                  exit 1
+                fi
+                echo "[dns-verify] OK: wildcard ${fqdn} -> ${actual}"
+              else
+                echo "[dns-verify] wildcard disabled; skipping wildcard check"
+              fi
+          volumeMounts:
+            - name: dns-sync-status
+              mountPath: /status
+              readOnly: true
+      volumes:
+        - name: dns-sync-status
+          configMap:
+            name: dns-sync-status
+            optional: false

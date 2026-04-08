@@ -1,0 +1,53 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: deploykube-rbac-mutation-lock
+  annotations:
+    argocd.argoproj.io/sync-wave: "-10"
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["rbac.authorization.k8s.io"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources: ["clusterroles", "clusterrolebindings", "roles", "rolebindings"]
+  validations:
+    - expression: |
+        request.userInfo.groups.exists(g, g == "system:serviceaccounts:argocd") ||
+        (
+          request.userInfo.username == "system:kube-controller-manager" &&
+          (
+            (
+              request.operation == "UPDATE" &&
+              request.resource.resource == "clusterroles" &&
+              has(object.aggregationRule)
+            ) ||
+            (
+              request.operation == "DELETE" &&
+              (request.resource.resource == "roles" || request.resource.resource == "rolebindings")
+            )
+          )
+        ) ||
+        (
+          request.userInfo.username == "system:serviceaccount:kube-system:namespace-controller" &&
+          request.operation == "DELETE" &&
+          (request.resource.resource == "roles" || request.resource.resource == "rolebindings")
+        ) ||
+        request.userInfo.username == "system:serviceaccount:rbac-system:rbac-namespace-sync" ||
+        request.userInfo.groups.exists(g, g == "kubeadm:cluster-admins") ||
+        request.userInfo.groups.exists(g, g == "system:masters") ||
+        (
+          request.userInfo.username == "system:serviceaccount:istio-operator:istio-operator" &&
+          (request.operation == "CREATE" || request.operation == "UPDATE") &&
+          (object.metadata.name.startsWith("istio") || object.metadata.name.startsWith("istiod")) &&
+          (!has(object.metadata.namespace) || object.metadata.namespace == "istio-system")
+        ) ||
+        (
+          request.userInfo.username == "system:serviceaccount:cnpg-system:cnpg-operator-cloudnative-pg" &&
+          (request.operation == "CREATE" || request.operation == "UPDATE") &&
+          (request.resource.resource == "roles" || request.resource.resource == "rolebindings") &&
+          has(object.metadata.labels) &&
+          object.metadata.labels["cnpg.io/cluster"] != null
+        )
+      message: "RBAC mutations are GitOps-only (Argo CD) or breakglass."

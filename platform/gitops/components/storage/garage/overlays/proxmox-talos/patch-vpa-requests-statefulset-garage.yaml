@@ -1,0 +1,16 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: garage
+  namespace: garage
+spec:
+  template:
+    spec:
+      containers:
+        - name: garage
+          resources:
+            requests:
+              cpu: "80m"
+              memory: "224Mi"
+            limits:
+              memory: "336Mi"

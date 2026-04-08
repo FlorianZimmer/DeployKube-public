@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - serviceaccount-oidc-runtime-smoke.yaml
+  - rbac-deny-test.yaml
+  - externalsecret-k8s-oidc-runtime-smoke-client.yaml
+  - cronjob-deny-rbac-mutations.yaml
+  - cronjob-allow-rbac-mutations.yaml
+  - cronjob-oidc-runtime-validation.yaml
+
+configMapGenerator:
+  - name: access-guardrails-root-ca
+    files:
+      - ca.crt=ca.crt
+    options:
+      disableNameSuffixHash: true

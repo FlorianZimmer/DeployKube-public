@@ -1,0 +1,28 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+patchesStrategicMerge:
+  - patch-oidc-runtime-issuer.yaml
+patches:
+  - patch: |-
+      - op: replace
+        path: /spec/schedule
+        value: "0 */6 * * *"
+    target:
+      kind: CronJob
+      name: access-guardrails-smoke-allow-rbac-mutations
+  - patch: |-
+      - op: replace
+        path: /spec/schedule
+        value: "0 */6 * * *"
+    target:
+      kind: CronJob
+      name: access-guardrails-smoke-deny-rbac-mutations
+  - patch: |-
+      - op: replace
+        path: /spec/schedule
+        value: "0 */6 * * *"
+    target:
+      kind: CronJob
+      name: access-guardrails-smoke-oidc-runtime

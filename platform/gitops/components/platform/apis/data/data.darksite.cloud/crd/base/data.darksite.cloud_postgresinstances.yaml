@@ -1,0 +1,150 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: postgresinstances.data.darksite.cloud
+spec:
+  group: data.darksite.cloud
+  names:
+    kind: PostgresInstance
+    listKind: PostgresInstanceList
+    plural: postgresinstances
+    singular: postgresinstance
+    shortNames:
+      - pginstance
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          required:
+            - spec
+          properties:
+            spec:
+              type: object
+              required:
+                - classRef
+                - databaseName
+                - ownerRole
+                - connectionSecretName
+              properties:
+                classRef:
+                  type: object
+                  required:
+                    - name
+                  properties:
+                    name:
+                      type: string
+                      minLength: 1
+                databaseName:
+                  type: string
+                  minLength: 1
+                ownerRole:
+                  type: string
+                  minLength: 1
+                connectionSecretName:
+                  type: string
+                  minLength: 1
+                superuserSecretName:
+                  type: string
+                serviceAliases:
+                  type: array
+                  items:
+                    type: string
+                    minLength: 1
+                resourceNames:
+                  type: object
+                  properties:
+                    backupConfigMapName:
+                      type: string
+                    backupServiceAccountName:
+                      type: string
+                    backupCronJobName:
+                      type: string
+                    backupPVCName:
+                      type: string
+                    backupWarmupJobName:
+                      type: string
+                    networkPolicyName:
+                      type: string
+                backup:
+                  type: object
+                  properties:
+                    schedule:
+                      type: string
+                    sourceName:
+                      type: string
+                    connection:
+                      type: object
+                      properties:
+                        host:
+                          type: string
+                        sslMode:
+                          type: string
+                        caSecretName:
+                          type: string
+                    volume:
+                      type: object
+                      properties:
+                        size:
+                          type: string
+                        storageClassName:
+                          type: string
+                        volumeName:
+                          type: string
+                network:
+                  type: object
+                  properties:
+                    accessMode:
+                      type: string
+                      enum:
+                        - SameNamespace
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                observedGeneration:
+                  type: integer
+                className:
+                  type: string
+                databaseName:
+                  type: string
+                endpoint:
+                  type: object
+                  properties:
+                    host:
+                      type: string
+                    port:
+                      type: integer
+                secretRef:
+                  type: object
+                  properties:
+                    apiVersion:
+                      type: string
+                    kind:
+                      type: string
+                    namespace:
+                      type: string
+                    name:
+                      type: string
+                backendRef:
+                  type: object
+                  properties:
+                    apiVersion:
+                      type: string
+                    kind:
+                      type: string
+                    namespace:
+                      type: string
+                    name:
+                      type: string
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+      subresources:
+        status: {}

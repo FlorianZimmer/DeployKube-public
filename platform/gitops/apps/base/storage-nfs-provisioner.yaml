@@ -1,0 +1,56 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: storage-nfs-provisioner
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  project: platform
+  destination:
+    name: in-cluster
+    namespace: storage-system
+  ignoreDifferences:
+    # The nfs-subdir-external-provisioner Helm chart renders a small PV/PVC pair for
+    # mounting the backing NFS export into the provisioner Deployment. The PVC
+    # `spec.accessModes` is immutable once created; if it ever diverges (e.g. from
+    # historical values), Argo sync would fail trying to patch it.
+    - group: ""
+      kind: PersistentVolumeClaim
+      name: pvc-nfs-provisioner-nfs-subdir-external-provisioner
+      namespace: storage-system
+      jsonPointers:
+        - /spec/accessModes
+  source:
+    repoURL: https://forgejo-https.forgejo.svc.cluster.local/platform/cluster-config.git
+    targetRevision: main
+    path: components/storage/nfs-provisioner/helm/charts/nfs-subdir-external-provisioner-4.0.18/nfs-subdir-external-provisioner
+    helm:
+      releaseName: nfs-provisioner
+      values: |
+        nfs:
+          server: 203.0.113.20
+          path: /
+          mountOptions:
+            - vers=4.1
+            - rsize=1048576
+            - wsize=1048576
+            - hard
+            - timeo=600
+            - retrans=2
+        storageClass:
+          create: false
+        resources:
+          requests:
+            cpu: 15m
+            memory: 64Mi
+          limits:
+            memory: 96Mi
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - RespectIgnoreDifferences=true

@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: powerdns
+  namespace: dns-system
+  annotations:
+    metallb.universe.tf/address-pool: powerdns-pool
+spec:
+  # Preserve client source IPs so NetworkPolicy ipBlocks can match LAN clients (Pi-hole, operator machines).
+  # Without this, kube-proxy may SNAT to node IPs and the pod-level policy will drop DNS traffic.
+  externalTrafficPolicy: Local

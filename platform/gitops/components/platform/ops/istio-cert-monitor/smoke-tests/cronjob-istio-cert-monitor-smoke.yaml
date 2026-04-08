@@ -1,0 +1,64 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: istio-cert-monitor-smoke
+  namespace: platform-ops
+  labels:
+    sidecar.istio.io/inject: "false"
+spec:
+  schedule: "0 */6 * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 300
+      ttlSecondsAfterFinished: 900
+      template:
+        metadata:
+          annotations:
+            sidecar.istio.io/inject: "false"
+        spec:
+          serviceAccountName: istio-cert-monitor
+          restartPolicy: Never
+          containers:
+            - name: smoke
+              image: registry.example.internal/deploykube/bootstrap-tools:1.4
+              imagePullPolicy: IfNotPresent
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  memory: 256Mi
+              env:
+                - name: DRY_RUN
+                  value: "true"
+                - name: THRESHOLD_SECONDS
+                  value: "7200"
+                - name: COOLDOWN_SECONDS
+                  value: "0"
+                - name: REQUIRE_AT_LEAST_ONE_SUCCESS
+                  value: "true"
+              command:
+                - /bin/bash
+                - /scripts/run.sh
+              volumeMounts:
+                - name: scripts
+                  mountPath: /scripts
+                  readOnly: true
+                - name: config
+                  mountPath: /config
+                  readOnly: true
+          volumes:
+            - name: scripts
+              configMap:
+                name: istio-cert-monitor-scripts
+                defaultMode: 0555
+            - name: config
+              configMap:
+                name: istio-cert-monitor-config
+                defaultMode: 0444
+

@@ -1,0 +1,227 @@
+# LGTM Stack Health Alert Rules
+# Self-monitoring alerts for the observability stack itself.
+# Ensures operators are notified when Loki, Tempo, Mimir, or Grafana have issues.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mimir-rules-lgtm-health
+  namespace: mimir
+  labels:
+    mimir.grafana.com/rules: "true"
+    app.kubernetes.io/component: ruler
+data:
+  lgtm-health.yaml: |
+    # yaml-language-server: $schema=https://json.schemastore.org/prometheus-rule.json
+    groups:
+      - name: loki.health
+        interval: 1m
+        rules:
+          # Loki ingester not ready
+          - alert: LokiIngesterNotReady
+            expr: |
+              sum by (namespace, pod) (
+                kube_pod_status_ready{namespace="loki", pod=~"loki-ingester-.*"} == 0
+              ) > 0
+            for: 5m
+            labels:
+              severity: critical
+              service: loki
+              team: platform
+              environment: dev
+              cluster: deploykube
+              runbook_url: docs/runbooks/loki-ingester-not-ready.md
+            annotations:
+              summary: "Loki ingester {{ $labels.pod }} not ready"
+              description: "Loki ingester pod {{ $labels.pod }} has been not ready for 5 minutes. Log ingestion may be impacted."
+
+          # Loki request errors high
+          - alert: LokiRequestErrors
+            expr: |
+              sum by (namespace, route) (
+                rate(loki_request_duration_seconds_count{status_code=~"5.."}[5m])
+              ) / sum by (namespace, route) (
+                rate(loki_request_duration_seconds_count[5m])
+              ) > 0.1
+            for: 5m
+            labels:
+              severity: warning
+              service: loki
+              team: platform
+              environment: dev
+              cluster: deploykube
+              runbook_url: docs/runbooks/loki-request-errors.md
+            annotations:
+              summary: "Loki {{ $labels.route }} error rate high"
+              description: "Loki route {{ $labels.route }} has >10% error rate over the last 5 minutes."
+
+      - name: tempo.health
+        interval: 1m
+        rules:
+          # Tempo ingestion errors
+          - alert: TempoIngestionErrors
+            expr: |
+              sum(rate(tempo_distributor_push_errors_total[5m])) > 0
+            for: 5m
+            labels:
+              severity: warning
+              service: tempo
+              team: platform
+              environment: dev
+              cluster: deploykube
+              runbook_url: docs/runbooks/tempo-ingestion-errors.md
+            annotations:
+              summary: "Tempo trace ingestion errors detected"
+              description: "Tempo is experiencing trace push errors. Check Tempo logs and S3 connectivity."
+
+          # Tempo query errors
+          - alert: TempoQueryErrors
+            expr: |
+              sum by (namespace) (
+                rate(tempo_query_frontend_queries_total{status=~"5.."}[5m])
+              ) / sum by (namespace) (
+                rate(tempo_query_frontend_queries_total[5m])
+              ) > 0.1
+            for: 5m
+            labels:
+              severity: warning
+              service: tempo
+              team: platform
+              environment: dev
+              cluster: deploykube
+              runbook_url: docs/runbooks/tempo-query-errors.md
+            annotations:
+              summary: "Tempo query error rate high"
+              description: "Tempo query frontend has >10% error rate. Trace queries may be failing."
+
+      - name: mimir.health
+        interval: 1m
+        rules:
+          # Mimir ingester not ready
+          - alert: MimirIngesterNotReady
+            expr: |
+              sum by (namespace, pod) (
+                kube_pod_status_ready{namespace="mimir", pod=~"mimir-ingester-.*"} == 0
+              ) > 0
+            for: 5m
+            labels:
+              severity: critical
+              service: mimir
+              team: platform
+              environment: dev
+              cluster: deploykube
+              runbook_url: docs/runbooks/mimir-ingester-not-ready.md
+            annotations:
+              summary: "Mimir ingester {{ $labels.pod }} not ready"
+              description: "Mimir ingester pod {{ $labels.pod }} has been not ready for 5 minutes. Metric ingestion may be impacted."
+
+          # Mimir compactor behind
+          - alert: MimirCompactorBehind
+            expr: |
+              max by (namespace) (
+                cortex_compactor_last_successful_run_timestamp_seconds
+              ) < (time() - 3600)
+            for: 10m
+            labels:
+              severity: warning
+              service: mimir
+              team: platform
+              environment: dev
+              cluster: deploykube
+              runbook_url: docs/runbooks/mimir-compactor-behind.md
+            annotations:
+              summary: "Mimir compactor has not run successfully"
+              description: "Mimir compactor last successful run was more than 1 hour ago. Check compactor logs and S3 connectivity."
+
+          # Mimir Alertmanager not ready
+          - alert: MimirAlertmanagerNotReady
+            expr: |
+              sum by (namespace, pod) (
+                kube_pod_status_ready{namespace="mimir", pod=~"mimir-alertmanager-.*"} == 0
+              ) > 0
+            for: 5m
+            labels:
+              severity: warning
+              service: mimir-alertmanager
+              team: platform
+              environment: dev
+              cluster: deploykube
+              runbook_url: docs/runbooks/mimir-alertmanager-not-ready.md
+            annotations:
+              summary: "Mimir Alertmanager {{ $labels.pod }} not ready"
+              description: "Mimir Alertmanager pod is not ready. Alert notifications may be delayed."
+
+          # Mimir Ruler not evaluating
+          - alert: MimirRulerNotEvaluating
+            expr: |
+              sum by (namespace) (
+                rate(cortex_prometheus_rule_evaluations_total[5m])
+              ) == 0
+            for: 10m
+            labels:
+              severity: warning
+              service: mimir-ruler
+              team: platform
+              environment: dev
+              cluster: deploykube
+              runbook_url: docs/runbooks/mimir-ruler-not-evaluating.md
+            annotations:
+              summary: "Mimir Ruler is not evaluating rules"
+              description: "Mimir Ruler has not evaluated any rules in the last 10 minutes. Check ruler configuration and connectivity to Alertmanager."
+
+      - name: grafana.health
+        interval: 1m
+        rules:
+          # Grafana not ready
+          - alert: GrafanaNotReady
+            expr: |
+              sum by (namespace, pod) (
+                kube_pod_status_ready{namespace="grafana", pod=~"grafana-.*"} == 0
+              ) > 0
+            for: 5m
+            labels:
+              severity: warning
+              service: grafana
+              team: platform
+              environment: dev
+              cluster: deploykube
+              runbook_url: docs/runbooks/grafana-not-ready.md
+            annotations:
+              summary: "Grafana {{ $labels.pod }} not ready"
+              description: "Grafana pod {{ $labels.pod }} has been not ready for 5 minutes. Dashboard access may be impacted."
+
+      - name: alloy.health
+        interval: 1m
+        rules:
+          # Alloy DaemonSet not ready
+          - alert: AlloyNotScheduled
+            expr: |
+              kube_daemonset_status_desired_number_scheduled{namespace="observability", daemonset="alloy"}
+              !=
+              kube_daemonset_status_number_ready{namespace="observability", daemonset="alloy"}
+            for: 10m
+            labels:
+              severity: warning
+              service: alloy
+              team: platform
+              environment: dev
+              cluster: deploykube
+              runbook_url: docs/runbooks/alloy-not-scheduled.md
+            annotations:
+              summary: "Alloy DaemonSet has pods not ready"
+              description: "Some Alloy DaemonSet pods are not ready. Log/metric/trace collection may be incomplete on some nodes."
+
+      - name: watchdog
+        interval: 1m
+        rules:
+          # Watchdog alert - always firing, used to verify alerting pipeline works
+          - alert: Watchdog
+            expr: vector(1)
+            labels:
+              severity: none
+              service: watchdog
+              team: platform
+              environment: dev
+              cluster: deploykube
+            annotations:
+              summary: "Alerting Watchdog"
+              description: "This is a DeadMan's switch alert. If this alert is NOT firing, the alerting pipeline is broken."

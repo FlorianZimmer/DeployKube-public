@@ -1,0 +1,6 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - httproute-grafana.yaml
+  - authorizationpolicy-grafana.yaml
+  - job-host-switch.yaml

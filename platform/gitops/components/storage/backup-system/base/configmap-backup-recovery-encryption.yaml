@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backup-recovery-encryption
+data:
+  # Public key only (not secret): used to encrypt recovery bundles on the backup target.
+  AGE_RECIPIENT: age1publicmirrorplaceholderxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx

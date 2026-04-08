@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alloy-metrics-vip-probes-default
+  namespace: observability
+data:
+  # Keep alloy-metrics bootable even when platform-observability-vip-probes is disabled
+  # or not yet reconciled during bootstrap.
+  blackbox_modules.yml: |
+    modules: {}
+  targets.yml: |
+    []
+  ca.crt: |
+

@@ -1,0 +1,35 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: idlab
+resources:
+  - rbac.yaml
+  - jobs.yaml
+
+configMapGenerator:
+  - name: idlab-test-script-seed-ukc
+    files:
+      - scripts/seed-ukc.sh
+  - name: idlab-test-script-config-mkc
+    files:
+      - scripts/config-mkc.sh
+  - name: idlab-test-script-config-btp
+    files:
+      - scripts/config-btp.sh
+  - name: idlab-test-script-smoke
+    files:
+      - scripts/smoke-api.sh
+  - name: idlab-test-script-playwright-online
+    files:
+      - scripts/auth-online.js
+  - name: idlab-test-script-playwright-offline
+    files:
+      - scripts/auth-offline.js
+  - name: idlab-test-script-playwright-negative-mkc
+    files:
+      - scripts/auth-negative-mkc-link-only.js
+  - name: idlab-test-script-playwright-negative-btp
+    files:
+      - scripts/auth-negative-btp-link-only.js
+
+generatorOptions:
+  disableNameSuffixHash: true

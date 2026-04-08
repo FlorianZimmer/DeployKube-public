@@ -1,0 +1,45 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: postgres
+spec:
+  description: Shared CNPG base cluster template
+  inheritedMetadata:
+    labels:
+      darksite.cloud/backup: native
+  imageName: registry.example.internal/cloudnative-pg/postgresql:16.3
+  instances: 3
+  superuserSecret:
+    name: postgres-superuser
+  enableSuperuserAccess: true
+  bootstrap:
+    initdb:
+      database: app
+      owner: app
+      encoding: UTF8
+      secret:
+        name: postgres-app
+  storage:
+    size: 20Gi
+    storageClass: shared-rwo
+  walStorage:
+    size: 10Gi
+    storageClass: shared-rwo
+  monitoring:
+    enablePodMonitor: true
+  managed:
+    roles: []
+  affinity:
+    podAntiAffinityType: preferred
+  logLevel: info
+  postgresql:
+    parameters:
+      max_connections: "200"
+      shared_buffers: "512MB"
+  backup:
+    target: prefer-standby
+    retentionPolicy: 7d
+  resources:
+    requests:
+      cpu: 250m
+      memory: 1Gi

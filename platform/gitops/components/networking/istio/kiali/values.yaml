@@ -1,0 +1,26 @@
+auth:
+  # Keep initial exposure simple; tighten to OIDC once Keycloak client is wired.
+  strategy: anonymous
+
+deployment:
+  ingress:
+    enabled: false
+  pod_annotations:
+    sidecar.istio.io/inject: "true"
+  view_only_mode: false
+  service_type: ClusterIP
+
+external_services:
+  istio:
+    component_status:
+      enabled: true
+  prometheus:
+    url: http://prometheus.istio-system:9090
+  tracing:
+    enabled: false
+  grafana:
+    enabled: false
+
+server:
+  web_port: 443
+  web_schema: https

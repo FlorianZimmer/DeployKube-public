@@ -1,0 +1,14 @@
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: cert-manager-webhook-permissive
+  namespace: cert-manager
+  annotations:
+    argocd.argoproj.io/sync-wave: "4.4"
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: webhook
+      app.kubernetes.io/instance: cert-manager
+  mtls:
+    mode: PERMISSIVE

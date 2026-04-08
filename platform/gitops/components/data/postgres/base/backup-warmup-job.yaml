@@ -1,0 +1,33 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: postgres-backup-warmup
+  annotations:
+    # Run alongside the PVC so WaitForFirstConsumer StorageClasses can bind immediately.
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: warmup
+          image: registry.example.internal/deploykube/bootstrap-tools:1.4
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -euo pipefail
+              # Mount the PVC once to trigger PV binding for WaitForFirstConsumer StorageClasses.
+              ls -la /backups >/dev/null
+          volumeMounts:
+            - name: backup
+              mountPath: /backups
+      volumes:
+        - name: backup
+          persistentVolumeClaim:
+            claimName: postgres-backup-v2

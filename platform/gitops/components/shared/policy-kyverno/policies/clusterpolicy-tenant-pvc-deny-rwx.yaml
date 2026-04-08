@@ -1,0 +1,33 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: tenant-pvc-deny-rwx
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  admission: true
+  validationFailureAction: Enforce
+  background: false
+  emitWarning: false
+  rules:
+    - name: deny-readwritemany-accessmode
+      match:
+        any:
+          - resources:
+              kinds: ["PersistentVolumeClaim"]
+              namespaceSelector:
+                matchLabels:
+                  darksite.cloud/rbac-profile: tenant
+      skipBackgroundRequests: true
+      validate:
+        message: "Tenant PVCs must not request ReadWriteMany (RWX is not a tenant primitive; use platform services instead)."
+        allowExistingViolations: true
+        foreach:
+          - list: "request.object.spec.accessModes[] || []"
+            deny:
+              conditions:
+                any:
+                  - key: "{{ element }}"
+                    operator: Equals
+                    value: ReadWriteMany
+

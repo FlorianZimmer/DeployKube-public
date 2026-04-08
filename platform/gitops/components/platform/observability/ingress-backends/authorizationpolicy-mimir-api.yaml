@@ -1,0 +1,16 @@
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: mimir-api-from-gateway
+  namespace: mimir
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mimir-gateway
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals:
+              - cluster.local/ns/istio-system/sa/public-gateway-istio
+

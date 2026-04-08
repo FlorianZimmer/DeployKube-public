@@ -1,0 +1,18 @@
+apiVersion: install.istio.io/v1alpha1
+kind: IstioOperator
+metadata:
+  name: istio-control-plane
+  namespace: istio-system
+spec:
+  # Local single-node: reduce background churn and log volume.
+  meshConfig:
+    accessLogFile: ""
+  components:
+    pilot:
+      k8s:
+        replicaCount: 1
+    ingressGateways:
+      - name: istio-ingressgateway
+        k8s:
+          replicaCount: 1
+

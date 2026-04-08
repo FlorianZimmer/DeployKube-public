@@ -1,0 +1,18 @@
+fullnameOverride: prometheus-node-exporter
+
+hostNetwork: false
+hostPID: false
+
+service:
+  port: 9100
+
+prometheus:
+  monitor:
+    enabled: false
+
+resources:
+  requests:
+    cpu: 30m
+    memory: 64Mi
+  limits:
+    memory: 128Mi

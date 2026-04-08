@@ -1,0 +1,149 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: observability-metric-smoke
+  namespace: observability
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  # Intentionally offset from :00 to avoid top-of-hour kube-apiserver contention.
+  schedule: "9,39 * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 600
+      ttlSecondsAfterFinished: 900
+      template:
+        metadata:
+          annotations:
+            sidecar.istio.io/nativeSidecar: "true"
+            proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}'
+        spec:
+          restartPolicy: Never
+          volumes:
+            - name: run
+              emptyDir: {}
+            - name: istio-native-exit
+              configMap:
+                name: istio-native-exit-script
+                defaultMode: 0444
+          initContainers:
+            - name: init-run
+              image: busybox:1.36
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  memory: 64Mi
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -e
+                  runid="$(date +%s)"
+                  tenant="smoke-${runid}"
+                  echo "${runid}" >/run/runid
+                  echo "${tenant}" >/run/tenant
+              volumeMounts:
+                - name: run
+                  mountPath: /run
+          containers:
+            - name: prom-agent
+              image: prom/prometheus:v2.52.0
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 256Mi
+                limits:
+                  memory: 512Mi
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -euo pipefail
+                  runid="$(cat /run/runid)"
+                  tenant="$(cat /run/tenant)"
+                  echo "starting Prometheus agent for tenant=${tenant}..."
+                  printf '%s\n' \
+                    "global:" \
+                    "  scrape_interval: 5s" \
+                    "  external_labels:" \
+                    "    run: \"${runid}\"" \
+                    "scrape_configs:" \
+                    "- job_name: prometheus" \
+                    "  static_configs:" \
+                    "  - targets: ['127.0.0.1:9090']" \
+                    "remote_write:" \
+                    "- url: http://mimir-distributor.mimir.svc.cluster.local:8080/api/v1/push" \
+                    "  headers:" \
+                    "    X-Scope-OrgID: ${tenant}" \
+                    > /tmp/prom.yml
+                  /bin/prometheus \
+                    --config.file=/tmp/prom.yml \
+                    --storage.tsdb.path=/tmp/tsdb \
+                    --web.listen-address=0.0.0.0:9090 \
+                    --web.enable-lifecycle &
+                  sleep 60
+              volumeMounts:
+                - name: run
+                  mountPath: /run
+            - name: metric-query
+              image: curlimages/curl:8.6.0
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  memory: 256Mi
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -euo pipefail
+                  ISTIO_HELPER="/helpers/istio-native-exit.sh"
+                  [ -f "${ISTIO_HELPER}" ] || { echo "missing istio-native-exit helper" >&2; exit 1; }
+                  . "${ISTIO_HELPER}"
+                  trap deploykube_istio_quit_sidecar EXIT INT TERM
+                  runid="$(cat /run/runid)"
+                  tenant="$(cat /run/tenant)"
+                  echo "waiting for remote_write..."
+                  sleep 20
+                  echo "querying metric back..."
+                  qurl="http://mimir-querier.mimir.svc.cluster.local:8080/prometheus/api/v1/query"
+                  found=0
+                  attempt=1
+                  max_attempts=12
+                  while [ "${attempt}" -le "${max_attempts}" ]; do
+                    resp="$(curl -sfS -G "${qurl}" \
+                      -H "X-Scope-OrgID: ${tenant}" \
+                      --data-urlencode "query=prometheus_build_info{run=\"${runid}\"}")"
+                    if echo "${resp}" | grep -q "\"result\":" && ! echo "${resp}" | grep -q "\"result\":\\[\\]"; then
+                      found=1
+                      break
+                    fi
+                    echo "no data yet (attempt ${attempt}/${max_attempts}), retrying..."
+                    attempt=$((attempt + 1))
+                    sleep 10
+                  done
+                  if [ "${found}" -ne 1 ]; then
+                    echo "metric smoke failed: no data after ${max_attempts} attempts" >&2
+                    exit 1
+                  fi
+
+                  echo "deleting tenant blocks via compactor..."
+                  curl -sfS -X POST "http://mimir-compactor.mimir.svc.cluster.local:8080/compactor/delete_tenant" \
+                    -H "X-Scope-OrgID: ${tenant}" || true
+
+                  sleep 5
+                  echo "metric smoke ok"
+              volumeMounts:
+                - name: run
+                  mountPath: /run
+                - name: istio-native-exit
+                  mountPath: /helpers
+                  readOnly: true

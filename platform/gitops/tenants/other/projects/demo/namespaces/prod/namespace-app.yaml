@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: t-other-p-demo-prod-app
+  labels:
+    darksite.cloud/rbac-profile: tenant
+    darksite.cloud/tenant-id: other
+    darksite.cloud/project-id: demo
+    observability.grafana.com/tenant: other

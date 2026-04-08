@@ -1,0 +1,33 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: grafana
+  namespace: grafana
+  annotations:
+    deploykube.gitops/owner: platform
+    argocd.argoproj.io/sync-wave: "3.1"
+spec:
+  hostnames:
+    # Patched by the tenant provisioner controller (and historically by a PostSync host switch Job), based on the deployment config.
+    # NOTE: Do not leave this empty (empty hostnames can match all hosts).
+    - grafana.invalid
+  parentRefs:
+    - name: public-gateway
+      namespace: istio-system
+      sectionName: https-grafana
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      filters:
+        - type: RequestHeaderModifier
+          requestHeaderModifier:
+            set:
+              - name: X-Forwarded-Proto
+                value: https
+              - name: X-Forwarded-Port
+                value: "443"
+      backendRefs:
+        - name: grafana
+          port: 3000

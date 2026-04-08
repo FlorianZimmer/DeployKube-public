@@ -1,0 +1,67 @@
+# DeployKube Proxmox Talos Configuration
+# Copy this file to config.yaml and customize for your environment
+
+cluster:
+  name: deploykube-proxmox
+  domain: cluster.internal.example
+  kubernetes_version: "1.32.3"
+  talos_version: "v1.9.2"
+
+proxmox:
+  host: "10.0.0.10"
+  api_url: "https://10.0.0.10:8006/api2/json"
+  node: "pve"                      # Proxmox node name (run 'pvesh get /nodes' to list)
+  storage: "local-lvm"             # VM disk storage pool
+  iso_storage: "local"             # ISO storage location
+  bridge: "vmbr0"                  # Network bridge for VMs
+
+network:
+  gateway: "10.0.0.1"
+  dns:
+    # First DNS server should be an internal resolver (OIDC issuer hostname resolution depends on it).
+    - "10.0.0.53"
+    - "1.1.1.1"
+  preflight:
+    enabled: true
+    probe_name: example.com
+    timeout_seconds: 2
+    # Optional: fail fast if internal hostnames don't resolve via the primary DNS server.
+    # required_hostnames:
+    #   - keycloak.${CLUSTER_DOMAIN}
+  control_plane_vip: "10.0.0.30" # Kubernetes API VIP (Talos VIP)
+  metallb_range: "10.0.0.61-10.0.0.100"
+
+nodes:
+  control_plane:
+    count: 3
+    start_ip: "10.0.0.41"
+    cores: 6
+    memory_mb: 6144
+    disk_gb: 20
+  # Explicit worker definitions for heterogeneous node specs
+  workers:
+    - name: worker-1
+      ip: "10.0.0.51"
+      cores: 16
+      memory_mb: 28672
+      disk_gb: 50
+    - name: worker-2
+      ip: "10.0.0.52"
+      cores: 16
+      memory_mb: 28672
+      disk_gb: 50
+    - name: worker-3
+      ip: "10.0.0.53"
+      cores: 16
+      memory_mb: 28672
+      disk_gb: 50
+
+storage:
+  nfs:
+    server: "10.0.0.10"
+    path: "/nvme01/kube"           # ZFS dataset exported via NFS
+
+security:
+  # Enable when Proxmox/VMs support SecureBoot + TPM
+  secure_boot: false
+  tpm_encryption: false

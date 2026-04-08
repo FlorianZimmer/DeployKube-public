@@ -1,0 +1,67 @@
+# Base kustomization for platform bootstrap Applications.
+# Environment-switched platform Applications are now reconciled by the
+# PlatformApps CRD/controller (Application/platform-platform-apps-controller).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - appproject-platform.yaml
+  - appproject-default.yaml
+  # DeploymentConfig API (CRD + snapshot publisher)
+  - platform-deployment-config-crd.yaml
+  - platform-data-postgres-api.yaml
+  - platform-data-postgres-classes.yaml
+  - platform-deployment-config-controller.yaml
+  # Secrets stack (no overlays - environment-neutral)
+  - secrets-bootstrap.yaml
+  - secrets-kms-shim.yaml
+  - secrets-vault-safeguard.yaml
+  - secrets-vault.yaml
+  - secrets-vault-bootstrap.yaml
+  - secrets-external-secrets.yaml
+  - secrets-external-secrets-config.yaml
+  - secrets-keycloak.yaml
+  - secrets-keycloak-oidc-trust.yaml
+  # Networking (non-overlay)
+  - networking-gateway-api.yaml
+  - networking-metallb.yaml
+  - networking-metallb-config.yaml
+  - networking-istio-namespaces.yaml
+  - networking-istio-mesh-security.yaml
+  # Certificates (non-overlay)
+  - certificates-step-ca-seed.yaml
+  - certificates-step-ca-secrets.yaml
+  - certificates-step-ca.yaml
+  - certificates-cert-manager.yaml
+  - certificates-step-ca-bootstrap.yaml
+  - certificates-vault-pki-external.yaml
+  - certificates-cert-manager-issuers.yaml
+  # Storage (non-overlay)
+  - storage-nfs-provisioner.yaml
+  - storage-shared-rwo.yaml
+  # Data (Postgres)
+  - data-postgres-operator.yaml
+  - data-postgres-powerdns.yaml
+  - data-postgres-powerdns-smoke-tests.yaml
+  - platform-forgejo-postgres.yaml
+  - data-postgres-keycloak.yaml
+  - data-postgres-keycloak-smoke-tests.yaml
+  # Platform (Forgejo - Valkey)
+  - platform-forgejo-valkey-smoke-tests.yaml
+  # Platform (non-overlay)
+  - platform-tenant-api.yaml
+  - platform-tenant-provisioner.yaml
+  - platform-data-postgres-controller.yaml
+  - platform-platform-apps-controller.yaml
+  - platform-keycloak-operator.yaml
+  - platform-ops-istio-cert-monitor.yaml
+  - platform-ops-vertical-pod-autoscaler.yaml
+  - platform-ops-vpa-recommendations.yaml
+  # Observability (non-overlay)
+  - platform-observability-namespaces.yaml
+  - platform-observability-secrets.yaml
+  - platform-observability-metrics.yaml
+  - platform-observability-alloy-metrics.yaml
+  - platform-observability-alloy.yaml
+  - platform-observability-tempo.yaml
+  - platform-observability-tests.yaml
+  - platform-observability-smoke-tests.yaml

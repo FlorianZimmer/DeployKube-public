@@ -1,0 +1,67 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: step-ca-vault-seed
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+  labels:
+    deploykube.gitops/job: step-ca-vault-seed
+spec:
+  backoffLimit: 5
+  template:
+    metadata:
+      labels:
+        deploykube.gitops/job: step-ca-vault-seed
+      annotations:
+        job.kubernetes.io/preserve-pod-on-failure: "true"
+        sidecar.istio.io/nativeSidecar: 'true'
+    spec:
+      serviceAccountName: step-ca-vault-seed
+      restartPolicy: OnFailure
+      containers:
+      - name: seed
+        image: registry.example.internal/deploykube/bootstrap-tools:1.4
+        command:
+        - /bin/sh
+        - /scripts/seed.sh
+        env:
+        - name: SOPS_AGE_KEY_FILE
+          value: /var/run/sops/age.key
+        - name: STEP_CA_SEED_FILE
+          value: /config/step-ca-vault-seed.secret.sops.yaml
+        - name: VAULT_ADDR
+          value: http://vault.vault-system.svc:8200
+        - name: VAULT_NAMESPACE
+          value: vault-system
+        volumeMounts:
+        - name: script
+          mountPath: /scripts
+          readOnly: true
+        - name: istio-native-exit
+          mountPath: /helpers
+          readOnly: true
+        - name: seed
+          mountPath: /config/step-ca-vault-seed.secret.sops.yaml
+          subPath: step-ca-vault-seed.secret.sops.yaml
+        - name: age-key
+          mountPath: /var/run/sops
+          readOnly: true
+      volumes:
+      - name: script
+        configMap:
+          name: step-ca-vault-seed-script
+          defaultMode: 0755
+      - name: istio-native-exit
+        configMap:
+          name: istio-native-exit-script
+          defaultMode: 0444
+      - name: seed
+        configMap:
+          name: deploykube-deployment-secrets
+          defaultMode: 0440
+      - name: age-key
+        secret:
+          secretName: argocd-sops-age
+          defaultMode: 0400

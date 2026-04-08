@@ -1,0 +1,11 @@
+# OpenTofu working directory (generated during Stage 0)
+.terraform/
+terraform.tfstate
+terraform.tfstate.*
+terraform.tfvars
+tfplan
+.terraform.tfstate.lock.info
+
+# Generated Talos config patches (written by bootstrap-proxmox-talos-stage0.sh)
+config-patches/
+

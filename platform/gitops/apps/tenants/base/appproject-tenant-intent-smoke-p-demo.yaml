@@ -1,0 +1,43 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: tenant-intent-smoke-p-demo
+  namespace: argocd
+  labels:
+    darksite.cloud/tenant-id: smoke
+    darksite.cloud/project-id: demo
+  annotations:
+    argocd.argoproj.io/sync-wave: "-98"
+spec:
+  description: Tenant intent (platform-owned) smoke/demo
+
+  # Monorepo fallback: tenant intent lives under platform/cluster-config.git.
+  # Tenants do not have write access to this repo in v1.
+  sourceRepos:
+    - https://forgejo-https.forgejo.svc.cluster.local/platform/cluster-config.git
+
+  destinations:
+    # Tenant project namespaces (all purposes).
+    - name: in-cluster
+      namespace: t-smoke-p-demo-*
+    # Tenant-facing S3 intent is expressed as a ConfigMap in the Garage namespace.
+    - name: in-cluster
+      namespace: garage
+
+  # Tenant intent is platform-owned and may create Namespaces.
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+
+  # Tenant intent is platform-owned but must remain workload-plane only.
+  namespaceResourceWhitelist:
+    - group: ""
+      kind: ConfigMap
+    - group: rbac.authorization.k8s.io
+      kind: Role
+    - group: rbac.authorization.k8s.io
+      kind: RoleBinding
+    - group: external-secrets.io
+      kind: ExternalSecret
+    - group: networking.k8s.io
+      kind: NetworkPolicy

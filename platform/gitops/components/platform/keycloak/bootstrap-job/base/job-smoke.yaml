@@ -1,0 +1,61 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: keycloak-smoke
+  namespace: keycloak
+  labels:
+    deploykube.gitops/job: keycloak-smoke
+    app.kubernetes.io/name: keycloak
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: HookSucceeded,BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 900
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        deploykube.gitops/job: keycloak-smoke
+      annotations:
+        sidecar.istio.io/inject: "true"
+        sidecar.istio.io/nativeSidecar: "true"
+        proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}'
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: smoke
+          image: registry.example.internal/deploykube/bootstrap-tools:1.4
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c"]
+          env:
+            - name: KEYCLOAK_INTERNAL_URL
+              value: http://keycloak.keycloak.svc.cluster.local:8080
+          args:
+            - |
+              set -euo pipefail
+              . /helpers/istio-native-exit.sh
+              trap deploykube_istio_quit_sidecar EXIT INT TERM
+
+              echo "=== Keycloak Smoke ==="
+
+              echo "[1/2] realms exist"
+              curl -sf "${KEYCLOAK_INTERNAL_URL}/realms/master" | jq -e '.realm == "master"' >/dev/null
+              curl -sf "${KEYCLOAK_INTERNAL_URL}/realms/deploykube-admin" | jq -e '.realm == "deploykube-admin"' >/dev/null
+              curl -sf "${KEYCLOAK_INTERNAL_URL}/realms/deploykube-apps" | jq -e '.realm == "deploykube-apps"' >/dev/null
+
+              echo "[2/2] OIDC discovery responds"
+              curl -sf "${KEYCLOAK_INTERNAL_URL}/realms/deploykube-admin/.well-known/openid-configuration" \
+                | jq -e '.authorization_endpoint and .token_endpoint and .jwks_uri and .issuer' >/dev/null
+
+              echo "ok"
+          volumeMounts:
+            - name: istio-native-exit
+              mountPath: /helpers
+              readOnly: true
+      volumes:
+        - name: istio-native-exit
+          configMap:
+            name: istio-native-exit-script
+            defaultMode: 0444

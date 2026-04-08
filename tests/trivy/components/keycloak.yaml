@@ -1,0 +1,24 @@
+schemaVersion: v1alpha1
+description: Component-owned Trivy targets for Keycloak.
+watch_paths:
+  - platform/gitops/artifacts/package-index.yaml
+  - platform/gitops/artifacts/runtime-artifact-index.yaml
+  - platform/gitops/components/platform/keycloak
+  - shared/images/scim-bridge
+  - shared/scripts/build-scim-bridge-image.sh
+  - shared/scripts/publish-scim-bridge-image.sh
+  - tests/trivy/components/keycloak.yaml
+  - tools/scim-bridge
+image_targets:
+  - id: keycloak-operator
+    artifact_catalog: runtime-artifacts
+    artifact_name: keycloak-operator
+  - id: keycloak-server
+    artifact_catalog: runtime-artifacts
+    artifact_name: keycloak-server
+  - id: keycloak-scim-bridge
+    artifact_catalog: package-index
+    artifact_name: scim-bridge
+config_targets:
+  - id: keycloak-manifests
+    path: platform/gitops/components/platform/keycloak

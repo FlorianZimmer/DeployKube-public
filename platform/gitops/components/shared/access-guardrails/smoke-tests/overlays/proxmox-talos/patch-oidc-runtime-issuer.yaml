@@ -1,0 +1,15 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: access-guardrails-smoke-oidc-runtime
+  namespace: access-guardrails-system
+spec:
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: smoke
+              env:
+                - name: OIDC_ISSUER_URL
+                  value: https://keycloak.prod.internal.example.com/realms/deploykube-admin

@@ -1,0 +1,47 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  # Template: replace <tenantNamespace>
+  name: tenant-backup-scope-garage-s3-egress-smoke
+  namespace: <tenantNamespace>
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 120
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: smoke
+          image: registry.example.internal/deploykube/bootstrap-tools:1.4
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          command:
+            - /bin/bash
+            - -lc
+            - |
+              set -euo pipefail
+              python3 - <<'PY'
+              import socket
+
+              host = "garage.garage.svc"
+              port = 3900
+              s = socket.create_connection((host, port), timeout=5)
+              s.sendall(b"HEAD / HTTP/1.1\\r\\nHost: garage\\r\\nConnection: close\\r\\n\\r\\n")
+              data = s.recv(128)
+              line = data.decode("utf-8", errors="replace").splitlines()[0] if data else "no response"
+              print(line)
+              s.close()
+              PY
+

@@ -1,0 +1,91 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: forgejo-smoke
+  namespace: forgejo
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: HookSucceeded,BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "13"
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 300
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      serviceAccountName: forgejo-smoke
+      restartPolicy: Never
+      containers:
+        - name: smoke
+          image: registry.example.internal/deploykube/bootstrap-tools:1.4
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: FORGEJO_HOST
+              value: __FORGEJO_HOST__
+            - name: FORGEJO_ORG
+              value: platform
+            - name: FORGEJO_REPO
+              value: cluster-config
+          volumeMounts:
+            - name: ca-cert
+              mountPath: /etc/step-ca
+              readOnly: true
+          command:
+            - /bin/bash
+            - -lc
+            - |
+              set -euo pipefail
+
+              dump_on_error() {
+                echo "[forgejo-smoke] diagnostics (best-effort)" >&2
+                kubectl -n forgejo get pods -o wide >&2 || true
+                kubectl -n forgejo get endpoints forgejo-http -o yaml >&2 || true
+                kubectl -n forgejo get cluster postgres -o yaml >&2 || true
+              }
+              trap dump_on_error ERR
+
+              ca="/etc/step-ca/ca.crt"
+              test -s "${ca}"
+
+              echo "[forgejo-smoke] forgejo service endpoints exist"
+              kubectl -n forgejo get endpoints forgejo-http -o jsonpath='{.subsets[0].addresses[0].ip}' >/dev/null
+
+              echo "[forgejo-smoke] gateway /api/v1/version"
+              test -n "${FORGEJO_HOST}"
+              curl --cacert "${ca}" -fsS \
+                --retry 10 \
+                --retry-delay 1 \
+                --retry-all-errors \
+                --retry-connrefused \
+                --connect-to "${FORGEJO_HOST}:443:public-gateway-istio.istio-system.svc.cluster.local:443" \
+                "https://${FORGEJO_HOST}/api/v1/version" | grep -q "version"
+
+              echo "[forgejo-smoke] cnpg cluster present"
+              ready="$(kubectl -n forgejo get cluster postgres -o json | jq -r '.status.conditions[]? | select(.type=="Ready") | .status' | head -n1 || true)"
+              echo "[forgejo-smoke] postgres Ready: ${ready}"
+              test "${ready}" = "True"
+
+              echo "[forgejo-smoke] admin repo read"
+              admin_user="$(kubectl -n forgejo get secret forgejo-admin -o jsonpath='{.data.username}' | base64 -d)"
+              admin_pass="$(kubectl -n forgejo get secret forgejo-admin -o jsonpath='{.data.password}' | base64 -d)"
+
+              curl --cacert "${ca}" -fsS \
+                --retry 10 \
+                --retry-delay 1 \
+                --retry-all-errors \
+                --retry-connrefused \
+                --connect-to "${FORGEJO_HOST}:443:public-gateway-istio.istio-system.svc.cluster.local:443" \
+                --user "${admin_user}:${admin_pass}" \
+                "https://${FORGEJO_HOST}/api/v1/repos/${FORGEJO_ORG}/${FORGEJO_REPO}" >/dev/null
+
+              echo "[forgejo-smoke] ok"
+      volumes:
+        - name: ca-cert
+          secret:
+            secretName: forgejo-oidc-ca
+            items:
+              - key: ca.crt
+                path: ca.crt

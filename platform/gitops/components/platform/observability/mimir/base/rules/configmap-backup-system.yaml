@@ -1,0 +1,195 @@
+# Backup-plane smoke + DR staleness rules (platform tenant)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mimir-rules-backup-system
+  namespace: mimir
+  labels:
+    mimir.grafana.com/rules: "true"
+    app.kubernetes.io/component: ruler
+data:
+  backup-system.yaml: |
+    # yaml-language-server: $schema=https://json.schemastore.org/prometheus-rule.json
+    groups:
+      - name: backup.system.smokes
+        interval: 1m
+        rules:
+          - alert: BackupPlaneSmokeJobFailed
+            expr: |
+              max by (namespace, job_name) (
+                kube_job_status_failed{
+                  namespace="backup-system",
+                  job_name=~"storage-smoke-(backup-target-write|backups-freshness)-.*"
+                }
+              ) > 0
+            for: 2m
+            labels:
+              severity: critical
+              team: platform
+              service: backup-system
+              cluster: deploykube
+              runbook_url: docs/runbooks/backup-dr-smoke-alerts.md
+            annotations:
+              summary: "Backup-plane smoke Job failed ({{ $labels.namespace }}/{{ $labels.job_name }})"
+              description: "Backup target writeability or freshness validation failed. Confirm backup-system CronJobs and inspect Job logs."
+
+          - alert: BackupPlaneSmokeStale
+            expr: |
+              (time() - kube_cronjob_status_last_successful_time{
+                namespace="backup-system",
+                cronjob=~"storage-smoke-backup-target-write|storage-smoke-backups-freshness"
+              }) > 7200
+            for: 10m
+            labels:
+              severity: warning
+              team: platform
+              service: backup-system
+              cluster: deploykube
+              runbook_url: docs/runbooks/backup-dr-smoke-alerts.md
+            annotations:
+              summary: "Backup-plane smoke CronJob stale ({{ $labels.namespace }}/{{ $labels.cronjob }})"
+              description: "No successful writeability/freshness smoke run observed within the expected window."
+
+          - alert: BackupFullRestoreStalenessJobFailed
+            expr: |
+              max by (namespace, job_name) (
+                kube_job_status_failed{
+                  namespace="backup-system",
+                  job_name=~"storage-smoke-full-restore-staleness-.*"
+                }
+              ) > 0
+            for: 2m
+            labels:
+              severity: critical
+              team: platform
+              service: backup-system
+              cluster: deploykube
+              runbook_url: docs/runbooks/backup-dr-smoke-alerts.md
+            annotations:
+              summary: "Monthly full-restore staleness check failed ({{ $labels.namespace }}/{{ $labels.job_name }})"
+              description: "The full-restore marker check failed. Either FULL_RESTORE_OK.json is missing/malformed or the last successful full restore drill is stale."
+
+          - alert: BackupFullRestoreStalenessCronJobStale
+            expr: |
+              (time() - kube_cronjob_status_last_successful_time{
+                namespace="backup-system",
+                cronjob="storage-smoke-full-restore-staleness"
+              }) > 172800
+            for: 15m
+            labels:
+              severity: warning
+              team: platform
+              service: backup-system
+              cluster: deploykube
+              runbook_url: docs/runbooks/backup-dr-smoke-alerts.md
+            annotations:
+              summary: "Monthly full-restore staleness CronJob stale ({{ $labels.namespace }}/{{ $labels.cronjob }})"
+              description: "No successful run observed for the FULL_RESTORE_OK marker staleness check in the expected daily window."
+
+          - alert: BackupSetAssemblerJobFailed
+            expr: |
+              max by (namespace, job_name) (
+                kube_job_status_failed{
+                  namespace="backup-system",
+                  job_name=~"storage-backup-set-assemble-.*"
+                }
+              ) > 0
+            for: 2m
+            labels:
+              severity: critical
+              team: platform
+              service: backup-system
+              cluster: deploykube
+              runbook_url: docs/runbooks/backup-dr-smoke-alerts.md
+            annotations:
+              summary: "Backup set assembly Job failed ({{ $labels.namespace }}/{{ $labels.job_name }})"
+              description: "The backup-set assembler failed, so top-level backup set pointers are not advancing."
+
+          - alert: BackupSetAssemblerCronJobStale
+            expr: |
+              (time() - kube_cronjob_status_last_successful_time{
+                namespace="backup-system",
+                cronjob="storage-backup-set-assemble"
+              }) > 21600
+            for: 15m
+            labels:
+              severity: warning
+              team: platform
+              service: backup-system
+              cluster: deploykube
+              runbook_url: docs/runbooks/backup-dr-smoke-alerts.md
+            annotations:
+              summary: "Backup set assembler CronJob stale ({{ $labels.namespace }}/{{ $labels.cronjob }})"
+              description: "No successful set assembly observed in the expected window; check backup-system set assembly logs."
+
+          - alert: BackupPVCResticJobFailed
+            expr: |
+              max by (namespace, job_name) (
+                kube_job_status_failed{
+                  namespace="backup-system",
+                  job_name=~"storage-pvc-restic-backup-.*"
+                }
+              ) > 0
+            for: 2m
+            labels:
+              severity: critical
+              team: platform
+              service: backup-system
+              cluster: deploykube
+              runbook_url: docs/runbooks/backup-dr-smoke-alerts.md
+            annotations:
+              summary: "PVC restic backup Job failed ({{ $labels.namespace }}/{{ $labels.job_name }})"
+              description: "The PVC backup plane failed to back up one or more in-scope restic-labeled PVCs."
+
+          - alert: BackupPVCResticCronJobStale
+            expr: |
+              (time() - kube_cronjob_status_last_successful_time{
+                namespace="backup-system",
+                cronjob="storage-pvc-restic-backup"
+              }) > 64800
+            for: 15m
+            labels:
+              severity: warning
+              team: platform
+              service: backup-system
+              cluster: deploykube
+              runbook_url: docs/runbooks/backup-dr-smoke-alerts.md
+            annotations:
+              summary: "PVC restic backup CronJob stale ({{ $labels.namespace }}/{{ $labels.cronjob }})"
+              description: "No successful PVC restic backup run observed within the expected 18h window."
+
+          - alert: BackupPVCResticCredentialSmokeJobFailed
+            expr: |
+              max by (namespace, job_name) (
+                kube_job_status_failed{
+                  namespace="backup-system",
+                  job_name=~"storage-smoke-pvc-restic-credentials-.*"
+                }
+              ) > 0
+            for: 2m
+            labels:
+              severity: critical
+              team: platform
+              service: backup-system
+              cluster: deploykube
+              runbook_url: docs/runbooks/backup-dr-smoke-alerts.md
+            annotations:
+              summary: "PVC restic credential smoke Job failed ({{ $labels.namespace }}/{{ $labels.job_name }})"
+              description: "The recurring credential smoke failed: active/candidate restic credentials no longer unlock discovered PVC repos, or recovery material is inconsistent."
+
+          - alert: BackupPVCResticCredentialSmokeCronJobStale
+            expr: |
+              (time() - kube_cronjob_status_last_successful_time{
+                namespace="backup-system",
+                cronjob="storage-smoke-pvc-restic-credentials"
+              }) > 64800
+            for: 15m
+            labels:
+              severity: warning
+              team: platform
+              service: backup-system
+              cluster: deploykube
+              runbook_url: docs/runbooks/backup-dr-smoke-alerts.md
+            annotations:
+              summary: "PVC restic credential smoke CronJob stale ({{ $labels.namespace }}/{{ $labels.cronjob }})"
+              description: "No successful PVC restic credential smoke run observed within the expected 18h window."

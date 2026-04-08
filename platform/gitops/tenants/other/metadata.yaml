@@ -1,0 +1,10 @@
+# Tenant metadata (DeployKube internal input; not a Kubernetes object)
+apiVersion: tenancy.darksite.cloud/v1alpha1
+kind: TenantMetadata
+orgId: other
+description: Reserved for negative validation only. Do not onboard real users.
+tier: S
+retention:
+  mode: immediate
+deletion:
+  deleteFromBackups: retention-only

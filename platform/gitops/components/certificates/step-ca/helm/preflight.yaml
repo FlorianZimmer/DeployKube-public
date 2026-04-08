@@ -1,0 +1,128 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: step-ca-preflight
+  namespace: step-system
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+    argocd.argoproj.io/hook-weight: "0"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: step-ca-preflight
+  namespace: step-system
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+    argocd.argoproj.io/hook-weight: "1"
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["external-secrets.io"]
+    resources: ["externalsecrets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: step-ca-preflight
+  namespace: step-system
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+    argocd.argoproj.io/hook-weight: "2"
+subjects:
+  - kind: ServiceAccount
+    name: step-ca-preflight
+    namespace: step-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: step-ca-preflight
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: step-ca-preflight
+  namespace: step-system
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+    argocd.argoproj.io/sync-options: Replace=true
+    argocd.argoproj.io/hook-weight: "10"
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 300
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      annotations:
+        sidecar.istio.io/inject: "false"
+      labels:
+        app.kubernetes.io/name: step-ca-preflight
+    spec:
+      serviceAccountName: step-ca-preflight
+      restartPolicy: Never
+      containers:
+        - name: preflight
+          image: registry.example.internal/deploykube/bootstrap-tools:1.4
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+
+              ns="step-system"
+              sleep_seconds=2
+              max_wait_seconds=120
+              max_iters=$((max_wait_seconds / sleep_seconds))
+
+              echo "[step-ca-preflight] waiting for ESO-hydrated Secrets in ${ns} (up to ${max_wait_seconds}s)"
+              kubectl -n "${ns}" get externalsecret 2>/dev/null || true
+
+              required=(
+                "step-ca-step-certificates-config:ca.json"
+                "step-ca-step-certificates-config:defaults.json"
+                "step-ca-step-certificates-config:x509_leaf.tpl"
+                "step-ca-step-certificates-certs:root_ca.crt"
+                "step-ca-step-certificates-certs:intermediate_ca.crt"
+                "step-ca-step-certificates-secrets:root_ca_key"
+                "step-ca-step-certificates-secrets:intermediate_ca_key"
+                "step-ca-step-certificates-ca-password:password"
+                "step-ca-step-certificates-provisioner-password:password"
+              )
+
+              missing_now=""
+              for ((iter=1; iter<=max_iters; iter++)); do
+                missing=()
+                for item in "${required[@]}"; do
+                  secret_name="${item%%:*}"
+                  key="${item#*:}"
+                  v="$(kubectl -n "${ns}" get secret "${secret_name}" -o "go-template={{ index .data \"${key}\" }}" 2>/dev/null || true)"
+                  if [[ -z "${v}" ]]; then
+                    missing+=("${item}")
+                  fi
+                done
+
+                if [[ "${#missing[@]}" -eq 0 ]]; then
+                  for item in "${required[@]}"; do
+                    echo "[step-ca-preflight] OK: secret/${item%%:*} has key '${item#*:}'"
+                  done
+                  echo "[step-ca-preflight] PASS"
+                  exit 0
+                fi
+
+                missing_now="$(printf '%s ' "${missing[@]}")"
+                missing_now="${missing_now% }"
+                echo "[step-ca-preflight] still missing (${iter}/${max_iters}): ${missing_now}"
+                sleep "${sleep_seconds}"
+              done
+
+              echo "[step-ca-preflight] FAIL: still missing after ${max_wait_seconds}s: ${missing_now}" >&2
+              echo "[step-ca-preflight] diagnostics:" >&2
+              kubectl -n "${ns}" get externalsecret -o wide || true
+              kubectl -n "${ns}" get secret -o wide || true
+              exit 1

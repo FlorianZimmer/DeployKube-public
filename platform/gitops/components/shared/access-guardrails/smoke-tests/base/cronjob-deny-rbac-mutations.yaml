@@ -1,0 +1,85 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: access-guardrails-smoke-deny-rbac-mutations
+  namespace: access-guardrails-system
+  labels:
+    sidecar.istio.io/inject: "false"
+spec:
+  # Patched per-environment.
+  schedule: "0 */6 * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      ttlSecondsAfterFinished: 3600
+      backoffLimit: 0
+      activeDeadlineSeconds: 300
+      template:
+        metadata:
+          annotations:
+            sidecar.istio.io/inject: "false"
+        spec:
+          serviceAccountName: access-guardrails-smoke
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: smoke
+              image: registry.example.internal/deploykube/bootstrap-tools:1.4
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+                runAsNonRoot: true
+                runAsUser: 65534
+                runAsGroup: 65534
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  memory: 256Mi
+              command:
+                - /bin/bash
+                - -lc
+                - |
+                  set -euo pipefail
+
+                  ns="access-guardrails-system"
+                  test_name="access-guardrails-smoke-deny-test"
+
+                  # Ensure this test is idempotent even if a previous run accidentally created the RoleBinding.
+                  kubectl -n "${ns}" delete rolebinding "${test_name}" --ignore-not-found >/dev/null 2>&1 || true
+
+                  echo "[deny] attempting to create RoleBinding ${ns}/${test_name} (should be denied by admission)"
+                  out="$(
+                    kubectl -n "${ns}" create rolebinding "${test_name}" \
+                      --clusterrole=view \
+                      --serviceaccount="${ns}:access-guardrails-smoke" \
+                      2>&1 || true
+                  )"
+                  printf '%s\n' "${out}"
+
+                  if printf '%s\n' "${out}" | grep -q "RBAC mutations are GitOps-only"; then
+                    echo "[deny] OK: admission denied RBAC mutation as expected"
+                  else
+                    echo "[deny] FAIL: expected admission denial message; guardrails may not be enforcing" >&2
+                    # Best-effort cleanup in case the create unexpectedly succeeded.
+                    kubectl -n "${ns}" delete rolebinding "${test_name}" --ignore-not-found >/dev/null 2>&1 || true
+                    exit 1
+                  fi
+
+                  if kubectl -n "${ns}" get rolebinding "${test_name}" >/dev/null 2>&1; then
+                    echo "[deny] FAIL: RoleBinding exists even though admission claimed denial" >&2
+                    kubectl -n "${ns}" delete rolebinding "${test_name}" --ignore-not-found >/dev/null 2>&1 || true
+                    exit 1
+                  fi
+
+                  echo "[deny] success"

@@ -1,0 +1,656 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: forgejo-team-bootstrap
+  namespace: rbac-system
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    # Keep successful hooks until TTL cleanup so Argo can reliably observe completion.
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookFailed
+spec:
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      annotations:
+        sidecar.istio.io/nativeSidecar: "true"
+        proxy.istio.io/config: '{"holdApplicationUntilProxyStarts":true}'
+    spec:
+      serviceAccountName: forgejo-team-sync
+      restartPolicy: Never
+      containers:
+        - name: bootstrap
+          image: registry.example.internal/deploykube/bootstrap-tools:1.4
+          command: ["/scripts/bootstrap.sh"]
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: FORGEJO_BASE_URL
+              value: "https://forgejo-https.forgejo.svc.cluster.local"
+            - name: FORGEJO_CA_SECRET_NAMESPACE
+              value: "forgejo"
+            - name: FORGEJO_CA_SECRET_NAME
+              value: "forgejo-repo-tls"
+            - name: FORGEJO_CA_SECRET_KEY
+              value: "tls.crt"
+            - name: FORGEJO_ORG
+              value: "platform"
+            - name: FORGEJO_ADMIN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: forgejo-admin
+                  key: password
+            - name: FORGEJO_ADMIN_USER
+              valueFrom:
+                secretKeyRef:
+                  name: forgejo-admin
+                  key: username
+            - name: KEYCLOAK_BASE_URL
+              value: "__KEYCLOAK_BASE_URL__"
+            - name: KEYCLOAK_CONNECT_HOST
+              value: "keycloak.keycloak.svc.cluster.local"
+            - name: KEYCLOAK_REALM
+              value: "deploykube-admin"
+            - name: KEYCLOAK_AUTH_REALM
+              value: "master"
+            - name: KEYCLOAK_CA_SECRET
+              value: "forgejo-team-sync"
+            - name: KEYCLOAK_CA_FILE
+              value: "/etc/step-ca/ca.crt"
+            - name: SSL_CERT_FILE
+              value: "/etc/step-ca/ca.crt"
+            - name: CURL_CA_BUNDLE
+              value: "/etc/step-ca/ca.crt"
+            - name: KEYCLOAK_ADMIN_USER
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-admin-credentials
+                  key: username
+            - name: KEYCLOAK_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-admin-credentials
+                  key: password
+            - name: TEAM_SYNC_CLIENT_ID
+              value: "forgejo-team-sync"
+            - name: TEAM_SYNC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-admin-credentials
+                  key: password   # placeholder; overwritten in script
+            - name: TEAM_SYNC_BOT
+              value: "forgejo-bot"
+            - name: TEAM_SYNC_TOKEN_NAME
+              value: "forgejo-team-sync"
+            - name: VAULT_ADDR
+              value: "http://vault.vault-system.svc:8200"
+            - name: VAULT_ROLE
+              value: "forgejo-team-sync"
+            - name: FORGEJO_TEAM_BOOTSTRAP_FORCE
+              value: "false"
+            - name: FORGEJO_TEAM_BOOTSTRAP_ROTATE_FORGEJO_TOKEN
+              value: "false"
+            - name: FORGEJO_TEAM_BOOTSTRAP_ROTATE_KEYCLOAK_SECRET
+              value: "false"
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+              readOnly: true
+            - name: istio-native-exit
+              mountPath: /helpers
+              readOnly: true
+            - name: oidc-ca
+              mountPath: /etc/step-ca
+              readOnly: true
+      volumes:
+        - name: script
+          configMap:
+            name: forgejo-team-bootstrap-script
+            defaultMode: 0555
+        - name: istio-native-exit
+          configMap:
+            name: istio-native-exit-script
+            defaultMode: 0444
+        - name: oidc-ca
+          secret:
+            secretName: forgejo-team-sync
+            optional: true
+            items:
+              - key: ca.crt
+                path: ca.crt
+  backoffLimit: 2
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: forgejo-team-bootstrap-script
+  namespace: rbac-system
+  annotations:
+    darksite.cloud/reconcile-at: "2026-02-01"
+data:
+  bootstrap.sh: |
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    ISTIO_HELPER="/helpers/istio-native-exit.sh"
+    [ -f "$ISTIO_HELPER" ] || { echo "missing istio-native-exit helper" >&2; exit 1; }
+    . "$ISTIO_HELPER"
+    trap 'deploykube_istio_quit_sidecar || true' EXIT INT TERM
+
+    log() { printf '[bootstrap] %s\n' "$*"; }
+
+    TEAM_SYNC_TOKEN_PREFIX="${TEAM_SYNC_TOKEN_NAME:-forgejo-team-sync}"
+    FORGEJO_ORG="${FORGEJO_ORG:-platform}"
+
+    require() {
+      local v="$1"
+      if [[ -z "${!v:-}" ]]; then
+        log "missing env ${v}"
+        exit 1
+      fi
+    }
+
+    KC_RESOLVE_ARGS=()
+    KC_CA_ARGS=()
+    FG_CA_ARGS=()
+    KC_RETRY_ATTEMPTS="${KC_RETRY_ATTEMPTS:-10}"
+    KC_RETRY_DELAY="${KC_RETRY_DELAY:-2}"
+    KEYCLOAK_CA_FILE="${KEYCLOAK_CA_FILE:-${SSL_CERT_FILE:-}}"
+    KEYCLOAK_CA_SECRET="${KEYCLOAK_CA_SECRET:-forgejo-team-sync}"
+    CA_WAIT_ATTEMPTS="${CA_WAIT_ATTEMPTS:-60}"
+    CA_WAIT_INTERVAL="${CA_WAIT_INTERVAL:-5}"
+
+    parse_host_port() {
+      local url="$1"
+      local hostport="${url#*://}"
+      hostport="${hostport%%/*}"
+      local host="${hostport%%:*}"
+      local port="${hostport##*:}"
+      if [[ "${hostport}" == "${host}" ]]; then
+        port="443"
+      fi
+      printf '%s %s\n' "${host}" "${port}"
+    }
+
+    resolve_ip() {
+      local host="$1"
+      python3 -c 'import socket,sys; print(socket.gethostbyname(sys.argv[1]))' "${host}" 2>/dev/null || true
+    }
+
+    init_keycloak_resolve() {
+      [[ -z "${KEYCLOAK_CONNECT_HOST:-}" ]] && return
+      local host port
+      read -r host port < <(parse_host_port "${KEYCLOAK_BASE_URL}")
+      if [[ -z "${host}" || -z "${port}" ]]; then
+        return
+      fi
+      local ip
+      ip=$(resolve_ip "${KEYCLOAK_CONNECT_HOST}")
+      if [[ -z "${ip}" ]]; then
+        log "warn: failed to resolve Keycloak connect host ${KEYCLOAK_CONNECT_HOST}; using default DNS"
+        return
+      fi
+      KC_RESOLVE_ARGS+=(--resolve "${host}:${port}:${ip}")
+    }
+
+    forgejo_curl() {
+      curl -sSf \
+        --retry 10 \
+        --retry-delay 2 \
+        --retry-all-errors \
+        --retry-connrefused \
+        --max-time 10 \
+        "${FG_CA_ARGS[@]}" \
+        "$@"
+    }
+
+    kc_curl() {
+      curl -sSf \
+        --retry "${KC_RETRY_ATTEMPTS}" \
+        --retry-delay "${KC_RETRY_DELAY}" \
+        --retry-all-errors \
+        --retry-connrefused \
+        --max-time 10 \
+        "${KC_CA_ARGS[@]}" "${KC_RESOLVE_ARGS[@]}" "$@"
+    }
+
+    kc_curl_raw() {
+      curl -sS \
+        --retry "${KC_RETRY_ATTEMPTS}" \
+        --retry-delay "${KC_RETRY_DELAY}" \
+        --retry-all-errors \
+        --retry-connrefused \
+        --max-time 10 \
+        "${KC_CA_ARGS[@]}" "${KC_RESOLVE_ARGS[@]}" "$@"
+    }
+
+    init_keycloak_ca() {
+      local ca="${KEYCLOAK_CA_FILE:-}"
+      if [[ -n "${ca}" && -s "${ca}" ]]; then
+        KC_CA_ARGS+=(--cacert "${ca}")
+        return
+      fi
+
+      local attempt=0 data
+      while [[ "${attempt}" -lt "${CA_WAIT_ATTEMPTS}" ]]; do
+        data=$(kubectl -n rbac-system get secret "${KEYCLOAK_CA_SECRET}" \
+          -o jsonpath='{.data.ca\\.crt}' 2>/dev/null || true)
+        if [[ -n "${data}" ]]; then
+          ca="/tmp/keycloak-oidc-ca.crt"
+          echo "${data}" | base64 -d > "${ca}"
+          KEYCLOAK_CA_FILE="${ca}"
+          KC_CA_ARGS+=(--cacert "${ca}")
+          return
+        fi
+        attempt=$((attempt + 1))
+        log "waiting for Keycloak CA secret ${KEYCLOAK_CA_SECRET} (${attempt}/${CA_WAIT_ATTEMPTS})"
+        sleep "${CA_WAIT_INTERVAL}"
+      done
+      log "missing Keycloak CA bundle after ${CA_WAIT_ATTEMPTS} attempts"
+      exit 1
+    }
+
+    init_forgejo_ca() {
+      local ca_file="${FORGEJO_CA_FILE:-}"
+      if [[ -n "${ca_file}" && -s "${ca_file}" ]]; then
+        FG_CA_ARGS+=(--cacert "${ca_file}")
+        return
+      fi
+
+      local ca_ns="${FORGEJO_CA_SECRET_NAMESPACE:-forgejo}"
+      local ca_name="${FORGEJO_CA_SECRET_NAME:-forgejo-repo-tls}"
+      local ca_key="${FORGEJO_CA_SECRET_KEY:-tls.crt}"
+      local encoded
+      encoded="$(kubectl -n "${ca_ns}" get secret "${ca_name}" -o "go-template={{ index .data \"${ca_key}\" }}" 2>/dev/null || true)"
+      if [[ -z "${encoded}" ]]; then
+        log "missing Forgejo CA secret data ${ca_ns}/${ca_name} key ${ca_key}"
+        exit 1
+      fi
+      ca_file="/tmp/forgejo-ca.crt"
+      echo "${encoded}" | base64 -d > "${ca_file}"
+      if [[ ! -s "${ca_file}" ]]; then
+        log "decoded Forgejo CA file is empty"
+        exit 1
+      fi
+      FG_CA_ARGS+=(--cacert "${ca_file}")
+    }
+
+    vault_login() {
+      require VAULT_ROLE
+      jwt=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+      local resp token
+      for i in {1..30}; do
+        if resp=$(curl -sSf --connect-timeout 2 --max-time 5 --request POST --data "{\"jwt\": \"${jwt}\",\"role\": \"${VAULT_ROLE}\"}" \
+          "${VAULT_ADDR}/v1/auth/kubernetes/login" 2>/dev/null); then
+          token=$(echo "${resp}" | jq -r '.auth.client_token')
+          break
+        fi
+        sleep 2
+      done
+      if [[ -z "${token}" || "${token}" == "null" ]]; then
+        log "failed to mint Vault token via kubernetes auth"
+        exit 1
+      fi
+      echo "${token}"
+    }
+
+    forgejo_api() {
+      local method="$1"; shift
+      local path="$1"; shift
+      forgejo_curl -X "${method}" \
+        -H "Authorization: token ${FORGEJO_TOKEN}" \
+        -H "Content-Type: application/json" \
+        "${FORGEJO_BASE_URL}${path}" "$@"
+    }
+
+    ensure_bot() {
+      if forgejo_curl -u "${FORGEJO_ADMIN_USER}:${FORGEJO_ADMIN_SECRET}" "${FORGEJO_BASE_URL}/api/v1/users/${TEAM_SYNC_BOT}" >/dev/null 2>&1; then
+        log "bot ${TEAM_SYNC_BOT} exists"
+        return
+      fi
+      log "creating bot ${TEAM_SYNC_BOT}"
+      forgejo_curl -X POST -u "${FORGEJO_ADMIN_USER}:${FORGEJO_ADMIN_SECRET}" \
+        -H "Content-Type: application/json" \
+        "${FORGEJO_BASE_URL}/api/v1/admin/users" \
+        -d "$(jq -n --arg u "${TEAM_SYNC_BOT}" --arg e "${TEAM_SYNC_BOT}@local" '{"username":$u,"email":$e,"must_change_password":false,"login_name":$u,"password":"ForgejoBot123!"}')"
+    }
+
+    ensure_bot_org_owner() {
+      local org="${FORGEJO_ORG}"
+      require FORGEJO_ORG
+      require FORGEJO_ADMIN_USER
+      require FORGEJO_ADMIN_SECRET
+
+      # Ensure the org exists (avoid silent 404/403 confusion).
+      if ! forgejo_curl -u "${FORGEJO_ADMIN_USER}:${FORGEJO_ADMIN_SECRET}" \
+          "${FORGEJO_BASE_URL}/api/v1/orgs/${org}" >/dev/null; then
+        log "Forgejo org ${org} not found (cannot grant bot org permissions)"
+        exit 1
+      fi
+
+      # Forgejo exposes org ownership via the built-in "Owners" team.
+      local teams owner_team_id
+      teams=$(forgejo_curl -u "${FORGEJO_ADMIN_USER}:${FORGEJO_ADMIN_SECRET}" \
+        "${FORGEJO_BASE_URL}/api/v1/orgs/${org}/teams")
+      owner_team_id=$(echo "${teams}" | jq -r '.[] | select(.permission=="owner" or .name=="Owners") | .id' | head -n1 || true)
+      if [[ -z "${owner_team_id}" || "${owner_team_id}" == "null" ]]; then
+        log "failed to resolve Owners team id for org ${org}"
+        exit 1
+      fi
+
+      forgejo_curl -X PUT -u "${FORGEJO_ADMIN_USER}:${FORGEJO_ADMIN_SECRET}" \
+        "${FORGEJO_BASE_URL}/api/v1/teams/${owner_team_id}/members/${TEAM_SYNC_BOT}" >/dev/null
+      log "ensured bot ${TEAM_SYNC_BOT} is a member of org ${org} Owners team (id=${owner_team_id})"
+    }
+
+    get_secret_value() {
+      local key="$1"
+      local raw
+      raw=$(kubectl -n rbac-system get secret forgejo-team-sync -o "jsonpath={.data.${key}}" 2>/dev/null || true)
+      if [[ -z "${raw}" ]]; then
+        return 1
+      fi
+      echo "${raw}" | base64 -d 2>/dev/null || true
+    }
+
+    forgejo_token_valid() {
+      local token="$1"
+      forgejo_curl -H "Authorization: token ${token}" \
+        "${FORGEJO_BASE_URL}/api/v1/user" >/dev/null
+    }
+
+    forgejo_token_can_manage_org() {
+      local token="$1"
+      local org="${FORGEJO_ORG}"
+      [[ -z "${token}" ]] && return 1
+      local code
+      code=$(curl -sS -o /dev/null -w "%{http_code}" \
+        -H "Authorization: token ${token}" \
+        "${FORGEJO_BASE_URL}/api/v1/orgs/${org}/teams" || echo "000")
+      [[ "${code}" == "200" ]]
+    }
+
+    mint_pat() {
+      local name="${TEAM_SYNC_TOKEN_PREFIX}-$(date -u +%Y%m%d%H%M%S)"
+      local scopes='["write:admin","write:organization","read:organization","write:user","read:user"]'
+      local resp
+      resp=$(forgejo_curl -X POST \
+        -u "${FORGEJO_ADMIN_USER}:${FORGEJO_ADMIN_SECRET}" \
+        -H "Content-Type: application/json" \
+        -d "{\"name\":\"${name}\",\"scopes\":${scopes}}" \
+        "${FORGEJO_BASE_URL}/api/v1/users/${TEAM_SYNC_BOT}/tokens")
+
+      FORGEJO_TOKEN=$(echo "${resp}" | jq -r '.sha1 // empty')
+      FORGEJO_TOKEN_ID=$(echo "${resp}" | jq -r '.id // empty')
+      if [[ -z "${FORGEJO_TOKEN}" || "${FORGEJO_TOKEN}" == "null" ]]; then
+        log "failed to mint PAT"
+        exit 1
+      fi
+      log "minted PAT for ${TEAM_SYNC_BOT} (${name})"
+    }
+
+    prune_old_pats() {
+      local keep_id="${FORGEJO_TOKEN_ID:-}"
+      [[ -z "${keep_id}" || "${keep_id}" == "null" ]] && return
+
+      local tokens
+      tokens=$(forgejo_curl -u "${FORGEJO_ADMIN_USER}:${FORGEJO_ADMIN_SECRET}" \
+        "${FORGEJO_BASE_URL}/api/v1/users/${TEAM_SYNC_BOT}/tokens")
+
+      while IFS= read -r id; do
+        [[ -z "${id}" ]] && continue
+        if [[ "${id}" == "${keep_id}" ]]; then
+          continue
+        fi
+        log "deleting old PAT id=${id} (prefix=${TEAM_SYNC_TOKEN_PREFIX})"
+        forgejo_curl -X DELETE -u "${FORGEJO_ADMIN_USER}:${FORGEJO_ADMIN_SECRET}" \
+          "${FORGEJO_BASE_URL}/api/v1/users/${TEAM_SYNC_BOT}/tokens/${id}" >/dev/null || true
+      done < <(echo "${tokens}" | jq -r --arg prefix "${TEAM_SYNC_TOKEN_PREFIX}" --arg keep "${keep_id}" '.[] | select(.name | startswith($prefix)) | select((.id|tostring) != $keep) | .id')
+    }
+
+    keycloak_token() {
+      require KEYCLOAK_BASE_URL
+      require KEYCLOAK_AUTH_REALM
+      require KEYCLOAK_ADMIN_USER
+      require KEYCLOAK_ADMIN_PASSWORD
+
+      # Use urlencoding for username/password; Vault-managed secrets often contain '+' and '&'.
+      local resp token err desc
+      resp=$(kc_curl -X POST "${KEYCLOAK_BASE_URL}/realms/${KEYCLOAK_AUTH_REALM}/protocol/openid-connect/token" \
+        --data-urlencode "grant_type=password" \
+        --data-urlencode "client_id=admin-cli" \
+        --data-urlencode "username=${KEYCLOAK_ADMIN_USER}" \
+        --data-urlencode "password=${KEYCLOAK_ADMIN_PASSWORD}")
+      token=$(echo "${resp}" | jq -r '.access_token // empty')
+      if [[ -z "${token}" || "${token}" == "null" ]]; then
+        err=$(echo "${resp}" | jq -r '.error // empty')
+        desc=$(echo "${resp}" | jq -r '.error_description // empty')
+        log "failed to obtain Keycloak token (error=${err:-unknown}, description=${desc:-unknown})"
+        exit 1
+      fi
+      echo "${token}"
+    }
+
+    keycloak_client_token() {
+      local cid="$1"
+      local secret="$2"
+      local resp token err desc
+      if ! resp=$(kc_curl_raw -X POST "${KEYCLOAK_BASE_URL}/realms/${KEYCLOAK_REALM}/protocol/openid-connect/token" \
+          --data-urlencode "grant_type=client_credentials" \
+          --data-urlencode "client_id=${cid}" \
+          --data-urlencode "client_secret=${secret}"); then
+        log "failed to call Keycloak token endpoint for client_credentials"
+        return 1
+      fi
+      token=$(echo "${resp}" | jq -r '.access_token // empty' 2>/dev/null || true)
+      if [[ -z "${token}" ]]; then
+        err=$(echo "${resp}" | jq -r '.error // empty' 2>/dev/null || true)
+        desc=$(echo "${resp}" | jq -r '.error_description // empty' 2>/dev/null || true)
+        log "Keycloak client_credentials failed (error=${err:-unknown}, description=${desc:-unknown})"
+        return 1
+      fi
+      echo "${token}"
+    }
+
+    validate_existing_keycloak_creds() {
+      local cid secret token
+      cid=$(get_secret_value keycloakClientId || true)
+      secret=$(get_secret_value keycloakClientSecret || true)
+      if [[ -z "${cid}" || -z "${secret}" ]]; then
+        return 1
+      fi
+      token=$(keycloak_client_token "${cid}" "${secret}") || return 1
+      if ! kc_curl -H "Authorization: Bearer ${token}" \
+          "${KEYCLOAK_BASE_URL}/admin/realms/${KEYCLOAK_REALM}/groups?max=1" >/dev/null; then
+        log "Keycloak token works but groups endpoint is forbidden; likely missing service-account roles"
+        return 1
+      fi
+      return 0
+    }
+
+    ensure_client() {
+      local token="$1"
+      local cid="${TEAM_SYNC_CLIENT_ID}"
+      local clients
+      clients=$(kc_curl -H "Authorization: Bearer ${token}" "${KEYCLOAK_BASE_URL}/admin/realms/${KEYCLOAK_REALM}/clients?clientId=${cid}")
+      local id
+      id=$(echo "${clients}" | jq -r '.[0].id // empty')
+      if [[ -z "${id}" ]]; then
+        log "creating client ${cid}"
+        kc_curl -X POST -H "Authorization: Bearer ${token}" -H "Content-Type: application/json" \
+          -d "$(jq -n --arg cid "${cid}" '{"clientId":$cid,"standardFlowEnabled":false,"directAccessGrantsEnabled":false,"publicClient":false,"protocol":"openid-connect","serviceAccountsEnabled":true}')" \
+          "${KEYCLOAK_BASE_URL}/admin/realms/${KEYCLOAK_REALM}/clients"
+        clients=$(kc_curl -H "Authorization: Bearer ${token}" "${KEYCLOAK_BASE_URL}/admin/realms/${KEYCLOAK_REALM}/clients?clientId=${cid}")
+        id=$(echo "${clients}" | jq -r '.[0].id')
+      fi
+
+      # forgejo-team-sync uses client_credentials; ensure service accounts are enabled even if the client existed already.
+      local client_json updated
+      client_json=$(kc_curl -H "Authorization: Bearer ${token}" "${KEYCLOAK_BASE_URL}/admin/realms/${KEYCLOAK_REALM}/clients/${id}")
+      if [[ "$(echo "${client_json}" | jq -r '.serviceAccountsEnabled // false')" != "true" ]]; then
+        log "enabling service accounts for ${cid}"
+        updated=$(echo "${client_json}" | jq '.serviceAccountsEnabled=true | .standardFlowEnabled=false | .directAccessGrantsEnabled=false | .publicClient=false')
+        kc_curl -X PUT -H "Authorization: Bearer ${token}" -H "Content-Type: application/json" \
+          -d "${updated}" \
+          "${KEYCLOAK_BASE_URL}/admin/realms/${KEYCLOAK_REALM}/clients/${id}" >/dev/null
+      fi
+
+      if [[ "${FORGEJO_TEAM_BOOTSTRAP_ROTATE_KEYCLOAK_SECRET:-false}" == "true" ]]; then
+        log "rotating Keycloak client secret for ${cid}"
+        kc_curl -X POST -H "Authorization: Bearer ${token}" \
+          "${KEYCLOAK_BASE_URL}/admin/realms/${KEYCLOAK_REALM}/clients/${id}/client-secret" >/dev/null
+      else
+        log "reconciling Keycloak client secret for ${cid} (no rotation)"
+      fi
+
+      CLIENT_SECRET=$(kc_curl -H "Authorization: Bearer ${token}" \
+        "${KEYCLOAK_BASE_URL}/admin/realms/${KEYCLOAK_REALM}/clients/${id}/client-secret" | jq -r '.value // empty')
+      if [[ -z "${CLIENT_SECRET}" ]]; then
+        log "failed to read Keycloak client secret for ${cid}"
+        exit 1
+      fi
+      CLIENT_ID="${cid}"
+    }
+
+    ensure_service_account_roles() {
+      local token="$1"
+      local cid="${TEAM_SYNC_CLIENT_ID}"
+      local client_id rm_id svc_user
+
+      client_id=$(kc_curl -H "Authorization: Bearer ${token}" \
+        "${KEYCLOAK_BASE_URL}/admin/realms/${KEYCLOAK_REALM}/clients?clientId=${cid}" | jq -r '.[0].id // empty')
+      if [[ -z "${client_id}" ]]; then
+        log "failed to resolve Keycloak client id for ${cid}"
+        exit 1
+      fi
+
+      svc_user=$(kc_curl -H "Authorization: Bearer ${token}" \
+        "${KEYCLOAK_BASE_URL}/admin/realms/${KEYCLOAK_REALM}/clients/${client_id}/service-account-user" | jq -r '.id // empty')
+      if [[ -z "${svc_user}" ]]; then
+        log "failed to resolve service account user for ${cid}"
+        exit 1
+      fi
+
+      rm_id=$(kc_curl -H "Authorization: Bearer ${token}" \
+        "${KEYCLOAK_BASE_URL}/admin/realms/${KEYCLOAK_REALM}/clients?clientId=realm-management" | jq -r '.[0].id // empty')
+      if [[ -z "${rm_id}" ]]; then
+        log "failed to resolve realm-management client id"
+        exit 1
+      fi
+
+      local roles=(view-users query-users query-groups view-realm)
+      local roles_payload role_json
+      roles_payload=$(for role in "${roles[@]}"; do
+        role_json=$(kc_curl -H "Authorization: Bearer ${token}" \
+          "${KEYCLOAK_BASE_URL}/admin/realms/${KEYCLOAK_REALM}/clients/${rm_id}/roles/${role}") || continue
+        printf '%s\n' "${role_json}"
+      done | jq -s '.')
+
+      if [[ "$(echo "${roles_payload}" | jq 'length')" -eq 0 ]]; then
+        log "no realm-management roles resolved for ${cid}"
+        exit 1
+      fi
+
+      kc_curl -X POST -H "Authorization: Bearer ${token}" -H "Content-Type: application/json" \
+        -d "${roles_payload}" \
+        "${KEYCLOAK_BASE_URL}/admin/realms/${KEYCLOAK_REALM}/users/${svc_user}/role-mappings/clients/${rm_id}" >/dev/null
+      log "ensured realm-management roles for ${cid}"
+    }
+
+    output_secret_ready() {
+      local s
+      if ! s=$(kubectl -n rbac-system get secret forgejo-team-sync -o json 2>/dev/null); then
+        return 1
+      fi
+      local keys=(forgejoToken keycloakClientId keycloakClientSecret)
+      local k
+      for k in "${keys[@]}"; do
+        if [[ -z "$(echo "${s}" | jq -r ".data.${k} // empty")" ]]; then
+          return 1
+        fi
+      done
+      return 0
+    }
+
+    maybe_skip() {
+      local cm="forgejo-team-bootstrap-status"
+      if kubectl -n rbac-system get configmap "${cm}" >/dev/null 2>&1 && output_secret_ready; then
+        if [[ "${FORGEJO_TEAM_BOOTSTRAP_FORCE:-false}" != "true" ]]; then
+          local existing_forgejo_token
+          existing_forgejo_token=$(get_secret_value forgejoToken || true)
+          if ! forgejo_token_can_manage_org "${existing_forgejo_token}"; then
+            log "output Secret exists but Forgejo token cannot manage org ${FORGEJO_ORG}; reconciling"
+            return
+          fi
+
+          init_keycloak_ca
+          init_keycloak_resolve
+          if validate_existing_keycloak_creds; then
+            log "found ${cm} and valid output Secret; skipping (set FORGEJO_TEAM_BOOTSTRAP_FORCE=true to rerun)"
+            exit 0
+          fi
+          log "output Secret exists but Keycloak credentials are invalid; reconciling"
+        fi
+      fi
+    }
+
+    write_vault() {
+      local token="$1"
+      local payload
+      payload=$(jq -n --arg t "${FORGEJO_TOKEN}" --arg cid "${CLIENT_ID}" --arg cs "${CLIENT_SECRET}" '{data:{token:$t,keycloakClientId:$cid,keycloakClientSecret:$cs}}')
+      curl -sSf -X POST -H "X-Vault-Token: ${token}" -d "${payload}" \
+        "${VAULT_ADDR}/v1/secret/data/forgejo/team-sync" >/dev/null
+      log "wrote Vault secret secret/forgejo/team-sync"
+    }
+
+    main() {
+      require FORGEJO_ADMIN_SECRET
+      require FORGEJO_ADMIN_USER
+      init_forgejo_ca
+      maybe_skip
+      token=$(vault_login)
+
+      # forgejo bot + PAT (reuse existing by default; rotate only when explicitly requested)
+      ensure_bot
+      ensure_bot_org_owner
+      if [[ "${FORGEJO_TEAM_BOOTSTRAP_ROTATE_FORGEJO_TOKEN:-false}" != "true" ]]; then
+        existing=$(get_secret_value forgejoToken || true)
+        if [[ -n "${existing}" ]] && forgejo_token_can_manage_org "${existing}"; then
+          FORGEJO_TOKEN="${existing}"
+          log "using existing Forgejo token from output Secret"
+        else
+          mint_pat
+        fi
+      else
+        mint_pat
+      fi
+
+      # keycloak client
+      init_keycloak_ca
+      init_keycloak_resolve
+      kc_token=$(keycloak_token)
+      ensure_client "${kc_token}"
+      ensure_service_account_roles "${kc_token}"
+
+      # write to Vault
+      write_vault "${token}"
+
+      # write to Secret for cronjob consumption (preserve CA bundle when available)
+      local secret_args=(
+        --from-literal=forgejoToken="${FORGEJO_TOKEN}"
+        --from-literal=keycloakClientId="${CLIENT_ID}"
+        --from-literal=keycloakClientSecret="${CLIENT_SECRET}"
+      )
+      if [[ -n "${KEYCLOAK_CA_FILE:-}" && -s "${KEYCLOAK_CA_FILE}" ]]; then
+        secret_args+=(--from-file=ca.crt="${KEYCLOAK_CA_FILE}")
+      fi
+      kubectl -n rbac-system create secret generic forgejo-team-sync --dry-run=client -o yaml \
+        "${secret_args[@]}" | kubectl apply -f -
+
+      kubectl -n rbac-system create configmap forgejo-team-bootstrap-status --from-literal=lastRun="$(date -Is)" --dry-run=client -o yaml | kubectl apply -f -
+
+      if [[ -n "${FORGEJO_TOKEN_ID:-}" ]]; then
+        prune_old_pats
+      fi
+      log "bootstrap complete"
+    }
+
+    main "$@"

@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tenant-smoke-demo
+  labels:
+    darksite.cloud/rbac-profile: tenant
+    darksite.cloud/tenant-id: smoke
+    darksite.cloud/project-id: demo
+    observability.grafana.com/tenant: smoke
+    darksite.cloud/backup-scope: enabled
+    # Keep tenants out of the mesh by default (restore drills must work without Istio).
+    istio-injection: disabled
+    sidecar.istio.io/inject: "false"

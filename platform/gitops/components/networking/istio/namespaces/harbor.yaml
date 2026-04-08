@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: harbor
+  labels:
+    deploykube.gitops/component: harbor
+    deploykube.gitops/owner: platform
+    deploykube.gitops/public-gateway: allowed
+    istio-injection: enabled
+    observability.grafana.com/tenant: platform
+

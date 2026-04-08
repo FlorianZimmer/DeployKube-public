@@ -1,0 +1,48 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: vault-pki-external-config-bootstrap
+  namespace: vault-system
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+  labels:
+    deploykube.gitops/job: vault-pki-external-config-bootstrap
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 900
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        deploykube.gitops/job: vault-pki-external-config-bootstrap
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      serviceAccountName: vault-pki-external-config
+      restartPolicy: OnFailure
+      containers:
+        - name: configure
+          image: registry.example.internal/deploykube/bootstrap-tools:1.4
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - /scripts/configure.sh
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+              readOnly: true
+            - name: root-token
+              mountPath: /vault/userconfig/root
+              readOnly: true
+      volumes:
+        - name: script
+          configMap:
+            name: vault-pki-external-config-script
+            defaultMode: 0755
+        - name: root-token
+          secret:
+            secretName: vault-init
+            items:
+              - key: root-token
+                path: token

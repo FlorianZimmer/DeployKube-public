@@ -1,0 +1,7 @@
+apiVersion: data.darksite.cloud/v1alpha1
+kind: PostgresInstance
+metadata:
+  name: keycloak-postgres
+spec:
+  classRef:
+    name: platform-dev-small

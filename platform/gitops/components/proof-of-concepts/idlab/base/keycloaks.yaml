@@ -1,0 +1,311 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ukc-keycloak
+  namespace: idlab
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+  labels:
+    app.kubernetes.io/name: ukc-keycloak
+    darksite.cloud/ha-tier: tier-2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ukc-keycloak
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ukc-keycloak
+        darksite.cloud/ha-tier: tier-2
+    spec:
+      containers:
+        - name: keycloak
+          image: quay.io/keycloak/keycloak:26.4.4
+          imagePullPolicy: IfNotPresent
+          args:
+            - start-dev
+            - --http-enabled=true
+            - --hostname-strict=false
+            - --proxy-headers=xforwarded
+          env:
+            - name: KC_DB
+              value: postgres
+            - name: KC_DB_URL
+              value: jdbc:postgresql://idlab-postgres-rw:5432/idlab?currentSchema=ukc
+            - name: KC_DB_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-postgres-app
+                  key: username
+            - name: KC_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-postgres-app
+                  key: password
+            - name: KEYCLOAK_ADMIN
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-admin-secrets
+                  key: ukcAdminUsername
+            - name: KEYCLOAK_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-admin-secrets
+                  key: ukcAdminPassword
+            - name: KC_HEALTH_ENABLED
+              value: "true"
+            - name: KC_METRICS_ENABLED
+              value: "false"
+            - name: JAVA_OPTS_APPEND
+              value: -XX:MaxRAMPercentage=70
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: management
+              containerPort: 9000
+          startupProbe:
+            httpGet:
+              path: /health/started
+              port: management
+            periodSeconds: 10
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: management
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: management
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              memory: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mkc-keycloak
+  namespace: idlab
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+  labels:
+    app.kubernetes.io/name: mkc-keycloak
+    darksite.cloud/ha-tier: tier-2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mkc-keycloak
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mkc-keycloak
+        darksite.cloud/ha-tier: tier-2
+    spec:
+      containers:
+        - name: keycloak
+          image: quay.io/keycloak/keycloak:26.4.4
+          imagePullPolicy: IfNotPresent
+          args:
+            - start-dev
+            - --http-enabled=true
+            - --hostname-strict=false
+            - --proxy-headers=xforwarded
+          env:
+            - name: KC_DB
+              value: postgres
+            - name: KC_DB_URL
+              value: jdbc:postgresql://idlab-postgres-rw:5432/idlab?currentSchema=mkc
+            - name: KC_DB_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-postgres-app
+                  key: username
+            - name: KC_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-postgres-app
+                  key: password
+            - name: KEYCLOAK_ADMIN
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-admin-secrets
+                  key: mkcAdminUsername
+            - name: KEYCLOAK_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-admin-secrets
+                  key: mkcAdminPassword
+            - name: KC_HEALTH_ENABLED
+              value: "true"
+            - name: KC_METRICS_ENABLED
+              value: "false"
+            - name: JAVA_OPTS_APPEND
+              value: -XX:MaxRAMPercentage=70
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: management
+              containerPort: 9000
+          startupProbe:
+            httpGet:
+              path: /health/started
+              port: management
+            periodSeconds: 10
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: management
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: management
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              memory: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: btp-keycloak
+  namespace: idlab
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+  labels:
+    app.kubernetes.io/name: btp-keycloak
+    darksite.cloud/ha-tier: tier-2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: btp-keycloak
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: btp-keycloak
+        darksite.cloud/ha-tier: tier-2
+    spec:
+      containers:
+        - name: keycloak
+          image: quay.io/keycloak/keycloak:26.4.4
+          imagePullPolicy: IfNotPresent
+          args:
+            - start-dev
+            - --http-enabled=true
+            - --hostname-strict=false
+            - --proxy-headers=xforwarded
+          env:
+            - name: KC_DB
+              value: postgres
+            - name: KC_DB_URL
+              value: jdbc:postgresql://idlab-postgres-rw:5432/idlab?currentSchema=btp
+            - name: KC_DB_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-postgres-app
+                  key: username
+            - name: KC_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-postgres-app
+                  key: password
+            - name: KEYCLOAK_ADMIN
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-admin-secrets
+                  key: btpAdminUsername
+            - name: KEYCLOAK_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-admin-secrets
+                  key: btpAdminPassword
+            - name: KC_HEALTH_ENABLED
+              value: "true"
+            - name: KC_METRICS_ENABLED
+              value: "false"
+            - name: JAVA_OPTS_APPEND
+              value: -XX:MaxRAMPercentage=70
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: management
+              containerPort: 9000
+          startupProbe:
+            httpGet:
+              path: /health/started
+              port: management
+            periodSeconds: 10
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: management
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: management
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              memory: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ukc-keycloak
+  namespace: idlab
+spec:
+  selector:
+    app.kubernetes.io/name: ukc-keycloak
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mkc-keycloak
+  namespace: idlab
+spec:
+  selector:
+    app.kubernetes.io/name: mkc-keycloak
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: btp-keycloak
+  namespace: idlab
+spec:
+  selector:
+    app.kubernetes.io/name: btp-keycloak
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

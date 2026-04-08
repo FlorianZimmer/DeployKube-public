@@ -1,0 +1,301 @@
+###############################################
+# realm: deploykube-admin
+# requiredEnv:
+#   - ARGOCD_HOST
+#   - FORGEJO_HOST
+#   - KEYCLOAK_ARGOCD_CLIENT_ID
+#   - KEYCLOAK_ARGOCD_CLIENT_SECRET
+#   - KEYCLOAK_FORGEJO_CLIENT_ID
+#   - KEYCLOAK_FORGEJO_CLIENT_SECRET
+#   - KEYCLOAK_KIALI_CLIENT_ID
+#   - KEYCLOAK_KIALI_CLIENT_SECRET
+#   - KIALI_HOST
+#   - KEYCLOAK_HARBOR_CLIENT_ID
+#   - KEYCLOAK_HARBOR_CLIENT_SECRET
+#   - HARBOR_HOST
+#   - KEYCLOAK_HUBBLE_CLIENT_ID
+#   - KEYCLOAK_HUBBLE_CLIENT_SECRET
+#   - HUBBLE_HOST
+#   - KEYCLOAK_VAULT_CLIENT_ID
+#   - KEYCLOAK_VAULT_CLIENT_SECRET
+#   - KEYCLOAK_VAULT_HOST
+#   - KEYCLOAK_GRAFANA_CLIENT_ID
+#   - KEYCLOAK_GRAFANA_CLIENT_SECRET
+#   - GRAFANA_HOST
+#   - KEYCLOAK_DEFAULT_USER_PASSWORD
+###############################################
+apiVersion: k8s.keycloak.org/v2alpha1
+kind: KeycloakRealmImport
+metadata:
+  name: deploykube-admin
+spec:
+  keycloakCRName: keycloak
+  realm:
+    realm: deploykube-admin
+    displayName: DeployKube Admin
+    enabled: true
+    loginWithEmailAllowed: true
+    registrationAllowed: false
+    rememberMe: true
+    resetPasswordAllowed: true
+    passwordPolicy: length(8)
+    defaultRoles:
+      - offline_access
+      - uma_authorization
+    roles:
+      realm:
+        - name: realm-admin
+          description: Administrative access to DeployKube platform resources.
+        - name: argocd-admin
+          description: Full administration rights for Argo CD.
+    groups:
+      # Kubernetes access contract groups (OIDC → Kubernetes RBAC).
+      #
+      # Keep these `dk-*` group names stable: Kubernetes RBAC binds groups (not users).
+      # Group membership governance is environment/customer-specific (IdP policy),
+      # but the group *meaning* is Git-managed.
+      - name: dk-platform-admins
+        path: /dk-platform-admins
+      - name: dk-platform-operators
+        path: /dk-platform-operators
+      - name: dk-security-ops
+        path: /dk-security-ops
+      - name: dk-auditors
+        path: /dk-auditors
+      - name: dk-iam-admins
+        path: /dk-iam-admins
+      - name: dk-support
+        path: /dk-support
+      - name: dk-bot-argocd-sync
+        path: /dk-bot-argocd-sync
+      - name: dk-bot-vault-writer
+        path: /dk-bot-vault-writer
+    clients:
+      - clientId: "${KEYCLOAK_ARGOCD_CLIENT_ID}"
+        name: Argo CD
+        protocol: openid-connect
+        publicClient: false
+        secret: "${KEYCLOAK_ARGOCD_CLIENT_SECRET}"
+        serviceAccountsEnabled: false
+        standardFlowEnabled: true
+        directAccessGrantsEnabled: true
+        rootUrl: "https://${ARGOCD_HOST}"
+        baseUrl: "https://${ARGOCD_HOST}"
+        adminUrl: "https://${ARGOCD_HOST}"
+        redirectUris:
+          - "https://${ARGOCD_HOST}/*"
+          - http://localhost:8085/*
+        webOrigins:
+          - "https://${ARGOCD_HOST}"
+          - http://localhost:8085
+        attributes:
+          oauth2.device.authorization.grant.enabled: "false"
+        protocolMappers:
+          - name: groups
+            protocol: openid-connect
+            protocolMapper: oidc-group-membership-mapper
+            consentRequired: false
+            config:
+              "full.path": "false"
+              "id.token.claim": "true"
+              "access.token.claim": "true"
+              "userinfo.token.claim": "true"
+              "claim.name": "groups"
+      - clientId: "${KEYCLOAK_FORGEJO_CLIENT_ID}"
+        name: Forgejo
+        protocol: openid-connect
+        publicClient: false
+        secret: "${KEYCLOAK_FORGEJO_CLIENT_SECRET}"
+        serviceAccountsEnabled: false
+        standardFlowEnabled: true
+        directAccessGrantsEnabled: false
+        rootUrl: "https://${FORGEJO_HOST}/"
+        baseUrl: "https://${FORGEJO_HOST}/"
+        adminUrl: "https://${FORGEJO_HOST}/"
+        redirectUris:
+          - "https://${FORGEJO_HOST}/user/oauth2/keycloak/callback"
+        webOrigins:
+          - "https://${FORGEJO_HOST}"
+        attributes:
+          post.logout.redirect.uris: "https://${FORGEJO_HOST}/"
+      - clientId: "${KEYCLOAK_KIALI_CLIENT_ID}"
+        name: Kiali
+        protocol: openid-connect
+        publicClient: false
+        secret: "${KEYCLOAK_KIALI_CLIENT_SECRET}"
+        serviceAccountsEnabled: false
+        standardFlowEnabled: true
+        directAccessGrantsEnabled: false
+        rootUrl: "https://${KIALI_HOST}/kiali"
+        baseUrl: "https://${KIALI_HOST}/kiali"
+        adminUrl: "https://${KIALI_HOST}/kiali"
+        redirectUris:
+          - "https://${KIALI_HOST}/kiali/*"
+        webOrigins:
+          - "https://${KIALI_HOST}"
+        attributes:
+          oauth2.device.authorization.grant.enabled: "false"
+        protocolMappers:
+          - name: groups
+            protocol: openid-connect
+            protocolMapper: oidc-group-membership-mapper
+            consentRequired: false
+            config:
+              "full.path": "false"
+              "id.token.claim": "true"
+              "access.token.claim": "true"
+              "userinfo.token.claim": "true"
+              "claim.name": "groups"
+          - name: audience-kubernetes-api
+            protocol: openid-connect
+            protocolMapper: oidc-audience-mapper
+            consentRequired: false
+            config:
+              "included.client.audience": "kubernetes-api"
+              "id.token.claim": "false"
+              "access.token.claim": "true"
+              "userinfo.token.claim": "false"
+      - clientId: "${KEYCLOAK_HARBOR_CLIENT_ID}"
+        name: Harbor
+        protocol: openid-connect
+        publicClient: false
+        secret: "${KEYCLOAK_HARBOR_CLIENT_SECRET}"
+        serviceAccountsEnabled: false
+        standardFlowEnabled: true
+        directAccessGrantsEnabled: false
+        rootUrl: "https://${HARBOR_HOST}"
+        baseUrl: "https://${HARBOR_HOST}"
+        adminUrl: "https://${HARBOR_HOST}"
+        redirectUris:
+          - "https://${HARBOR_HOST}/c/oidc/callback"
+        webOrigins:
+          - "https://${HARBOR_HOST}"
+        attributes:
+          oauth2.device.authorization.grant.enabled: "false"
+        protocolMappers:
+          - name: groups
+            protocol: openid-connect
+            protocolMapper: oidc-group-membership-mapper
+            consentRequired: false
+            config:
+              "full.path": "false"
+              "id.token.claim": "true"
+              "access.token.claim": "true"
+              "userinfo.token.claim": "true"
+              "claim.name": "groups"
+      - clientId: "${KEYCLOAK_HUBBLE_CLIENT_ID}"
+        name: Hubble UI (oauth2-proxy)
+        protocol: openid-connect
+        publicClient: false
+        secret: "${KEYCLOAK_HUBBLE_CLIENT_SECRET}"
+        serviceAccountsEnabled: false
+        standardFlowEnabled: true
+        directAccessGrantsEnabled: false
+        redirectUris:
+          - "https://${HUBBLE_HOST}/oauth2/callback"
+        webOrigins:
+          - "https://${HUBBLE_HOST}"
+        attributes:
+          oauth2.device.authorization.grant.enabled: "false"
+        protocolMappers:
+          - name: groups
+            protocol: openid-connect
+            protocolMapper: oidc-group-membership-mapper
+            consentRequired: false
+            config:
+              "full.path": "false"
+              "id.token.claim": "true"
+              "access.token.claim": "true"
+              "userinfo.token.claim": "true"
+              "claim.name": "groups"
+      - clientId: "${KEYCLOAK_VAULT_CLIENT_ID}"
+        name: Vault CLI
+        protocol: openid-connect
+        publicClient: false
+        secret: "${KEYCLOAK_VAULT_CLIENT_SECRET}"
+        serviceAccountsEnabled: false
+        standardFlowEnabled: true
+        directAccessGrantsEnabled: true
+        rootUrl: "https://${KEYCLOAK_VAULT_HOST}"
+        baseUrl: "https://${KEYCLOAK_VAULT_HOST}"
+        adminUrl: "https://${KEYCLOAK_VAULT_HOST}"
+        redirectUris:
+          - "https://${KEYCLOAK_VAULT_HOST}/*"
+          - http://localhost:8400/*
+          - http://127.0.0.1:8400/*
+        webOrigins:
+          - "https://${KEYCLOAK_VAULT_HOST}"
+          - http://localhost:8400
+          - http://127.0.0.1:8400
+        attributes:
+          oauth2.device.authorization.grant.enabled: "false"
+        protocolMappers:
+          - name: groups
+            protocol: openid-connect
+            protocolMapper: oidc-group-membership-mapper
+            consentRequired: false
+            config:
+              "full.path": "false"
+              "id.token.claim": "true"
+              "access.token.claim": "true"
+              "userinfo.token.claim": "true"
+              "claim.name": "groups"
+      - clientId: "${KEYCLOAK_GRAFANA_CLIENT_ID}"
+        name: Grafana
+        protocol: openid-connect
+        publicClient: false
+        secret: "${KEYCLOAK_GRAFANA_CLIENT_SECRET}"
+        serviceAccountsEnabled: false
+        standardFlowEnabled: true
+        directAccessGrantsEnabled: false
+        rootUrl: "https://${GRAFANA_HOST}/"
+        baseUrl: "https://${GRAFANA_HOST}/"
+        adminUrl: "https://${GRAFANA_HOST}/"
+        redirectUris:
+          - "https://${GRAFANA_HOST}/*"
+          - http://localhost:3000/*
+        webOrigins:
+          - "https://${GRAFANA_HOST}"
+          - http://localhost:3000
+        attributes:
+          oauth2.device.authorization.grant.enabled: "false"
+        protocolMappers:
+          - name: groups
+            protocol: openid-connect
+            protocolMapper: oidc-group-membership-mapper
+            consentRequired: false
+            config:
+              "full.path": "false"
+              "id.token.claim": "true"
+              "access.token.claim": "true"
+              "userinfo.token.claim": "true"
+              "claim.name": "groups"
+      - clientId: kubernetes-api
+        name: Kubernetes API (kubectl OIDC)
+        protocol: openid-connect
+        publicClient: true
+        serviceAccountsEnabled: false
+        standardFlowEnabled: true
+        directAccessGrantsEnabled: false
+        attributes:
+          oauth2.device.authorization.grant.enabled: "true"
+        redirectUris:
+          # Fixed callback port keeps Keycloak redirect URIs tight and predictable.
+          - http://127.0.0.1:18000/*
+          - http://localhost:18000/*
+          - http://[::1]:18000/*
+        webOrigins:
+          - http://127.0.0.1:18000
+          - http://localhost:18000
+          - http://[::1]:18000
+        protocolMappers:
+          - name: groups
+            protocol: openid-connect
+            protocolMapper: oidc-group-membership-mapper
+            consentRequired: false
+            config:
+              "full.path": "false"
+              "id.token.claim": "true"
+              "access.token.claim": "true"
+              "userinfo.token.claim": "true"
+              "claim.name": "groups"

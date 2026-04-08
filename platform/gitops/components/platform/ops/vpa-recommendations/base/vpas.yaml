@@ -1,0 +1,1637 @@
+# Generated from cluster inventory (2026-01-12T10:46:25Z)
+# NOTE: Deployment-specific deltas live in overlays/<deploymentId>/.
+# Long-lived workload controllers only: Deployment/StatefulSet/DaemonSet
+# Namespace 'mimir' intentionally excluded (curated VPAs live in that component)
+
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: argo-cd-argocd-applicationset-controller
+  namespace: argocd
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: argo-cd-argocd-applicationset-controller
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: argo-cd-argocd-dex-server
+  namespace: argocd
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: argo-cd-argocd-dex-server
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: argo-cd-argocd-notifications-controller
+  namespace: argocd
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: argo-cd-argocd-notifications-controller
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: argo-cd-argocd-repo-server
+  namespace: argocd
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: argo-cd-argocd-repo-server
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: argo-cd-argocd-server
+  namespace: argocd
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: argo-cd-argocd-server
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: argo-cd-redis-ha-haproxy
+  namespace: argocd
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: argo-cd-redis-ha-haproxy
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: argocd-ui-extensions
+  namespace: argocd
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: argocd-ui-extensions
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: argo-cd-argocd-application-controller
+  namespace: argocd
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: argo-cd-argocd-application-controller
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: argo-cd-redis-ha-server
+  namespace: argocd
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: argo-cd-redis-ha-server
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: cert-manager
+  namespace: cert-manager
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: cert-manager
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: cert-manager-cainjector
+  namespace: cert-manager
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: cert-manager-cainjector
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: cert-manager-webhook
+  namespace: cert-manager
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: cert-manager-webhook
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: cnpg-operator-cloudnative-pg
+  namespace: cnpg-system
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: cnpg-operator-cloudnative-pg
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: external-dns
+  namespace: dns-system
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: external-dns
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: powerdns
+  namespace: dns-system
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: powerdns
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: external-secrets
+  namespace: external-secrets
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: external-secrets
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: external-secrets-cert-controller
+  namespace: external-secrets
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: external-secrets-cert-controller
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: external-secrets-webhook
+  namespace: external-secrets
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: external-secrets-webhook
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: factorio
+  namespace: factorio
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: factorio
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: forgejo
+  namespace: forgejo
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: forgejo
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: forgejo-valkey
+  namespace: forgejo
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: forgejo-valkey
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: forgejo-valkey-sentinel
+  namespace: forgejo
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: forgejo-valkey-sentinel
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: garage
+  namespace: garage
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: garage
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: grafana
+  namespace: grafana
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: grafana
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: istio-operator
+  namespace: istio-operator
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: istio-operator
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: istio-ingressgateway
+  namespace: istio-system
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: istio-ingressgateway
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: istiod
+  namespace: istio-system
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: istiod
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: kiali
+  namespace: istio-system
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: kiali
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: public-gateway-istio
+  namespace: istio-system
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: public-gateway-istio
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: keycloak
+  namespace: keycloak
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: keycloak
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: keycloak-operator
+  namespace: keycloak-operator
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: keycloak-operator
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: cilium
+  namespace: kube-system
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: DaemonSet
+    name: cilium
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: cilium-envoy
+  namespace: kube-system
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: DaemonSet
+    name: cilium-envoy
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: cilium-operator
+  namespace: kube-system
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: cilium-operator
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: coredns
+  namespace: kube-system
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: coredns
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: hubble-auth-proxy
+  namespace: kube-system
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: hubble-auth-proxy
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: hubble-relay
+  namespace: kube-system
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: hubble-relay
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: hubble-ui
+  namespace: kube-system
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: hubble-ui
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: metrics-server
+  namespace: kube-system
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: metrics-server
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: vpa-recommender
+  namespace: kube-system
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: vpa-recommender
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: loki-canary
+  namespace: loki
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: DaemonSet
+    name: loki-canary
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: loki-distributor
+  namespace: loki
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: loki-distributor
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: loki-gateway
+  namespace: loki
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: loki-gateway
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: loki-querier
+  namespace: loki
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: loki-querier
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: loki-query-frontend
+  namespace: loki
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: loki-query-frontend
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: loki-query-scheduler
+  namespace: loki
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: loki-query-scheduler
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: loki-chunks-cache
+  namespace: loki
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: loki-chunks-cache
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: loki-compactor
+  namespace: loki
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: loki-compactor
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: loki-index-gateway
+  namespace: loki
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: loki-index-gateway
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: loki-ingester
+  namespace: loki
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: loki-ingester
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: loki-results-cache
+  namespace: loki
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: loki-results-cache
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: loki-ruler
+  namespace: loki
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: loki-ruler
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: metallb-speaker
+  namespace: metallb-system
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: DaemonSet
+    name: metallb-speaker
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: metallb-controller
+  namespace: metallb-system
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: metallb-controller
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: minecraft
+  namespace: minecraft-monifactory
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: minecraft
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: alloy
+  namespace: observability
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: DaemonSet
+    name: alloy
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: prometheus-node-exporter
+  namespace: observability
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: DaemonSet
+    name: prometheus-node-exporter
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: alloy-metrics
+  namespace: observability
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: alloy-metrics
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: kube-state-metrics
+  namespace: observability
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: kube-state-metrics
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: kyverno-admission-controller
+  namespace: policy-system
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: kyverno-admission-controller
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: kyverno-background-controller
+  namespace: policy-system
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: kyverno-background-controller
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: kyverno-cleanup-controller
+  namespace: policy-system
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: kyverno-cleanup-controller
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: kyverno-reports-controller
+  namespace: policy-system
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: kyverno-reports-controller
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: step-ca-step-certificates
+  namespace: step-system
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: step-ca-step-certificates
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: nfs-provisioner-nfs-subdir-external-provisioner
+  namespace: storage-system
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: nfs-provisioner-nfs-subdir-external-provisioner
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: tempo
+  namespace: tempo
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: tempo
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: kms-shim
+  namespace: vault-seal-system
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: kms-shim
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: vault
+  namespace: vault-system
+  labels:
+    darksite.cloud/purpose: vpa-recommendations
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: vault
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        minAllowed:
+          cpu: 5m
+          memory: 32Mi

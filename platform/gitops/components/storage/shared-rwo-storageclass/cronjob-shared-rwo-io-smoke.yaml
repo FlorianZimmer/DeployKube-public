@@ -1,0 +1,81 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: storage-smoke-shared-rwo-io
+  annotations:
+    deploykube.gitops/validation-job: "true"
+  labels:
+    app.kubernetes.io/name: storage-smoke-shared-rwo-io
+spec:
+  schedule: "0 */6 * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 600
+      ttlSecondsAfterFinished: 900
+      template:
+        spec:
+          serviceAccountName: shared-rwo-io-smoke
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: smoke
+              image: registry.example.internal/deploykube/bootstrap-tools:1.4
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              env:
+                - name: MOUNT_PATH
+                  value: /data
+                - name: ITERATIONS
+                  value: "200"
+                - name: FILE_SIZE_BYTES
+                  value: "4096"
+                - name: P99_MAX_S
+                  value: "1.0"
+                - name: MAX_MAX_S
+                  value: "5.0"
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -euo pipefail
+                  command -v python3 >/dev/null 2>&1 || { echo "missing dependency: python3" >&2; exit 1; }
+                  timeout 9m python3 /scripts/storage-smoke-shared-rwo-io.py
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  memory: 256Mi
+              volumeMounts:
+                - name: data
+                  mountPath: /data
+                - name: scripts
+                  mountPath: /scripts
+                  readOnly: true
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: shared-rwo-io-smoke
+            - name: scripts
+              configMap:
+                name: shared-rwo-io-smoke
+                defaultMode: 0444
+            - name: tmp
+              emptyDir: {}

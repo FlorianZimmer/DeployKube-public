@@ -1,0 +1,38 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: tenant-intent-smoke-demo
+  namespace: argocd
+  labels:
+    darksite.cloud/tenant-id: smoke
+    darksite.cloud/project-id: demo
+  annotations:
+    # Tenant intent applies cluster-scoped namespaces; sync early to avoid “missing namespace” races.
+    argocd.argoproj.io/sync-wave: "-3"
+spec:
+  project: tenant-intent-smoke-p-demo
+  destination:
+    name: in-cluster
+    namespace: t-smoke-p-demo-dev-app
+  source:
+    repoURL: https://forgejo-https.forgejo.svc.cluster.local/platform/cluster-config.git
+    targetRevision: main
+    path: tenants/smoke/projects/demo/namespaces/dev
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+      - ApplyOutOfSyncOnly=true
+      - ServerSideApply=true
+      - PrunePropagationPolicy=background
+  ignoreDifferences:
+    - group: external-secrets.io
+      kind: ExternalSecret
+      jqPathExpressions:
+        # Controller-managed defaults/finalizers
+        - .metadata.finalizers
+        - .spec.target.deletionPolicy
+        - .spec.target.template.engineVersion
+        - .spec.target.template.mergePolicy

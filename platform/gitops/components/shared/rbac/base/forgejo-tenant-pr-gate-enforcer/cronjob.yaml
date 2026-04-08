@@ -1,0 +1,87 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: forgejo-tenant-pr-gate-enforcer
+  namespace: rbac-system
+spec:
+  # Intentionally offset from :00 to avoid top-of-hour kube-apiserver contention.
+  schedule: "53 * * * *"
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 900
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          annotations:
+            sidecar.istio.io/nativeSidecar: "true"
+            proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}'
+        spec:
+          serviceAccountName: forgejo-team-sync
+          restartPolicy: Never
+          containers:
+            - name: enforcer
+              image: registry.example.internal/deploykube/bootstrap-tools:1.4
+              imagePullPolicy: IfNotPresent
+              command: ["/bin/bash", "/scripts/enforce.sh"]
+              env:
+                - name: POD_NAMESPACE
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.namespace
+                - name: FORGEJO_BASE_URL
+                  value: "https://forgejo-https.forgejo.svc.cluster.local"
+                - name: FORGEJO_CA_SECRET_NAMESPACE
+                  value: "forgejo"
+                - name: FORGEJO_CA_SECRET_NAME
+                  value: "forgejo-repo-tls"
+                - name: FORGEJO_CA_SECRET_KEY
+                  value: "tls.crt"
+                # Preferred: admin credentials from Vault (projected via shared/rbac-secrets).
+                # This avoids needing a bot to be owner across all tenant orgs.
+                - name: FORGEJO_ADMIN_USERNAME
+                  valueFrom:
+                    secretKeyRef:
+                      name: forgejo-admin
+                      key: username
+                      optional: true
+                - name: FORGEJO_ADMIN_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: forgejo-admin
+                      key: password
+                      optional: true
+                - name: TENANT_REGISTRY_PATH
+                  value: /tenant-registry/tenant-registry.yaml
+                # Required status check context(s) (comma-separated).
+                # The tenant repo CI workflow MUST publish these contexts on PRs.
+                - name: REQUIRED_CONTEXTS_CSV
+                  value: tenant-pr-gates
+              volumeMounts:
+                - name: scripts
+                  mountPath: /scripts
+                  readOnly: true
+                - name: istio-native-exit
+                  mountPath: /helpers
+                  readOnly: true
+                - name: tenant-registry
+                  mountPath: /tenant-registry
+                  readOnly: true
+          volumes:
+            - name: scripts
+              configMap:
+                name: forgejo-tenant-pr-gate-enforcer
+                defaultMode: 0555
+            - name: istio-native-exit
+              configMap:
+                name: istio-native-exit-script
+                defaultMode: 0444
+            - name: tenant-registry
+              configMap:
+                name: deploykube-tenant-registry
+                optional: true
+                items:
+                  - key: tenant-registry.yaml
+                    path: tenant-registry.yaml

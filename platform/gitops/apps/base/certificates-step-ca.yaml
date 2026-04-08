@@ -1,0 +1,66 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: certificates-step-ca
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+    argocd.argoproj.io/manifest-generate-options: "--enable-helm --helm-command ./tools/kustomize-helm-wrapper.sh"
+spec:
+  project: platform
+  destination:
+    name: in-cluster
+    namespace: step-system
+  source:
+    repoURL: https://forgejo-https.forgejo.svc.cluster.local/platform/cluster-config.git
+    targetRevision: main
+    path: components/certificates/step-ca/helm
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      limit: 10
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 5m
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=background
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+  ignoreDifferences:
+    - group: apps
+      kind: StatefulSet
+      name: step-ca-step-certificates
+      namespace: step-system
+      jsonPointers:
+        - /status
+      jqPathExpressions:
+        - .metadata.annotations["argocd.argoproj.io/tracking-id"]
+        - .spec.podManagementPolicy
+        - .spec.revisionHistoryLimit
+        - .spec.updateStrategy
+        - .spec.template.spec.dnsPolicy
+        - .spec.template.spec.restartPolicy
+        - .spec.template.spec.schedulerName
+        - .spec.template.spec.terminationGracePeriodSeconds
+        - .spec.template.spec.containers[].livenessProbe.failureThreshold
+        - .spec.template.spec.containers[].livenessProbe.periodSeconds
+        - .spec.template.spec.containers[].livenessProbe.successThreshold
+        - .spec.template.spec.containers[].livenessProbe.timeoutSeconds
+        - .spec.template.spec.containers[].readinessProbe.failureThreshold
+        - .spec.template.spec.containers[].readinessProbe.periodSeconds
+        - .spec.template.spec.containers[].readinessProbe.successThreshold
+        - .spec.template.spec.containers[].readinessProbe.timeoutSeconds
+        - .spec.template.spec.containers[].terminationMessagePath
+        - .spec.template.spec.containers[].terminationMessagePolicy
+        - .spec.template.spec.containers[].volumeMounts[].readOnly
+        - .spec.template.spec.volumes[]?.secret.defaultMode
+        - .spec.template.spec.volumes[]?.configMap.defaultMode
+        - .spec.volumeClaimTemplates[].apiVersion
+        - .spec.volumeClaimTemplates[].kind
+        - .spec.volumeClaimTemplates[].metadata
+        - .spec.volumeClaimTemplates[].status
+        - .spec.volumeClaimTemplates[].spec.volumeMode

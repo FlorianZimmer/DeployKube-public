@@ -1,0 +1,13 @@
+# Temporary exceptions for the resource contract CI validator.
+#
+# This list should stay small and strictly time-bounded. Prefer fixing the manifests/values instead.
+#
+# Format:
+# - namespace: <ns>
+#   kind: <Kind>
+#   name: <resourceName>
+#   containers: [<containerName>]   # optional; omit to exempt all containers in the workload
+#   expires: <rfc3339>
+#   ticket: <string>
+[]
+

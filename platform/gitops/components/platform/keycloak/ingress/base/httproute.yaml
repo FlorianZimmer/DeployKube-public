@@ -1,0 +1,30 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: keycloak
+  namespace: keycloak
+  annotations:
+    deploykube.gitops/owner: platform
+spec:
+  hostnames:
+    - keycloak.placeholder.invalid
+  parentRefs:
+    - name: public-gateway
+      namespace: istio-system
+      sectionName: https-keycloak
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      filters:
+        - type: RequestHeaderModifier
+          requestHeaderModifier:
+            set:
+              - name: X-Forwarded-Proto
+                value: https
+              - name: X-Forwarded-Port
+                value: "443"
+      backendRefs:
+        - name: keycloak
+          port: 8080

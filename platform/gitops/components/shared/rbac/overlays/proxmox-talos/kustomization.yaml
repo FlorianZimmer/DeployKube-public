@@ -1,0 +1,11 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: rbac-system
+resources:
+  - ../../base
+  - ../../tests
+patches:
+  - path: patch-forgejo-team-sync.yaml
+    target:
+      kind: CronJob
+      name: forgejo-team-sync

@@ -1,0 +1,16 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mimir-overrides-exporter
+  namespace: mimir
+spec:
+  template:
+    spec:
+      containers:
+        - name: overrides-exporter
+          resources:
+            requests:
+              cpu: "15m"
+              memory: "64Mi"
+            limits:
+              memory: "96Mi"

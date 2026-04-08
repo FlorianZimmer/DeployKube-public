@@ -1,0 +1,14 @@
+kubeProxyReplacement: true
+socketLB:
+  enabled: true
+  hostNamespaceOnly: true
+k8sServiceHost: deploykube-dev-control-plane
+k8sServicePort: 6443
+
+# Lightweight local playground: disable Hubble UI/relay (CPU + background chatter).
+hubble:
+  enabled: false
+  relay:
+    enabled: false
+  ui:
+    enabled: false

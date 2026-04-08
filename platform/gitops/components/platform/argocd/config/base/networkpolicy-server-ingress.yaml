@@ -1,0 +1,32 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: argocd-server-ingress
+  namespace: argocd
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values:
+          - argocd-server
+          - argo-cd-argocd-server
+      - key: app.kubernetes.io/component
+        operator: In
+        values:
+          - server
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: istio-system
+          podSelector:
+            matchLabels:
+              gateway.networking.k8s.io/gateway-name: public-gateway
+      ports:
+        - port: 8080
+          protocol: TCP
+        - port: 8083
+          protocol: TCP

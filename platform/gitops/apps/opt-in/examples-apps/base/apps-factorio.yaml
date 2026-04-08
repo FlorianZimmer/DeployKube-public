@@ -1,0 +1,28 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: apps-factorio
+  namespace: argocd
+  labels:
+    darksite.cloud/tenant-id: factorio
+    darksite.cloud/project-id: factorio
+  annotations:
+    argocd.argoproj.io/sync-wave: "10"
+spec:
+  project: tenant-factorio-p-factorio
+  destination:
+    name: in-cluster
+    namespace: t-factorio-p-factorio-dev-app
+  source:
+    repoURL: https://forgejo-https.forgejo.svc.cluster.local/tenant-factorio/apps-factorio.git
+    targetRevision: main
+    path: overlays/mac-orbstack
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+      - ApplyOutOfSyncOnly=true
+      - PrunePropagationPolicy=foreground
+      - ServerSideApply=true

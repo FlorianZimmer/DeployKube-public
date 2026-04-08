@@ -1,0 +1,90 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: backup-set-permissions-repair
+  namespace: backup-system
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+    argocd.argoproj.io/sync-options: Replace=true
+    argocd.argoproj.io/sync-wave: "5"
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 180
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      annotations:
+        sidecar.istio.io/inject: "false"
+      labels:
+        app.kubernetes.io/name: backup-set-permissions-repair
+    spec:
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        runAsUser: 0
+        runAsGroup: 0
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: repair
+          image: registry.example.internal/deploykube/bootstrap-tools@sha256:e7be47a69e3a11bc58c857f2d690a71246ada91ac3a60bdfb0a547f091f6485a
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+              add:
+                - CHOWN
+                - FOWNER
+                - DAC_OVERRIDE
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+
+              deployment_id="proxmox-talos"
+              target_gid="65532"
+              base_root="/backup/${deployment_id}"
+              sets_root="/backup/${deployment_id}/sets"
+              tier0_root="/backup/${deployment_id}/tier0"
+
+              repair_tree() {
+                local path="$1"
+                mkdir -p "${path}"
+                chgrp "${target_gid}" "${path}"
+                chmod 2775 "${path}"
+                find "${path}" -type d -exec chgrp "${target_gid}" {} +
+                find "${path}" -type d -exec chmod 2775 {} +
+              }
+
+              repair_marker_tree() {
+                local path="$1"
+                [ -d "${path}" ] || return 0
+                find "${path}" -type f -name 'LATEST.json' -exec chgrp "${target_gid}" {} +
+                find "${path}" -type f -name 'LATEST.json' -exec chmod 0644 {} +
+              }
+
+              repair_tree "${base_root}"
+              repair_tree "${sets_root}"
+              repair_tree "${tier0_root}"
+              repair_marker_tree "${tier0_root}"
+
+              echo "[backup-set-permissions-repair] final directory state:"
+              find "${base_root}" -maxdepth 3 \( -type d -o -name 'LATEST.json' \) | sort | while IFS= read -r path; do
+                stat -c '%A %a %u %g %n' "${path}"
+              done
+          volumeMounts:
+            - name: backup
+              mountPath: /backup
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: backup
+          persistentVolumeClaim:
+            claimName: backup-target
+        - name: tmp
+          emptyDir: {}

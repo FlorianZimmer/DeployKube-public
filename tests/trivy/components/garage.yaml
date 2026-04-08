@@ -1,0 +1,13 @@
+schemaVersion: v1alpha1
+description: Component-owned Trivy targets for Garage.
+watch_paths:
+  - platform/gitops/artifacts/runtime-artifact-index.yaml
+  - platform/gitops/components/storage/garage
+  - tests/trivy/components/garage.yaml
+image_targets:
+  - id: garage
+    artifact_catalog: runtime-artifacts
+    artifact_name: garage
+config_targets:
+  - id: garage-manifests
+    path: platform/gitops/components/storage/garage

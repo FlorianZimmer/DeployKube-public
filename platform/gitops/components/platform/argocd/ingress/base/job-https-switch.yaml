@@ -1,0 +1,141 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: argocd-https-switch
+  namespace: argocd
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: argocd-https-switch
+  namespace: argocd
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "patch"]
+  resourceNames:
+    - argocd-cm
+    - argocd-cmd-params-cm
+    - argocd-https-switch-state
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "patch"]
+  resourceNames:
+    - argo-cd-argocd-server
+- apiGroups: ["gateway.networking.k8s.io"]
+  resources: ["httproutes"]
+  verbs: ["get", "patch"]
+  resourceNames:
+    - argocd
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: argocd-https-switch
+  namespace: argocd
+subjects:
+- kind: ServiceAccount
+  name: argocd-https-switch
+  namespace: argocd
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: argocd-https-switch
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: argocd-https-switch
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: HookSucceeded,BeforeHookCreation
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 900
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        deploykube.gitops/job: argocd-https-switch
+      annotations:
+        sidecar.istio.io/inject: "false"
+        sidecar.istio.io/nativeSidecar: 'true'
+    spec:
+      serviceAccountName: argocd-https-switch
+      restartPolicy: Never
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    deploykube.gitops/job: argocd-https-switch
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              deploykube.gitops/job: argocd-https-switch
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: https-switch
+        image: registry.example.internal/deploykube/bootstrap-tools@sha256:e7be47a69e3a11bc58c857f2d690a71246ada91ac3a60bdfb0a547f091f6485a
+        imagePullPolicy: IfNotPresent
+        command:
+        - /usr/local/bin/run.sh
+        env:
+        - name: HOME
+          value: /tmp
+        - name: XDG_CONFIG_HOME
+          value: /tmp/.config
+        - name: DEPLOYMENT_CONFIG_FILE
+          value: /etc/deploykube/deployment-config/deployment-config.yaml
+        - name: SWITCH_STATE_CONFIGMAP
+          value: argocd-https-switch-state
+        - name: IDEMPOTENCE_VERSION
+          value: "2026-03-02-v1"
+        resources:
+          requests:
+            cpu: 25m
+            memory: 64Mi
+          limits:
+            cpu: 250m
+            memory: 256Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+              - ALL
+        volumeMounts:
+        - name: script
+          mountPath: /usr/local/bin/run.sh
+          subPath: https-switch.sh
+          readOnly: true
+        - name: deployment-config
+          mountPath: /etc/deploykube/deployment-config
+          readOnly: true
+        - name: tmp
+          mountPath: /tmp
+      volumes:
+      - name: script
+        configMap:
+          name: argocd-https-switch-script
+          defaultMode: 0755
+      - name: deployment-config
+        configMap:
+          name: deploykube-deployment-config
+          items:
+            - key: deployment-config.yaml
+              path: deployment-config.yaml
+      - name: tmp
+        emptyDir: {}

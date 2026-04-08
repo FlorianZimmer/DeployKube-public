@@ -1,0 +1,45 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: alloy-metrics-allow-vip-probes
+  namespace: observability
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: alloy
+      app.kubernetes.io/instance: alloy-metrics
+  policyTypes:
+    - Egress
+  egress:
+    # NOTE: on clusters with Cilium kube-proxy replacement, pod egress to a Service LoadBalancerIP
+    # can be transparently load-balanced to the Service backends (pod IPs). Allowing only the VIP
+    # IP is therefore insufficient; we must also allow egress to the PowerDNS pods themselves.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: dns-system
+          podSelector:
+            matchLabels:
+              app: powerdns
+              component: authoritative
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 203.0.113.242/32 # PowerDNS VIP (dev)
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Dev does not pin a public gateway VIP; probe the in-cluster gateway Service instead.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: istio-system
+      ports:
+        - protocol: TCP
+          port: 443

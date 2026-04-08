@@ -1,0 +1,80 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dns-external-sync
+  namespace: dns-system
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+    argocd.argoproj.io/sync-options: Replace=true
+    argocd.argoproj.io/hook-weight: "10"
+    deploykube.gitops/job: dns-external-sync
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 600
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      annotations:
+        sidecar.istio.io/inject: "false"
+      labels:
+        app.kubernetes.io/name: dns-external-sync
+    spec:
+      serviceAccountName: dns-sync
+      restartPolicy: Never
+      containers:
+        - name: dns-sync
+          image: registry.example.internal/deploykube/bootstrap-tools:1.4
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - /scripts/dns-sync.sh
+          env:
+            - name: DNS_DOMAIN
+              valueFrom:
+                configMapKeyRef:
+                  name: deploykube-dns-wiring
+                  key: DNS_DOMAIN
+            - name: POWERDNS_API
+              value: http://powerdns.dns-system.svc.cluster.local:8081/api/v1
+            - name: POWERDNS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: powerdns-api
+                  key: api_key
+            - name: INGRESS_NAMESPACE
+              value: istio-system
+            - name: INGRESS_SERVICE
+              value: public-gateway-istio
+            - name: DNS_SYNC_HOSTS
+              valueFrom:
+                configMapKeyRef:
+                  name: deploykube-dns-wiring
+                  key: DNS_SYNC_HOSTS
+            - name: DNS_AUTH_NS_HOSTS
+              valueFrom:
+                configMapKeyRef:
+                  name: deploykube-dns-wiring
+                  key: DNS_AUTH_NS_HOSTS
+            - name: DNS_AUTH_NS_IP
+              valueFrom:
+                configMapKeyRef:
+                  name: deploykube-dns-wiring
+                  key: DNS_AUTH_NS_IP
+            - name: DNS_SYNC_ENABLE_WILDCARD
+              value: "true"
+            - name: DNS_SYNC_STATUS_CONFIGMAP
+              value: dns-sync-status
+            - name: DNS_SYNC_PUBLISH_TTL
+              value: "300"
+            - name: DNS_SYNC_HOST_TTL
+              value: "60"
+          volumeMounts:
+            - name: dns-sync-script
+              mountPath: /scripts/dns-sync.sh
+              subPath: dns-sync.sh
+      volumes:
+        - name: dns-sync-script
+          configMap:
+            name: dns-sync-script
+            defaultMode: 0555

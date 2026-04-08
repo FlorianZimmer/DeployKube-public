@@ -1,0 +1,5 @@
+controller:
+  logLevel: info
+  replicaCount: 2
+speaker:
+  logLevel: info

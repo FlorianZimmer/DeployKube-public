@@ -1,0 +1,17 @@
+- targets:
+  - 203.0.113.242:53
+  labels:
+    name: powerdns-vip-dns
+    module: dns_powerdns_vip
+    probe: dns
+    vip: powerdns
+    vip_ip: 203.0.113.242
+- targets:
+  - https://public-gateway-istio.istio-system.svc.cluster.local/healthz
+  labels:
+    name: public-gateway-https-argocd
+    module: http_public_gateway_service_argocd
+    probe: http
+    vip: public-gateway
+    vip_ip: service
+    hostname: argocd.dev-single.internal.example.com

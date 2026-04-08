@@ -1,0 +1,26 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: argocd-smoke
+  namespace: argocd
+rules:
+  - apiGroups: [""]
+    resources:
+      - configmaps
+      - secrets
+    verbs: ["get"]
+    resourceNames:
+      - argocd-cm
+      - repo-forgejo-platform
+  - apiGroups: ["apps"]
+    resources:
+      - deployments
+    verbs: ["get", "watch"]
+    resourceNames:
+      - argo-cd-argocd-server
+  - apiGroups: ["argoproj.io"]
+    resources:
+      - applications
+    verbs: ["get"]
+    resourceNames:
+      - platform-apps

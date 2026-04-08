@@ -1,0 +1,139 @@
+name: Certificates Mode E2E
+
+on:
+  pull_request:
+    paths:
+      - "tools/tenant-provisioner/**"
+      - "platform/gitops/components/certificates/**"
+      - "platform/gitops/deployments/**"
+      - "tests/scripts/e2e-cert-modes-matrix.sh"
+      - ".github/workflows/certificates-mode-e2e.yml"
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: quick runs subCa only; full runs subCa+acme+wildcard
+        type: choice
+        options:
+          - quick
+          - full
+        default: full
+      modes:
+        description: Optional override for --modes in full profile
+        type: string
+        default: subCa,acme,wildcard
+      kubeconfig_path:
+        description: Optional absolute path to kubeconfig on runner
+        type: string
+        default: ""
+  schedule:
+    # Nightly full matrix. Intentionally offset from :00.
+    - cron: "23 3 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  # Both cert and IAM E2E mutate the singleton DeploymentConfig; never run in parallel.
+  group: deploykube-runtime-e2e
+  cancel-in-progress: false
+
+jobs:
+  quick-subca:
+    if: |
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       vars.DK_CERT_E2E_ENABLED == 'true') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.profile == 'quick')
+    runs-on:
+      - self-hosted
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate script syntax
+        run: bash -n ./tests/scripts/e2e-cert-modes-matrix.sh
+
+      - name: Resolve kubeconfig
+        run: |
+          set -euo pipefail
+          if [[ -n "${{ github.event.inputs.kubeconfig_path }}" ]]; then
+            echo "KUBECONFIG=${{ github.event.inputs.kubeconfig_path }}" >> "${GITHUB_ENV}"
+          elif [[ -n "${{ vars.DK_CERT_E2E_KUBECONFIG }}" ]]; then
+            echo "KUBECONFIG=${{ vars.DK_CERT_E2E_KUBECONFIG }}" >> "${GITHUB_ENV}"
+          fi
+
+      - name: Run quick subCa E2E
+        env:
+          DK_CERT_E2E_ACK_CONFIG_MUTATION: yes
+        run: |
+          set -euo pipefail
+          ./tests/scripts/e2e-cert-modes-matrix.sh \
+            --modes subCa \
+            --timeout 20m \
+            --ack-config-mutation yes
+
+  full-matrix:
+    if: |
+      (github.event_name == 'schedule' && vars.DK_CERT_E2E_ENABLED == 'true') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.profile == 'full')
+    runs-on:
+      - self-hosted
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate script syntax
+        run: bash -n ./tests/scripts/e2e-cert-modes-matrix.sh
+
+      - name: Resolve kubeconfig
+        run: |
+          set -euo pipefail
+          if [[ -n "${{ github.event.inputs.kubeconfig_path }}" ]]; then
+            echo "KUBECONFIG=${{ github.event.inputs.kubeconfig_path }}" >> "${GITHUB_ENV}"
+          elif [[ -n "${{ vars.DK_CERT_E2E_KUBECONFIG }}" ]]; then
+            echo "KUBECONFIG=${{ vars.DK_CERT_E2E_KUBECONFIG }}" >> "${GITHUB_ENV}"
+          fi
+
+      - name: Run full certificate mode matrix E2E
+        env:
+          DK_CERT_E2E_ACK_CONFIG_MUTATION: yes
+          DK_CERT_E2E_ACME_SERVER: ${{ secrets.DK_CERT_E2E_ACME_SERVER }}
+          DK_CERT_E2E_ACME_EMAIL: ${{ secrets.DK_CERT_E2E_ACME_EMAIL }}
+          DK_CERT_E2E_ACME_PROVIDER: ${{ vars.DK_CERT_E2E_ACME_PROVIDER }}
+          DK_CERT_E2E_ACME_CLUSTER_ISSUER_NAME: ${{ vars.DK_CERT_E2E_ACME_CLUSTER_ISSUER_NAME }}
+          DK_CERT_E2E_ACME_PRIVATE_KEY_SECRET_NAME: ${{ vars.DK_CERT_E2E_ACME_PRIVATE_KEY_SECRET_NAME }}
+          DK_CERT_E2E_ACME_CREDENTIALS_SECRET_NAME: ${{ vars.DK_CERT_E2E_ACME_CREDENTIALS_SECRET_NAME }}
+          DK_CERT_E2E_ACME_CREDENTIALS_EXTERNAL_SECRET_NAME: ${{ vars.DK_CERT_E2E_ACME_CREDENTIALS_EXTERNAL_SECRET_NAME }}
+          DK_CERT_E2E_ACME_CREDENTIALS_VAULT_PATH: ${{ secrets.DK_CERT_E2E_ACME_CREDENTIALS_VAULT_PATH }}
+          DK_CERT_E2E_ACME_RFC2136_NAMESERVER: ${{ vars.DK_CERT_E2E_ACME_RFC2136_NAMESERVER }}
+          DK_CERT_E2E_ACME_RFC2136_TSIG_KEY_NAME: ${{ vars.DK_CERT_E2E_ACME_RFC2136_TSIG_KEY_NAME }}
+          DK_CERT_E2E_ACME_RFC2136_TSIG_ALGORITHM: ${{ vars.DK_CERT_E2E_ACME_RFC2136_TSIG_ALGORITHM }}
+          DK_CERT_E2E_ACME_TSIG_SECRET_PROPERTY: ${{ vars.DK_CERT_E2E_ACME_TSIG_SECRET_PROPERTY }}
+          DK_CERT_E2E_ACME_CLOUDFLARE_EMAIL: ${{ vars.DK_CERT_E2E_ACME_CLOUDFLARE_EMAIL }}
+          DK_CERT_E2E_ACME_CLOUDFLARE_API_TOKEN_PROPERTY: ${{ vars.DK_CERT_E2E_ACME_CLOUDFLARE_API_TOKEN_PROPERTY }}
+          DK_CERT_E2E_ACME_ROUTE53_REGION: ${{ vars.DK_CERT_E2E_ACME_ROUTE53_REGION }}
+          DK_CERT_E2E_ACME_ROUTE53_HOSTED_ZONE_ID: ${{ vars.DK_CERT_E2E_ACME_ROUTE53_HOSTED_ZONE_ID }}
+          DK_CERT_E2E_ACME_ROUTE53_ROLE: ${{ vars.DK_CERT_E2E_ACME_ROUTE53_ROLE }}
+          DK_CERT_E2E_ACME_ROUTE53_ACCESS_KEY_ID_PROPERTY: ${{ vars.DK_CERT_E2E_ACME_ROUTE53_ACCESS_KEY_ID_PROPERTY }}
+          DK_CERT_E2E_ACME_ROUTE53_SECRET_ACCESS_KEY_PROPERTY: ${{ vars.DK_CERT_E2E_ACME_ROUTE53_SECRET_ACCESS_KEY_PROPERTY }}
+          DK_CERT_E2E_WILDCARD_VAULT_PATH: ${{ secrets.DK_CERT_E2E_WILDCARD_VAULT_PATH }}
+          DK_CERT_E2E_WILDCARD_SECRET_NAME: ${{ vars.DK_CERT_E2E_WILDCARD_SECRET_NAME }}
+          DK_CERT_E2E_WILDCARD_EXTERNAL_SECRET_NAME: ${{ vars.DK_CERT_E2E_WILDCARD_EXTERNAL_SECRET_NAME }}
+          DK_CERT_E2E_WILDCARD_TLS_CERT_PROPERTY: ${{ vars.DK_CERT_E2E_WILDCARD_TLS_CERT_PROPERTY }}
+          DK_CERT_E2E_WILDCARD_TLS_KEY_PROPERTY: ${{ vars.DK_CERT_E2E_WILDCARD_TLS_KEY_PROPERTY }}
+          DK_CERT_E2E_WILDCARD_CA_BUNDLE_SECRET_NAME: ${{ vars.DK_CERT_E2E_WILDCARD_CA_BUNDLE_SECRET_NAME }}
+          DK_CERT_E2E_WILDCARD_CA_BUNDLE_EXTERNAL_SECRET_NAME: ${{ vars.DK_CERT_E2E_WILDCARD_CA_BUNDLE_EXTERNAL_SECRET_NAME }}
+          DK_CERT_E2E_WILDCARD_CA_BUNDLE_VAULT_PATH: ${{ secrets.DK_CERT_E2E_WILDCARD_CA_BUNDLE_VAULT_PATH }}
+          DK_CERT_E2E_WILDCARD_CA_BUNDLE_PROPERTY: ${{ vars.DK_CERT_E2E_WILDCARD_CA_BUNDLE_PROPERTY }}
+        run: |
+          set -euo pipefail
+          modes="${{ github.event.inputs.modes }}"
+          if [[ -z "${modes}" ]]; then
+            modes="subCa,acme,wildcard"
+          fi
+          ./tests/scripts/e2e-cert-modes-matrix.sh \
+            --modes "${modes}" \
+            --timeout 25m \
+            --ack-config-mutation yes

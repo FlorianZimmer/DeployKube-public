@@ -1,0 +1,14 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: keycloak-tls
+spec:
+  secretName: keycloak-tls
+  dnsNames:
+    - keycloak.placeholder.invalid
+  issuerRef:
+    name: step-ca
+    kind: ClusterIssuer
+  privateKey:
+    algorithm: RSA
+    size: 2048

@@ -1,0 +1,144 @@
+apiVersion: data.darksite.cloud/v1alpha1
+kind: PostgresClass
+metadata:
+  name: platform-ha
+spec:
+  serviceLevel: platform
+  engine:
+    family: postgres
+    majorVersion: 16
+    imageName: registry.example.internal/cloudnative-pg/postgresql:16.3
+  compute:
+    instances: 3
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        memory: 2Gi
+    sharedBuffers: 512MB
+    maxConnections: 300
+    enableSuperuserAccess: true
+  storage:
+    data:
+      size: 5Gi
+      storageClassName: shared-rwo
+    wal:
+      size: 3Gi
+      storageClassName: shared-rwo
+  backup:
+    mode: pgDump
+    schedule: "0 3 * * *"
+    retentionPolicy: 7d
+    volume:
+      size: 20Gi
+      storageClassName: shared-rwo
+  service:
+    accessMode: SameNamespace
+---
+apiVersion: data.darksite.cloud/v1alpha1
+kind: PostgresClass
+metadata:
+  name: platform-ha-large
+spec:
+  serviceLevel: platform
+  engine:
+    family: postgres
+    majorVersion: 16
+    imageName: registry.example.internal/cloudnative-pg/postgresql:16.3
+  compute:
+    instances: 3
+    resources:
+      requests:
+        cpu: 100m
+        memory: 512Mi
+      limits:
+        memory: 1Gi
+    sharedBuffers: 256MB
+    maxConnections: 400
+    enableSuperuserAccess: true
+  storage:
+    data:
+      size: 20Gi
+      storageClassName: shared-rwo
+    wal:
+      size: 10Gi
+      storageClassName: shared-rwo
+  backup:
+    mode: pgDump
+    schedule: "0 3 * * *"
+    retentionPolicy: 7d
+    volume:
+      size: 20Gi
+      storageClassName: shared-rwo
+  service:
+    accessMode: SameNamespace
+---
+apiVersion: data.darksite.cloud/v1alpha1
+kind: PostgresClass
+metadata:
+  name: platform-dev-small
+spec:
+  serviceLevel: platform-dev
+  engine:
+    family: postgres
+    majorVersion: 16
+    imageName: registry.example.internal/cloudnative-pg/postgresql:16.3
+  compute:
+    instances: 1
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        memory: 2Gi
+    sharedBuffers: 512MB
+    maxConnections: 300
+    enableSuperuserAccess: true
+  storage:
+    data:
+      size: 5Gi
+      storageClassName: shared-rwo
+    wal:
+      size: 3Gi
+      storageClassName: shared-rwo
+  backup:
+    mode: pgDump
+    schedule: "0 3 * * *"
+    retentionPolicy: 7d
+    volume:
+      size: 20Gi
+      storageClassName: shared-rwo
+  service:
+    accessMode: SameNamespace
+---
+apiVersion: data.darksite.cloud/v1alpha1
+kind: PostgresClass
+metadata:
+  name: platform-poc-disposable
+spec:
+  serviceLevel: platform-poc
+  engine:
+    family: postgres
+    majorVersion: 16
+    imageName: registry.example.internal/cloudnative-pg/postgresql:16.3
+  compute:
+    instances: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 512Mi
+    enableSuperuserAccess: true
+  storage:
+    data:
+      size: 4Gi
+      storageClassName: shared-rwo
+  backup:
+    mode: Disabled
+    skipReason: proof-of-concept
+  monitoring:
+    enablePodMonitor: false
+  service:
+    accessMode: SameNamespace

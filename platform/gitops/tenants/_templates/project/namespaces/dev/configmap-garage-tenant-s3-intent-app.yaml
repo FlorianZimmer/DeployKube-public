@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tenant-s3-intent-<orgId>-app
+  namespace: garage
+  labels:
+    darksite.cloud/tenant-s3-intent: "true"
+    darksite.cloud/tenant-id: <orgId>
+data:
+  # This is a platform-owned intent signal consumed by the Garage tenant S3 provisioner.
+  # Bucket names must be DNS-label-safe (<= 63 chars, lowercase alnum + hyphen).
+  intent.json: |
+    {"orgId":"<orgId>","bucketName":"app"}

@@ -1,0 +1,24 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: platform-data-postgres-controller
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0.5"
+spec:
+  project: platform
+  destination:
+    name: in-cluster
+    namespace: data-system
+  source:
+    repoURL: https://forgejo-https.forgejo.svc.cluster.local/platform/cluster-config.git
+    targetRevision: main
+    path: components/platform/apis/data/data.darksite.cloud/controller
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - ServerSideApply=true

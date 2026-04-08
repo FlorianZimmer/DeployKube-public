@@ -1,0 +1,79 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: loki
+commonAnnotations:
+  argocd.argoproj.io/sync-wave: "2"
+resources:
+  - ../../base
+helmGlobals:
+  chartHome: charts
+helmCharts:
+  - name: loki
+    version: 6.46.0
+    releaseName: loki
+    namespace: loki
+    valuesFile: values.yaml
+patches:
+  # Argo CD repo-server runs Kustomize with load restrictions, so patch files must live in (or under)
+  # the overlay directory (see also docs/design/gitops-operating-model.md).
+  - patch: |-
+      apiVersion: apps/v1
+      kind: StatefulSet
+      metadata:
+        name: loki-chunks-cache
+        namespace: loki
+      spec:
+        template:
+          spec:
+            containers:
+                  - name: memcached
+                    args:
+                      - -m 128
+                      - --extended=modern,track_sizes
+                      - -I 5m
+                      - -c 16384
+                      - -v
+                      - -u 11211
+                    resources:
+                      requests:
+                        cpu: 50m
+                        memory: 128Mi
+                      limits:
+                        memory: 256Mi
+  - patch: |-
+      apiVersion: apps/v1
+      kind: StatefulSet
+      metadata:
+        name: loki-results-cache
+        namespace: loki
+      spec:
+        template:
+          spec:
+            containers:
+              - name: memcached
+                args:
+                  - -m 128
+                  - --extended=modern,track_sizes
+                  - -I 5m
+                  - -c 16384
+                  - -v
+                  - -u 11211
+                resources:
+                  requests:
+                    cpu: 50m
+                    memory: 128Mi
+                  limits:
+                    memory: 256Mi
+  - path: patch-vpa-requests-daemonset-loki-canary.yaml
+  - path: patch-vpa-requests-deployment-loki-distributor.yaml
+  - path: patch-vpa-requests-deployment-loki-gateway.yaml
+  - path: patch-vpa-requests-deployment-loki-querier.yaml
+  - path: patch-vpa-requests-deployment-loki-query-frontend.yaml
+  - path: patch-vpa-requests-deployment-loki-query-scheduler.yaml
+  - path: patch-vpa-requests-statefulset-loki-chunks-cache.yaml
+  - path: patch-vpa-requests-statefulset-loki-compactor.yaml
+  - path: patch-vpa-requests-statefulset-loki-index-gateway.yaml
+  - path: patch-vpa-requests-statefulset-loki-ingester.yaml
+  - path: patch-vpa-requests-statefulset-loki-results-cache.yaml
+  - path: patch-vpa-requests-statefulset-loki-ruler.yaml
+  - path: patch-ha-tier-labels.yaml

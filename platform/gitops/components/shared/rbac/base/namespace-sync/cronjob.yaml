@@ -1,0 +1,35 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: rbac-namespace-sync
+  namespace: rbac-system
+  labels:
+    sidecar.istio.io/inject: "false"
+spec:
+  schedule: "*/15 * * * *"
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          annotations:
+            sidecar.istio.io/inject: "false"
+        spec:
+          serviceAccountName: rbac-namespace-sync
+          restartPolicy: OnFailure
+          containers:
+            - name: sync
+              image: registry.example.internal/deploykube/bootstrap-tools:1.4
+              imagePullPolicy: IfNotPresent
+              command: ["/bin/bash", "/scripts/sync.sh"]
+              volumeMounts:
+                - name: scripts
+                  mountPath: /scripts
+                  readOnly: true
+          volumes:
+            - name: scripts
+              configMap:
+                name: rbac-namespace-sync
+                defaultMode: 0555

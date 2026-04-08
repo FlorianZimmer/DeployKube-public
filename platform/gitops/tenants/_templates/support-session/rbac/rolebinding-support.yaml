@@ -1,0 +1,19 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  # Prefer stable names so cleanup can be automated safely.
+  name: support-session-<sessionId>
+  namespace: <tenantNamespace>
+  labels:
+    darksite.cloud/support-session-id: <sessionId>
+  annotations:
+    darksite.cloud/support-session-level: "L1"
+    darksite.cloud/support-session-expires-at: "2026-01-01T00:00:00Z"
+subjects:
+  - kind: Group
+    name: dk-support
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: tenant-support-l1

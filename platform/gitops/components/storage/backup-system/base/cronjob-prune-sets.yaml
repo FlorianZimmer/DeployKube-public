@@ -1,0 +1,283 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: storage-prune-sets
+  labels:
+    app.kubernetes.io/component: backup-maintenance
+    app.kubernetes.io/part-of: backup-system
+    darksite.cloud/backup-plane-spread: long-running
+spec:
+  # Default: run daily. Retention windows are time-based.
+  schedule: "33 3 * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 1800
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 7200
+      ttlSecondsAfterFinished: 21600
+      template:
+        metadata:
+          annotations:
+            sidecar.istio.io/inject: "false"
+          labels:
+            app.kubernetes.io/component: backup-maintenance
+            app.kubernetes.io/part-of: backup-system
+            darksite.cloud/backup-plane-spread: long-running
+        spec:
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          securityContext:
+            runAsUser: 65532
+            runAsGroup: 65532
+            runAsNonRoot: true
+            fsGroup: 65532
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile:
+              type: RuntimeDefault
+          affinity:
+            nodeAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+                # Prefer non-control-plane nodes when present, but remain schedulable on single-node clusters.
+                - weight: 100
+                  preference:
+                    matchExpressions:
+                      - key: node-role.kubernetes.io/control-plane
+                        operator: DoesNotExist
+                - weight: 50
+                  preference:
+                    matchExpressions:
+                      - key: node-role.kubernetes.io/master
+                        operator: DoesNotExist
+            podAntiAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+                - weight: 100
+                  podAffinityTerm:
+                    topologyKey: kubernetes.io/hostname
+                    labelSelector:
+                      matchLabels:
+                        darksite.cloud/backup-plane-spread: long-running
+          topologySpreadConstraints:
+            - maxSkew: 1
+              topologyKey: kubernetes.io/hostname
+              whenUnsatisfiable: ScheduleAnyway
+              labelSelector:
+                matchLabels:
+                  darksite.cloud/backup-plane-spread: long-running
+          containers:
+            - name: prune
+              image: registry.example.internal/deploykube/bootstrap-tools@sha256:e7be47a69e3a11bc58c857f2d690a71246ada91ac3a60bdfb0a547f091f6485a
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: DEPLOYMENT_ID
+                  value: proxmox-talos
+                - name: HOME
+                  value: /tmp
+                - name: TMPDIR
+                  value: /tmp
+                # Minimum retention (hyperscaler-style) default:
+                # - keep all hourly sets within 24h
+                # - keep newest per day within 7d
+                # - keep newest per week within 8w (56d)
+                - name: SETS_HOURLY_WITHIN
+                  value: 24h
+                - name: SETS_DAILY_WITHIN
+                  value: 7d
+                - name: SETS_WEEKLY_WITHIN
+                  value: 56d
+                - name: DRY_RUN
+                  value: "false"
+              volumeMounts:
+                - name: backup
+                  mountPath: /backup
+                - name: deployment-config
+                  mountPath: /config
+                  readOnly: true
+                - name: tmp
+                  mountPath: /tmp
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+                readOnlyRootFilesystem: true
+              command:
+                - /bin/bash
+                - -c
+                - |
+                  set -euo pipefail
+                  command -v yq >/dev/null 2>&1 || { echo "missing dependency: yq" >&2; exit 1; }
+                  command -v python3 >/dev/null 2>&1 || { echo "missing dependency: python3" >&2; exit 1; }
+
+                  cfg="/config/deployment-config.yaml"
+                  if [ -f "${cfg}" ]; then
+                    dep="$(yq -r '.spec.deploymentId // ""' "${cfg}" 2>/dev/null || true)"
+                    [ -n "${dep}" ] && DEPLOYMENT_ID="${dep}"
+
+                    v="$(yq -r '.spec.backup.retention.sets.hourlyWithin // ""' "${cfg}" 2>/dev/null || true)"
+                    [ -n "${v}" ] && SETS_HOURLY_WITHIN="${v}"
+                    v="$(yq -r '.spec.backup.retention.sets.dailyWithin // ""' "${cfg}" 2>/dev/null || true)"
+                    [ -n "${v}" ] && SETS_DAILY_WITHIN="${v}"
+                    v="$(yq -r '.spec.backup.retention.sets.weeklyWithin // ""' "${cfg}" 2>/dev/null || true)"
+                    [ -n "${v}" ] && SETS_WEEKLY_WITHIN="${v}"
+                  fi
+
+                  export DEPLOYMENT_ID SETS_HOURLY_WITHIN SETS_DAILY_WITHIN SETS_WEEKLY_WITHIN DRY_RUN
+
+                  python3 - <<'PY'
+                  import datetime
+                  import json
+                  import os
+                  import re
+                  import shutil
+                  import sys
+                  from dataclasses import dataclass
+                  from pathlib import Path
+
+                  deployment_id = os.environ.get("DEPLOYMENT_ID", "").strip()
+                  if not deployment_id:
+                    print("missing DEPLOYMENT_ID env", file=sys.stderr)
+                    sys.exit(1)
+
+                  dry_run = os.environ.get("DRY_RUN", "false").strip().lower() in ("1", "true", "yes", "on")
+
+                  def parse_duration(s: str) -> int:
+                    s = (s or "").strip()
+                    m = re.fullmatch(r"([0-9]+)([smhdw])", s)
+                    if not m:
+                      raise ValueError(f"invalid duration: {s!r} (expected e.g. 24h, 7d, 8w)")
+                    n = int(m.group(1))
+                    unit = m.group(2)
+                    mult = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 7 * 86400}[unit]
+                    return n * mult
+
+                  hourly_within = parse_duration(os.environ.get("SETS_HOURLY_WITHIN", "24h"))
+                  daily_within = parse_duration(os.environ.get("SETS_DAILY_WITHIN", "7d"))
+                  weekly_within = parse_duration(os.environ.get("SETS_WEEKLY_WITHIN", "56d"))
+
+                  if not (0 < hourly_within <= daily_within <= weekly_within):
+                    raise ValueError("expected hourlyWithin <= dailyWithin <= weeklyWithin")
+
+                  now = datetime.datetime.now(datetime.timezone.utc)
+
+                  sets_dir = Path("/backup") / deployment_id / "sets"
+                  if not sets_dir.is_dir():
+                    print(f"[prune-sets] sets dir missing: {sets_dir}", file=sys.stderr)
+                    sys.exit(1)
+
+                  latest_ptr = Path("/backup") / deployment_id / "LATEST.json"
+                  keep_latest_id = ""
+                  if latest_ptr.is_file():
+                    try:
+                      keep_latest_id = json.loads(latest_ptr.read_text(encoding="utf-8")).get("backupSetId", "") or ""
+                    except Exception:
+                      keep_latest_id = ""
+
+                  @dataclass(frozen=True)
+                  class SetDir:
+                    set_id: str
+                    ts: datetime.datetime
+                    path: Path
+
+                  set_re = re.compile(r"^(?P<ts>[0-9]{8}T[0-9]{6}Z)-(?P<rev>.+)$")
+                  parsed: list[SetDir] = []
+
+                  # Best-effort cleanup of abandoned tmp set dirs.
+                  for p in sets_dir.iterdir():
+                    if not p.is_dir():
+                      continue
+                    if not p.name.startswith(".") or not p.name.endswith(".tmp"):
+                      continue
+                    try:
+                      age = int((now - datetime.datetime.fromtimestamp(p.stat().st_mtime, tz=datetime.timezone.utc)).total_seconds())
+                    except Exception:
+                      continue
+                    if age <= 2 * 3600:
+                      continue
+                    if dry_run:
+                      print(f"[prune-sets] delete tmp dir: {p} age={age}s (dry-run)")
+                      continue
+                    print(f"[prune-sets] delete tmp dir: {p} age={age}s")
+                    shutil.rmtree(p, ignore_errors=False)
+
+                  for p in sets_dir.iterdir():
+                    if not p.is_dir():
+                      continue
+                    if p.name.startswith("."):
+                      continue
+                    m = set_re.match(p.name)
+                    if not m:
+                      continue
+                    ts = datetime.datetime.strptime(m.group("ts"), "%Y%m%dT%H%M%SZ").replace(tzinfo=datetime.timezone.utc)
+                    parsed.append(SetDir(p.name, ts, p))
+
+                  if not parsed:
+                    print("[prune-sets] no parsed sets; nothing to do")
+                    sys.exit(0)
+
+                  parsed.sort(key=lambda s: s.ts)
+                  newest = parsed[-1].set_id
+
+                  keep: set[str] = {newest}
+                  if keep_latest_id:
+                    keep.add(keep_latest_id)
+
+                  cut_hourly = now - datetime.timedelta(seconds=hourly_within)
+                  cut_daily = now - datetime.timedelta(seconds=daily_within)
+                  cut_weekly = now - datetime.timedelta(seconds=weekly_within)
+
+                  by_day: dict[tuple[int, int, int], SetDir] = {}
+                  by_week: dict[tuple[int, int], SetDir] = {}
+
+                  for sd in parsed:
+                    if sd.ts >= cut_hourly:
+                      keep.add(sd.set_id)
+                      continue
+
+                    if sd.ts >= cut_daily:
+                      key = (sd.ts.year, sd.ts.month, sd.ts.day)
+                      cur = by_day.get(key)
+                      if cur is None or sd.ts > cur.ts:
+                        by_day[key] = sd
+                      continue
+
+                    if sd.ts >= cut_weekly:
+                      iso = sd.ts.isocalendar()
+                      key = (iso.year, iso.week)
+                      cur = by_week.get(key)
+                      if cur is None or sd.ts > cur.ts:
+                        by_week[key] = sd
+                      continue
+
+                  keep.update(sd.set_id for sd in by_day.values())
+                  keep.update(sd.set_id for sd in by_week.values())
+
+                  to_delete: list[SetDir] = [sd for sd in parsed if sd.set_id not in keep]
+                  print(
+                    "[prune-sets] policy hourlyWithin=%ss dailyWithin=%ss weeklyWithin=%ss newest=%s keepLatest=%s keep=%d delete=%d"
+                    % (hourly_within, daily_within, weekly_within, newest, keep_latest_id or "-", len(keep), len(to_delete))
+                  )
+
+                  deleted = 0
+                  for sd in to_delete:
+                    if dry_run:
+                      print(f"[prune-sets] delete: {sd.set_id} ts={sd.ts.isoformat()} (dry-run)")
+                      continue
+                    print(f"[prune-sets] delete: {sd.set_id} ts={sd.ts.isoformat()}")
+                    shutil.rmtree(sd.path, ignore_errors=False)
+                    deleted += 1
+
+                  print(f"[prune-sets] done deleted={deleted} dry_run={dry_run}")
+                  PY
+          volumes:
+            - name: deployment-config
+              configMap:
+                name: deploykube-deployment-config
+                defaultMode: 0444
+            - name: backup
+              persistentVolumeClaim:
+                claimName: backup-target
+            - name: tmp
+              emptyDir: {}

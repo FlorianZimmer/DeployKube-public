@@ -1,0 +1,106 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: minecraft-restore-drill
+  namespace: minecraft-monifactory
+  annotations:
+    darksite.cloud/restore-validation-max-age-seconds: "691200"
+    darksite.cloud/restore-validation-pvcs: minecraft-data
+  labels:
+    app.kubernetes.io/name: minecraft-monifactory
+    app.kubernetes.io/component: backup
+    darksite.cloud/restore-validation-hook: enabled
+spec:
+  # Larger data set than Factorio; run weekly.
+  schedule: "30 3 * * 0"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      ttlSecondsAfterFinished: 86400
+      backoffLimit: 0
+      activeDeadlineSeconds: 5400
+      template:
+        metadata:
+          annotations:
+            sidecar.istio.io/inject: "false"
+        spec:
+          serviceAccountName: minecraft-restore-drill
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          restartPolicy: Never
+          containers:
+            - name: drill
+              image: itzg/mc-backup:latest
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+              env:
+                - name: RESTIC_REPOSITORY
+                  valueFrom:
+                    secretKeyRef:
+                      name: minecraft-monifactory-backup
+                      key: RESTIC_REPOSITORY
+                - name: RESTIC_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: minecraft-monifactory-backup
+                      key: RESTIC_PASSWORD
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: minecraft-monifactory-backup
+                      key: S3_ACCESS_KEY
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: minecraft-monifactory-backup
+                      key: S3_SECRET_KEY
+                - name: AWS_DEFAULT_REGION
+                  valueFrom:
+                    secretKeyRef:
+                      name: minecraft-monifactory-backup
+                      key: S3_REGION
+                - name: RESTIC_RESTORE_TIMEOUT
+                  value: 60m
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -eu
+                  (set -o pipefail 2>/dev/null) || true
+
+                  timeout "${RESTIC_RESTORE_TIMEOUT}" restic snapshots --latest 1 >/dev/null
+
+                  rm -rf /restore/* || true
+                  timeout "${RESTIC_RESTORE_TIMEOUT}" restic restore latest \
+                    --target /restore \
+                    --include /data/world \
+                    --include /data/world/** \
+                    --include /data/server.properties
+
+                  test -f /restore/data/server.properties
+                  test -f /restore/data/world/level.dat
+
+                  echo "[restore-drill] OK: restored latest snapshot and validated expected world files"
+              volumeMounts:
+                - name: restore-tmp
+                  mountPath: /restore
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 256Mi
+                limits:
+                  memory: 1Gi
+          volumes:
+            - name: restore-tmp
+              emptyDir: {}

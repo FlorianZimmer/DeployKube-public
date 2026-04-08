@@ -1,0 +1,21 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      group: install.istio.io
+      version: v1alpha1
+      kind: IstioOperator
+      name: istio-control-plane
+      namespace: istio-system
+    patch: |-
+      - op: add
+        path: /spec/components/pilot/k8s/resources
+        value:
+          requests:
+            cpu: 15m
+            memory: 240Mi
+          limits:
+            memory: 360Mi
+      - op: add
+        path: /spec/components/ingressGateways/0/k8s/serviceAnnotations/metallb.universe.tf~1loadBalancerIPs
+        value: 198.51.100.63

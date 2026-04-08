@@ -1,0 +1,15 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: postgres
+spec:
+  instances: 1
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+  postgresql:
+    parameters:
+      # Keep below `resources.requests.memory` to satisfy CNPG validation.
+      shared_buffers: "256MB"
+      max_connections: "100"

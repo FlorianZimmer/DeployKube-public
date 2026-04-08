@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: argocd
+
+resources:
+  - config.yaml
+
+generatorOptions:
+  disableNameSuffixHash: true
+
+configMapGenerator:
+  - name: deploykube-deployment-secrets
+    files:
+      - kms-shim-key.secret.sops.yaml=secrets/kms-shim-key.secret.sops.yaml
+      - kms-shim-token.vault-seal-system.secret.sops.yaml=secrets/kms-shim-token.vault-seal-system.secret.sops.yaml
+      - kms-shim-token.vault-system.secret.sops.yaml=secrets/kms-shim-token.vault-system.secret.sops.yaml
+      - vault-init.secret.sops.yaml=secrets/vault-init.secret.sops.yaml
+      - step-ca-vault-seed.secret.sops.yaml=secrets/step-ca-vault-seed.secret.sops.yaml
+      - minecraft-monifactory-seed.secret.sops.yaml=secrets/minecraft-monifactory-seed.secret.sops.yaml

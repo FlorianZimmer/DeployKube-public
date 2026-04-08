@@ -1,0 +1,23 @@
+apiVersion: data.darksite.cloud/v1alpha1
+kind: PostgresInstance
+metadata:
+  name: keycloak-postgres
+spec:
+  classRef:
+    name: platform-ha
+  databaseName: keycloak
+  ownerRole: keycloak
+  connectionSecretName: keycloak-db
+  superuserSecretName: keycloak-postgres-superuser
+  resourceNames:
+    backupConfigMapName: backup-encryption
+    backupServiceAccountName: postgres-backup
+    backupCronJobName: postgres-backup
+    backupPVCName: postgres-backup-v2
+    backupWarmupJobName: postgres-backup-warmup
+    networkPolicyName: keycloak-postgres-ingress
+  network:
+    accessMode: SameNamespace
+  backup:
+    schedule: "0 3 * * *"
+    sourceName: postgres

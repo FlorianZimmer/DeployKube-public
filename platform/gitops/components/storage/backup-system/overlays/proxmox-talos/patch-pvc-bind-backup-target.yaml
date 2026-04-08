@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: backup-target
+  namespace: backup-system
+  labels:
+    darksite.cloud/backup: skip
+    darksite.cloud/backup-skip-reason: backup-artifacts
+spec:
+  volumeName: backup-target-proxmox-talos
+  storageClassName: ""

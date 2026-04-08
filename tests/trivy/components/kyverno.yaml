@@ -1,0 +1,25 @@
+schemaVersion: v1alpha1
+description: Component-owned Trivy config targets for Kyverno.
+watch_paths:
+  - platform/gitops/artifacts/runtime-artifact-index.yaml
+  - platform/gitops/components/shared/policy-kyverno
+  - tests/trivy/components/kyverno.yaml
+image_targets:
+  - id: kyverno
+    artifact_catalog: runtime-artifacts
+    artifact_name: kyverno
+  - id: kyverno-background-controller
+    artifact_catalog: runtime-artifacts
+    artifact_name: kyverno-background-controller
+  - id: kyverno-cleanup-controller
+    artifact_catalog: runtime-artifacts
+    artifact_name: kyverno-cleanup-controller
+  - id: kyvernopre
+    artifact_catalog: runtime-artifacts
+    artifact_name: kyvernopre
+  - id: kyverno-reports-controller
+    artifact_catalog: runtime-artifacts
+    artifact_name: kyverno-reports-controller
+config_targets:
+  - id: kyverno-manifests
+    path: platform/gitops/components/shared/policy-kyverno

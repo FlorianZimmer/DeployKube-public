@@ -1,0 +1,14 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: hubble-tls
+spec:
+  secretName: hubble-tls
+  dnsNames:
+    - hubble.placeholder.invalid
+  issuerRef:
+    name: step-ca
+    kind: ClusterIssuer
+  privateKey:
+    algorithm: RSA
+    size: 2048

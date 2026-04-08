@@ -1,0 +1,39 @@
+###############################################
+# realm: deploykube-apps
+# requiredEnv:
+#   - KEYCLOAK_DEFAULT_USER_PASSWORD
+###############################################
+apiVersion: k8s.keycloak.org/v2alpha1
+kind: KeycloakRealmImport
+metadata:
+  name: deploykube-apps
+spec:
+  keycloakCRName: keycloak
+  realm:
+    realm: deploykube-apps
+    displayName: DeployKube Applications
+    enabled: true
+    loginWithEmailAllowed: true
+    registrationAllowed: false
+    rememberMe: true
+    resetPasswordAllowed: true
+    passwordPolicy: length(8)
+    defaultRoles:
+      - offline_access
+      - uma_authorization
+    roles:
+      realm:
+        - name: app-user
+          description: Baseline privileges for DeployKube application users.
+        - name: app-operator
+          description: Operational access to elevated application actions.
+    groups:
+      - name: app-users
+        path: /app-users
+        realmRoles:
+          - app-user
+      - name: app-operators
+        path: /app-operators
+        realmRoles:
+          - app-operator
+          - app-user

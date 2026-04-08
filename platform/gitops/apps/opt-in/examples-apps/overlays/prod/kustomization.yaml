@@ -1,0 +1,29 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+patches:
+  - target:
+      group: argoproj.io
+      version: v1alpha1
+      kind: Application
+      name: apps-factorio
+    patch: |-
+      - op: replace
+        path: /spec/source/path
+        value: overlays/proxmox-talos
+      - op: replace
+        path: /spec/destination/namespace
+        value: t-factorio-p-factorio-prod-app
+
+  - target:
+      group: argoproj.io
+      version: v1alpha1
+      kind: Application
+      name: apps-minecraft-monifactory
+    patch: |-
+      - op: replace
+        path: /spec/source/path
+        value: components/apps/minecraft-monifactory/overlays/proxmox-talos

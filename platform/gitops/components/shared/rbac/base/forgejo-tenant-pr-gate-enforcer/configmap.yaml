@@ -1,0 +1,271 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: forgejo-tenant-pr-gate-enforcer
+  namespace: rbac-system
+data:
+  enforce.sh: |
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    ISTIO_HELPER="/helpers/istio-native-exit.sh"
+    [ -f "$ISTIO_HELPER" ] || { echo "missing istio-native-exit helper" >&2; exit 1; }
+    . "$ISTIO_HELPER"
+    trap 'deploykube_istio_quit_sidecar || true' EXIT INT TERM
+
+    SCRIPT_NAME="forgejo-tenant-pr-gate-enforcer"
+    POD_NS="${POD_NAMESPACE:-${NAMESPACE:-rbac-system}}"
+    STATUS_CM="${STATUS_CONFIGMAP:-forgejo-tenant-pr-gate-enforcer-status}"
+
+    TENANT_REGISTRY_PATH="${TENANT_REGISTRY_PATH:-/tenant-registry/tenant-registry.yaml}"
+    FORGEJO_BASE_URL="${FORGEJO_BASE_URL:-}"
+    FORGEJO_TOKEN="${FORGEJO_TOKEN:-}"
+    FORGEJO_ADMIN_USERNAME="${FORGEJO_ADMIN_USERNAME:-}"
+    FORGEJO_ADMIN_PASSWORD="${FORGEJO_ADMIN_PASSWORD:-}"
+    FORGEJO_CA_ARGS=()
+
+    REQUIRED_CONTEXTS_CSV="${REQUIRED_CONTEXTS_CSV:-tenant-pr-gates}"
+    PROTECT_BRANCH="${PROTECT_BRANCH:-main}"
+
+    log() { printf '[%s] %s\n' "${SCRIPT_NAME}" "$*" >&2; }
+
+    require_or_skip() {
+      local v="$1"
+      if [[ -z "${!v:-}" ]]; then
+        log "missing required env: ${v}; skipping"
+        exit 0
+      fi
+    }
+
+    require_file_or_skip() {
+      local path="$1"
+      if [[ ! -f "${path}" ]]; then
+        log "missing required file: ${path}; skipping"
+        exit 0
+      fi
+    }
+
+    check_dependency() {
+      local bin="$1"
+      command -v "${bin}" >/dev/null 2>&1 || { log "missing dependency: ${bin}"; exit 1; }
+    }
+
+    curl_retry_raw() {
+      # Retry transient errors; avoid retries on auth/404 type errors.
+      curl -sSL --retry 8 --retry-delay 3 --retry-connrefused --max-time 10 "${FORGEJO_CA_ARGS[@]}" "$@"
+    }
+
+    init_forgejo_ca() {
+      local ca_file="${FORGEJO_CA_FILE:-}"
+      if [[ -n "${ca_file}" && -s "${ca_file}" ]]; then
+        FORGEJO_CA_ARGS+=(--cacert "${ca_file}")
+        return
+      fi
+
+      local ca_ns="${FORGEJO_CA_SECRET_NAMESPACE:-forgejo}"
+      local ca_name="${FORGEJO_CA_SECRET_NAME:-forgejo-repo-tls}"
+      local ca_key="${FORGEJO_CA_SECRET_KEY:-tls.crt}"
+      local encoded
+      encoded="$(kubectl -n "${ca_ns}" get secret "${ca_name}" -o "go-template={{ index .data \"${ca_key}\" }}" 2>/dev/null || true)"
+      if [[ -z "${encoded}" ]]; then
+        log "missing Forgejo CA secret data ${ca_ns}/${ca_name} key ${ca_key}; skipping"
+        exit 0
+      fi
+      ca_file="/tmp/forgejo-ca.crt"
+      echo "${encoded}" | base64 -d > "${ca_file}"
+      if [[ ! -s "${ca_file}" ]]; then
+        log "decoded Forgejo CA file is empty; skipping"
+        exit 0
+      fi
+      FORGEJO_CA_ARGS+=(--cacert "${ca_file}")
+    }
+
+    forgejo_auth_args() {
+      if [[ -n "${FORGEJO_TOKEN}" ]]; then
+        printf '%s\n' "-H" "Authorization: token ${FORGEJO_TOKEN}"
+        return 0
+      fi
+      if [[ -z "${FORGEJO_ADMIN_USERNAME}" || -z "${FORGEJO_ADMIN_PASSWORD}" ]]; then
+        log "need FORGEJO_TOKEN or FORGEJO_ADMIN_USERNAME/FORGEJO_ADMIN_PASSWORD"
+        exit 1
+      fi
+      printf '%s\n' "-u" "${FORGEJO_ADMIN_USERNAME}:${FORGEJO_ADMIN_PASSWORD}"
+    }
+
+    forgejo_api() {
+      local method="$1"; shift
+      local path="$1"; shift
+      local -a auth=()
+      mapfile -t auth < <(forgejo_auth_args)
+      curl_retry_raw -X "${method}" \
+        "${auth[@]}" \
+        -H "Content-Type: application/json" \
+        "${FORGEJO_BASE_URL}${path}" "$@"
+    }
+
+    forgejo_api_code() {
+      local method="$1"; shift
+      local path="$1"; shift
+      local out="$1"; shift
+      local -a auth=()
+      mapfile -t auth < <(forgejo_auth_args)
+      curl_retry_raw -o "${out}" -w "%{http_code}" -X "${method}" \
+        "${auth[@]}" \
+        -H "Content-Type: application/json" \
+        "${FORGEJO_BASE_URL}${path}" "$@"
+    }
+
+    record_status() {
+      local msg="$1"
+      kubectl -n "${POD_NS}" create configmap "${STATUS_CM}" --from-literal=message="${msg}" --dry-run=client -o yaml | kubectl apply -f -
+    }
+
+    contexts_json() {
+      local csv="$1"
+      # shellcheck disable=SC2001
+      printf '%s' "${csv}" | tr ',' '\n' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' | sed '/^$/d' | jq -R . | jq -s .
+    }
+
+    ensure_branch_protection() {
+      local owner="$1" repo="$2" branch="$3" contexts="$4"
+
+      local protections_tmp code
+      protections_tmp="$(mktemp)"
+      code="$(forgejo_api_code GET "/api/v1/repos/${owner}/${repo}/branch_protections" "${protections_tmp}")"
+      if [[ "${code}" != "200" ]]; then
+        log "failed to list branch protections for ${owner}/${repo} (http_code=${code})"
+        cat "${protections_tmp}" >&2 || true
+        rm -f "${protections_tmp}"
+        return 1
+      fi
+
+      local existing_id=""
+      existing_id="$(jq -r --arg b "${branch}" '.[]? | select((.branch_name // "") == $b) | (.id // "")' "${protections_tmp}" | head -n1 || true)"
+
+      local payload
+      payload="$(jq -n \
+        --arg branch_name "${branch}" \
+        --argjson status_check_contexts "${contexts}" \
+        '{
+          branch_name: $branch_name,
+          enable_push: false,
+          enable_status_check: true,
+          status_check_contexts: $status_check_contexts,
+          block_on_outdated_branch: true
+        }')"
+
+      rm -f "${protections_tmp}"
+
+      local resp_tmp
+      resp_tmp="$(mktemp)"
+      if [[ -n "${existing_id}" ]]; then
+        code="$(forgejo_api_code PATCH "/api/v1/repos/${owner}/${repo}/branch_protections/${existing_id}" "${resp_tmp}" -d "${payload}")"
+        if [[ "${code}" == "200" ]]; then
+          rm -f "${resp_tmp}"
+          return 0
+        fi
+        log "warn: failed to patch branch protection by id for ${owner}/${repo} (${existing_id}); retrying with branch name (http_code=${code})"
+        code="$(forgejo_api_code PATCH "/api/v1/repos/${owner}/${repo}/branch_protections/${branch}" "${resp_tmp}" -d "${payload}")"
+        if [[ "${code}" == "200" ]]; then
+          rm -f "${resp_tmp}"
+          return 0
+        fi
+        log "failed to patch branch protection for ${owner}/${repo} (http_code=${code})"
+        cat "${resp_tmp}" >&2 || true
+        rm -f "${resp_tmp}"
+        return 1
+      fi
+
+      code="$(forgejo_api_code POST "/api/v1/repos/${owner}/${repo}/branch_protections" "${resp_tmp}" -d "${payload}")"
+      if [[ "${code}" == "201" || "${code}" == "200" ]]; then
+        rm -f "${resp_tmp}"
+        return 0
+      fi
+      # Forgejo may respond with a non-2xx even when the protection already exists.
+      # Treat that case as success so the CronJob is idempotent across clusters.
+      if [[ "${code}" == "403" || "${code}" == "409" ]]; then
+        local msg
+        msg="$(jq -r '.message // ""' "${resp_tmp}" 2>/dev/null || true)"
+        if [[ "${msg}" == *"Branch protection already exist"* || "${msg}" == *"Branch protection already exists"* ]]; then
+          rm -f "${resp_tmp}"
+          return 0
+        fi
+      fi
+      log "failed to create branch protection for ${owner}/${repo} (http_code=${code})"
+      cat "${resp_tmp}" >&2 || true
+      rm -f "${resp_tmp}"
+      return 1
+    }
+
+    main() {
+      check_dependency curl
+      check_dependency jq
+      check_dependency kubectl
+      check_dependency yq
+
+      require_or_skip FORGEJO_BASE_URL
+      require_file_or_skip "${TENANT_REGISTRY_PATH}"
+      init_forgejo_ca
+
+      if [[ -z "${FORGEJO_TOKEN}" ]]; then
+        require_or_skip FORGEJO_ADMIN_USERNAME
+        require_or_skip FORGEJO_ADMIN_PASSWORD
+      fi
+
+      local contexts
+      contexts="$(contexts_json "${REQUIRED_CONTEXTS_CSV}")"
+
+      local failures=0
+      local org_id project_id owner repo
+
+      mapfile -t org_ids < <(yq -r '.tenants[].orgId // ""' "${TENANT_REGISTRY_PATH}" | sed '/^$/d')
+      for org_id in "${org_ids[@]}"; do
+        owner="tenant-${org_id}"
+
+        mapfile -t project_ids < <(
+          yq -r ".tenants[] | select(.orgId == \"${org_id}\") | .projects[]? | .projectId // \"\"" "${TENANT_REGISTRY_PATH}" 2>/dev/null \
+            | sed '/^$/d'
+        )
+
+        for project_id in "${project_ids[@]}"; do
+          repo="apps-${project_id}"
+
+          local repo_tmp code branch
+          repo_tmp="$(mktemp)"
+          code="$(forgejo_api_code GET "/api/v1/repos/${owner}/${repo}" "${repo_tmp}")"
+          if [[ "${code}" == "404" ]]; then
+            log "repo missing: ${owner}/${repo}; skipping"
+            rm -f "${repo_tmp}"
+            continue
+          fi
+          if [[ "${code}" != "200" ]]; then
+            log "failed to query repo ${owner}/${repo} (http_code=${code})"
+            cat "${repo_tmp}" >&2 || true
+            rm -f "${repo_tmp}"
+            failures=$((failures + 1))
+            continue
+          fi
+
+          branch="$(jq -r '.default_branch // ""' "${repo_tmp}" 2>/dev/null || true)"
+          rm -f "${repo_tmp}"
+          if [[ -z "${branch}" ]]; then
+            branch="${PROTECT_BRANCH}"
+          fi
+
+          log "ensuring protected branch for ${owner}/${repo} (branch=${branch}, contexts=${REQUIRED_CONTEXTS_CSV})"
+          if ! ensure_branch_protection "${owner}" "${repo}" "${branch}" "${contexts}"; then
+            failures=$((failures + 1))
+          fi
+        done
+      done
+
+      if [[ "${failures}" -ne 0 ]]; then
+        record_status "completed with ${failures} failure(s) at $(date -Is)"
+        exit 1
+      fi
+
+      record_status "completed successfully at $(date -Is)"
+      log "done"
+    }
+
+    main "$@"

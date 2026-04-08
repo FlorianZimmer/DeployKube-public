@@ -1,0 +1,79 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: metallb-smoke
+  namespace: metallb-system
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: HookSucceeded,BeforeHookCreation
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 300
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      restartPolicy: Never
+      serviceAccountName: metallb-memberlist
+      containers:
+        - name: smoke
+          image: registry.example.internal/deploykube/bootstrap-tools:1.4
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - -lc
+            - |
+              set -euo pipefail
+
+              dump_on_error() {
+                echo "[metallb-smoke] diagnostics (best-effort)" >&2
+                kubectl -n metallb-system get ipaddresspool -o yaml >&2 || true
+                kubectl -n istio-system get svc istio-ingressgateway -o wide >&2 || true
+                kubectl -n metallb-system get events --sort-by=.lastTimestamp >&2 || true
+              }
+              trap dump_on_error ERR
+
+              echo "[metallb-smoke] ingress gateway has a LoadBalancer IP"
+              ip=""
+              svc=""
+              for candidate in public-gateway-istio istio-ingressgateway; do
+                maybe="$(kubectl -n istio-system get svc "${candidate}" -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)"
+                if [[ -n "${maybe}" ]]; then
+                  ip="${maybe}"
+                  svc="${candidate}"
+                  break
+                fi
+              done
+              if [[ -z "${ip}" ]]; then
+                echo "[metallb-smoke] missing LoadBalancer IP on istio-system (expected one of: public-gateway-istio, istio-ingressgateway)" >&2
+                exit 1
+              fi
+              echo "[metallb-smoke] ingress svc: ${svc}"
+              echo "[metallb-smoke] ingress IP: ${ip}"
+
+              echo "[metallb-smoke] ingress IP is within configured MetalLB pools"
+              pools="$(kubectl -n metallb-system get ipaddresspool -o json)"
+              ok="$(echo "${pools}" | jq -r --arg ip "${ip}" '
+                def ip2int:
+                  (split(".") | map(tonumber)) as $o
+                  | ($o[0]*16777216 + $o[1]*65536 + $o[2]*256 + $o[3]);
+                def in_range($ip; $a; $b):
+                  ($a|ip2int) <= ($ip|ip2int) and ($ip|ip2int) <= ($b|ip2int);
+                def addr_matches($ip; $addr):
+                  if ($addr | test("-")) then
+                    ($addr | split("-")) as $p
+                    | in_range($ip; $p[0]; $p[1])
+                  else
+                    $ip == $addr
+                  end;
+                any(.items[].spec.addresses[]?; addr_matches($ip; .))
+              ')"
+              if [[ "${ok}" != "true" ]]; then
+                echo "[metallb-smoke] ingress IP is not covered by any IPAddressPool address range" >&2
+                echo "${pools}" | jq -r '.items[] | "\(.metadata.name): \(.spec.addresses|join(","))"' >&2 || true
+                exit 1
+              fi
+
+              echo "[metallb-smoke] ok"

@@ -1,0 +1,11 @@
+# Template: tenant metadata (DeployKube internal input; not a Kubernetes object)
+apiVersion: tenancy.darksite.cloud/v1alpha1
+kind: TenantMetadata
+orgId: <orgId>
+description: <short-non-pii-description>
+tier: S
+retention:
+  mode: immediate # immediate|grace|legal-hold
+  # gracePeriodDays: 30   # required iff mode=grace
+deletion:
+  deleteFromBackups: retention-only # retention-only|tenant-scoped|strict-sla

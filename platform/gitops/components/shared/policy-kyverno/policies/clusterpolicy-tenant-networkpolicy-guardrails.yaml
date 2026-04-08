@@ -1,0 +1,184 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: tenant-networkpolicy-guardrails
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  admission: true
+  validationFailureAction: Enforce
+  background: false
+  emitWarning: false
+  rules:
+    - name: require-safe-networkpolicy-peers
+      match:
+        any:
+          - resources:
+              kinds: ["NetworkPolicy"]
+              namespaceSelector:
+                matchLabels:
+                  darksite.cloud/rbac-profile: tenant
+      skipBackgroundRequests: true
+      validate:
+        failureAction: Enforce
+        allowExistingViolations: true
+        cel:
+          generate: false
+          variables:
+            - name: tenantId
+              expression: "'darksite.cloud/tenant-id' in namespaceObject.metadata.labels ? namespaceObject.metadata.labels['darksite.cloud/tenant-id'] : ''"
+            - name: projectId
+              expression: "'darksite.cloud/project-id' in namespaceObject.metadata.labels ? namespaceObject.metadata.labels['darksite.cloud/project-id'] : ''"
+          expressions:
+            - expression: |
+                !has(object.spec) ||
+                !has(object.spec.ingress) ||
+                object.spec.ingress.all(r,
+                  !has(r.from) ||
+                  r.from.all(p,
+                    !has(p.ipBlock) &&
+                    (has(p.namespaceSelector) || has(p.podSelector)) &&
+                    (
+                      !has(p.namespaceSelector) ||
+                      (
+                        has(p.namespaceSelector.matchLabels) &&
+                        p.namespaceSelector.matchLabels.size() > 0 &&
+                        !has(p.namespaceSelector.matchExpressions) &&
+                        has(p.podSelector) &&
+                        has(p.podSelector.matchLabels) &&
+                        p.podSelector.matchLabels.size() > 0 &&
+                        !has(p.podSelector.matchExpressions) &&
+                        (
+                          (
+                            'kubernetes.io/metadata.name' in p.namespaceSelector.matchLabels &&
+                            p.namespaceSelector.matchLabels['kubernetes.io/metadata.name'] == 'kube-system' &&
+                            p.podSelector.matchLabels.size() == 1 &&
+                            'k8s-app' in p.podSelector.matchLabels &&
+                            p.podSelector.matchLabels['k8s-app'] == 'kube-dns'
+                          ) ||
+                          (
+                            'kubernetes.io/metadata.name' in p.namespaceSelector.matchLabels &&
+                            p.namespaceSelector.matchLabels['kubernetes.io/metadata.name'] == 'garage' &&
+                            p.podSelector.matchLabels.size() == 2 &&
+                            'app.kubernetes.io/name' in p.podSelector.matchLabels &&
+                            p.podSelector.matchLabels['app.kubernetes.io/name'] == 'garage' &&
+                            'app.kubernetes.io/component' in p.podSelector.matchLabels &&
+                            p.podSelector.matchLabels['app.kubernetes.io/component'] == 'object-storage'
+                          ) ||
+                          (
+                            'kubernetes.io/metadata.name' in p.namespaceSelector.matchLabels &&
+                            p.namespaceSelector.matchLabels['kubernetes.io/metadata.name'] == 'time-system' &&
+                            p.podSelector.matchLabels.size() == 1 &&
+                            'app.kubernetes.io/name' in p.podSelector.matchLabels &&
+                            p.podSelector.matchLabels['app.kubernetes.io/name'] == 'platform-ntp'
+                          ) ||
+                          (
+                            'kubernetes.io/metadata.name' in p.namespaceSelector.matchLabels &&
+                            p.namespaceSelector.matchLabels['kubernetes.io/metadata.name'] == 'istio-system' &&
+                            p.podSelector.matchLabels.size() == 1 &&
+                            'istio' in p.podSelector.matchLabels &&
+                            p.podSelector.matchLabels['istio'] == 'ingressgateway'
+                          ) ||
+                          (
+                            'kubernetes.io/metadata.name' in p.namespaceSelector.matchLabels &&
+                            p.namespaceSelector.matchLabels['kubernetes.io/metadata.name'] == 'istio-system' &&
+                            variables.tenantId != '' &&
+                            p.podSelector.matchLabels.size() == 1 &&
+                            'gateway.networking.k8s.io/gateway-name' in p.podSelector.matchLabels &&
+                            p.podSelector.matchLabels['gateway.networking.k8s.io/gateway-name'] == 'tenant-' + variables.tenantId + '-gateway'
+                          ) ||
+                          (
+                            'kubernetes.io/metadata.name' in p.namespaceSelector.matchLabels &&
+                            variables.tenantId != '' &&
+                            variables.projectId != '' &&
+                            p.namespaceSelector.matchLabels['kubernetes.io/metadata.name'] == 'egress-' + variables.tenantId &&
+                            'app.kubernetes.io/name' in p.podSelector.matchLabels &&
+                            p.podSelector.matchLabels['app.kubernetes.io/name'] == 'egress-proxy' &&
+                            'darksite.cloud/tenant-id' in p.podSelector.matchLabels &&
+                            p.podSelector.matchLabels['darksite.cloud/tenant-id'] == variables.tenantId &&
+                            'darksite.cloud/project-id' in p.podSelector.matchLabels &&
+                            p.podSelector.matchLabels['darksite.cloud/project-id'] == variables.projectId
+                          ) ||
+                          (
+                            variables.tenantId != '' &&
+                            !('kubernetes.io/metadata.name' in p.namespaceSelector.matchLabels) &&
+                            'darksite.cloud/tenant-id' in p.namespaceSelector.matchLabels &&
+                            p.namespaceSelector.matchLabels['darksite.cloud/tenant-id'] == variables.tenantId
+                          )
+                        )
+                      )
+                    ) &&
+                    (!has(p.podSelector) || !has(p.podSelector.matchExpressions))
+                  )
+                )
+              message: "Tenant NetworkPolicy ingress peers must not use ipBlock or empty peers; cross-namespace peers must be tenant-scoped (darksite.cloud/tenant-id must match the namespace tenant-id) and pod-scoped (podSelector.matchLabels required). kube-system is only allowed for DNS (k8s-app=kube-dns), istio-system is only allowed for the ingress gateway (istio=ingressgateway) or the tenant gateway (gateway.networking.k8s.io/gateway-name=tenant-<tenantId>-gateway), garage is only allowed for S3 (app.kubernetes.io/name=garage, app.kubernetes.io/component=object-storage), and time-system is only allowed for platform NTP (app.kubernetes.io/name=platform-ntp)."
+            - expression: |
+                !has(object.spec) ||
+                !has(object.spec.egress) ||
+                object.spec.egress.all(r,
+                  !has(r.to) ||
+                  r.to.all(p,
+                    !has(p.ipBlock) &&
+                    (has(p.namespaceSelector) || has(p.podSelector)) &&
+                    (
+                      !has(p.namespaceSelector) ||
+                      (
+                        has(p.namespaceSelector.matchLabels) &&
+                        p.namespaceSelector.matchLabels.size() > 0 &&
+                        !has(p.namespaceSelector.matchExpressions) &&
+                        has(p.podSelector) &&
+                        has(p.podSelector.matchLabels) &&
+                        p.podSelector.matchLabels.size() > 0 &&
+                        !has(p.podSelector.matchExpressions) &&
+                        (
+                          (
+                            'kubernetes.io/metadata.name' in p.namespaceSelector.matchLabels &&
+                            p.namespaceSelector.matchLabels['kubernetes.io/metadata.name'] == 'kube-system' &&
+                            p.podSelector.matchLabels.size() == 1 &&
+                            'k8s-app' in p.podSelector.matchLabels &&
+                            p.podSelector.matchLabels['k8s-app'] == 'kube-dns'
+                          ) ||
+                          (
+                            'kubernetes.io/metadata.name' in p.namespaceSelector.matchLabels &&
+                            p.namespaceSelector.matchLabels['kubernetes.io/metadata.name'] == 'garage' &&
+                            p.podSelector.matchLabels.size() == 2 &&
+                            'app.kubernetes.io/name' in p.podSelector.matchLabels &&
+                            p.podSelector.matchLabels['app.kubernetes.io/name'] == 'garage' &&
+                            'app.kubernetes.io/component' in p.podSelector.matchLabels &&
+                            p.podSelector.matchLabels['app.kubernetes.io/component'] == 'object-storage'
+                          ) ||
+                          (
+                            'kubernetes.io/metadata.name' in p.namespaceSelector.matchLabels &&
+                            p.namespaceSelector.matchLabels['kubernetes.io/metadata.name'] == 'time-system' &&
+                            p.podSelector.matchLabels.size() == 1 &&
+                            'app.kubernetes.io/name' in p.podSelector.matchLabels &&
+                            p.podSelector.matchLabels['app.kubernetes.io/name'] == 'platform-ntp'
+                          ) ||
+                          (
+                            'kubernetes.io/metadata.name' in p.namespaceSelector.matchLabels &&
+                            p.namespaceSelector.matchLabels['kubernetes.io/metadata.name'] == 'istio-system' &&
+                            p.podSelector.matchLabels.size() == 1 &&
+                            'istio' in p.podSelector.matchLabels &&
+                            p.podSelector.matchLabels['istio'] == 'ingressgateway'
+                          ) ||
+                          (
+                            'kubernetes.io/metadata.name' in p.namespaceSelector.matchLabels &&
+                            p.namespaceSelector.matchLabels['kubernetes.io/metadata.name'] == 'istio-system' &&
+                            variables.tenantId != '' &&
+                            p.podSelector.matchLabels.size() == 1 &&
+                            'gateway.networking.k8s.io/gateway-name' in p.podSelector.matchLabels &&
+                            p.podSelector.matchLabels['gateway.networking.k8s.io/gateway-name'] == 'tenant-' + variables.tenantId + '-gateway'
+                          ) ||
+                          (
+                            variables.tenantId != '' &&
+                            !('kubernetes.io/metadata.name' in p.namespaceSelector.matchLabels) &&
+                            'darksite.cloud/tenant-id' in p.namespaceSelector.matchLabels &&
+                            p.namespaceSelector.matchLabels['darksite.cloud/tenant-id'] == variables.tenantId
+                          )
+                        )
+                      )
+                    ) &&
+                    (!has(p.podSelector) || !has(p.podSelector.matchExpressions))
+                  )
+                )
+              message: "Tenant NetworkPolicy egress peers must not use ipBlock or empty peers; cross-namespace peers must be tenant-scoped (darksite.cloud/tenant-id must match the namespace tenant-id) and pod-scoped (podSelector.matchLabels required). kube-system is only allowed for DNS (k8s-app=kube-dns), istio-system is only allowed for the ingress gateway (istio=ingressgateway) or the tenant gateway (gateway.networking.k8s.io/gateway-name=tenant-<tenantId>-gateway), garage is only allowed for S3 (app.kubernetes.io/name=garage, app.kubernetes.io/component=object-storage), time-system is only allowed for platform NTP (app.kubernetes.io/name=platform-ntp), and egress-<tenantId> is only allowed for the platform egress proxy (app.kubernetes.io/name=egress-proxy with matching darksite.cloud/project-id)."

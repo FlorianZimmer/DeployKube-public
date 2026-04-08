@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# DeployKube guardrail: avoid accidental pushes to origin/main.
+
+remote_name="${1:-}"
+remote_url="${2:-}"
+
+if [[ -z "${remote_name}" || -z "${remote_url}" ]]; then
+  exit 0
+fi
+
+deny_push_main="false"
+while read -r local_ref local_sha remote_ref remote_sha; do
+  if [[ "${remote_ref}" == "refs/heads/main" && "${DK_ALLOW_MAIN_PUSH:-}" != "1" ]]; then
+    deny_push_main="true"
+  fi
+done
+
+if [[ "${deny_push_main}" == "true" ]]; then
+  cat >&2 <<'EOF'
+ERROR: Pushing to origin/main is blocked by default in DeployKube.
+
+Use the merge helper:
+  ./scripts/dev/task-merge.sh task/<slug> main --delete-remote
+
+If you really intend to push main directly, bypass explicitly:
+  DK_ALLOW_MAIN_PUSH=1 git push origin main
+EOF
+  exit 1
+fi

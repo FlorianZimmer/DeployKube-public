@@ -1,0 +1,23 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: loki-results-cache
+  namespace: loki
+spec:
+  template:
+    spec:
+      containers:
+        - name: exporter
+          resources:
+            requests:
+              cpu: "15m"
+              memory: "32Mi"
+            limits:
+              memory: "48Mi"
+        - name: memcached
+          resources:
+            requests:
+              cpu: "15m"
+              memory: "128Mi"
+            limits:
+              memory: "256Mi"

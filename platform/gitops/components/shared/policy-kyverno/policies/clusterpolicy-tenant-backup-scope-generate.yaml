@@ -1,0 +1,49 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: tenant-backup-scope-generate
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  admission: true
+  background: true
+  emitWarning: false
+  validationFailureAction: Audit
+  rules:
+    - name: generate-tenant-allow-garage-s3-egress
+      match:
+        any:
+          - resources:
+              kinds: ["Namespace"]
+              selector:
+                matchLabels:
+                  darksite.cloud/rbac-profile: tenant
+                  darksite.cloud/backup-scope: enabled
+      skipBackgroundRequests: true
+      generate:
+        generateExisting: true
+        synchronize: true
+        apiVersion: networking.k8s.io/v1
+        kind: NetworkPolicy
+        name: tenant-allow-garage-s3-egress
+        namespace: "{{ request.object.metadata.name }}"
+        data:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: tenant-allow-garage-s3-egress
+          spec:
+            podSelector: {}
+            policyTypes: ["Egress"]
+            egress:
+              - to:
+                  - namespaceSelector:
+                      matchLabels:
+                        kubernetes.io/metadata.name: garage
+                    podSelector:
+                      matchLabels:
+                        app.kubernetes.io/name: garage
+                        app.kubernetes.io/component: object-storage
+                ports:
+                  - protocol: TCP
+                    port: 3900

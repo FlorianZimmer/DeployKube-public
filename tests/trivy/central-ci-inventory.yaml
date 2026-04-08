@@ -1,0 +1,85 @@
+schemaVersion: v1alpha2
+
+artifact_catalogs:
+  package-index:
+    file: platform/gitops/artifacts/package-index.yaml
+    ref_field: source
+  runtime-artifacts:
+    file: platform/gitops/artifacts/runtime-artifact-index.yaml
+    ref_field: distribution_ref
+
+shared_watch_paths:
+  - .github/workflows/security-scanning.yml
+  - platform/gitops/artifacts/runtime-artifact-index.yaml
+  - tests/scripts/publish-trivy-ci-metrics.sh
+  - tests/scripts/resolve-trivy-ci-targets.sh
+  - tests/scripts/scan-trivy-ci.sh
+  - tests/scripts/validate-security-scanning-contract.sh
+  - tests/trivy/central-ci-inventory.yaml
+
+components:
+  argocd:
+    file: tests/trivy/components/argocd.yaml
+  cert-manager:
+    file: tests/trivy/components/cert-manager.yaml
+  dns:
+    file: tests/trivy/components/dns.yaml
+  external-secrets:
+    file: tests/trivy/components/external-secrets.yaml
+  forgejo:
+    file: tests/trivy/components/forgejo.yaml
+  harbor:
+    file: tests/trivy/components/harbor.yaml
+  istio:
+    file: tests/trivy/components/istio.yaml
+  keycloak:
+    file: tests/trivy/components/keycloak.yaml
+  garage:
+    file: tests/trivy/components/garage.yaml
+  kyverno:
+    file: tests/trivy/components/kyverno.yaml
+  metallb:
+    file: tests/trivy/components/metallb.yaml
+  nfs-provisioner:
+    file: tests/trivy/components/nfs-provisioner.yaml
+  observability:
+    file: tests/trivy/components/observability.yaml
+  platform-artifacts:
+    file: tests/trivy/components/platform-artifacts.yaml
+  postgres:
+    file: tests/trivy/components/postgres.yaml
+  step-ca:
+    file: tests/trivy/components/step-ca.yaml
+  valkey:
+    file: tests/trivy/components/valkey.yaml
+  vault:
+    file: tests/trivy/components/vault.yaml
+
+profiles:
+  platform-core:
+    description: First-phase centralized Trivy CI profile for platform-owned bootstrap and tier-0 artifacts.
+    include_components:
+      - platform-artifacts
+      - cert-manager
+      - vault
+      - kyverno
+      - harbor
+  platform-services:
+    description: Centralized Trivy CI profile for platform identity and GitOps service components.
+    include_components:
+      - argocd
+      - forgejo
+      - keycloak
+      - valkey
+  platform-foundations:
+    description: Centralized Trivy CI profile for platform foundations that support certificates, secrets, DNS, service mesh, data, and observability.
+    include_components:
+      - step-ca
+      - external-secrets
+      - dns
+      - postgres
+      - istio
+      - observability
+      - metallb
+      - nfs-provisioner
+      - garage

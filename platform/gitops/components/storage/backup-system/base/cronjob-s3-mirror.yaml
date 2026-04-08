@@ -1,0 +1,580 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: storage-s3-mirror-to-backup-target
+  annotations:
+    deploykube.gitops/validation-job: "true"
+  labels:
+    app.kubernetes.io/component: backup-maintenance
+    app.kubernetes.io/part-of: backup-system
+    darksite.cloud/backup-plane-spread: long-running
+spec:
+  # Intentionally offset from :00 to avoid top-of-hour kube-apiserver contention.
+  schedule: "7 * * * *"
+  suspend: false
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      # Keep runtime safely below the default hourly cadence so `concurrencyPolicy: Forbid`
+      # cannot create multi-hour gaps when a mirror run is slow or stalled.
+      activeDeadlineSeconds: 3300
+      ttlSecondsAfterFinished: 21600
+      template:
+        metadata:
+          annotations:
+            sidecar.istio.io/inject: "false"
+          labels:
+            app.kubernetes.io/component: backup-maintenance
+            app.kubernetes.io/part-of: backup-system
+            darksite.cloud/backup-plane-spread: long-running
+        spec:
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          securityContext:
+            runAsUser: 65532
+            runAsGroup: 65532
+            runAsNonRoot: true
+            fsGroup: 65532
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile:
+              type: RuntimeDefault
+          affinity:
+            nodeAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+                # Prefer non-control-plane nodes when present, but remain schedulable on single-node clusters.
+                - weight: 100
+                  preference:
+                    matchExpressions:
+                      - key: node-role.kubernetes.io/control-plane
+                        operator: DoesNotExist
+                - weight: 50
+                  preference:
+                    matchExpressions:
+                      - key: node-role.kubernetes.io/master
+                        operator: DoesNotExist
+            podAntiAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+                - weight: 100
+                  podAffinityTerm:
+                    topologyKey: kubernetes.io/hostname
+                    labelSelector:
+                      matchLabels:
+                        darksite.cloud/backup-plane-spread: long-running
+          topologySpreadConstraints:
+            - maxSkew: 1
+              topologyKey: kubernetes.io/hostname
+              whenUnsatisfiable: ScheduleAnyway
+              labelSelector:
+                matchLabels:
+                  darksite.cloud/backup-plane-spread: long-running
+          containers:
+            - name: mirror
+              image: registry.example.internal/deploykube/bootstrap-tools@sha256:e7be47a69e3a11bc58c857f2d690a71246ada91ac3a60bdfb0a547f091f6485a
+              imagePullPolicy: IfNotPresent
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 256Mi
+                limits:
+                  cpu: "1"
+                  memory: 1Gi
+              env:
+                - name: DEPLOYMENT_ID
+                  value: proxmox-talos
+                - name: HOME
+                  value: /tmp
+                - name: TMPDIR
+                  value: /tmp
+                - name: XDG_CACHE_HOME
+                  value: /tmp/.cache
+                # Keep the mirror bounded and non-disruptive by default. Tune in-cluster if needed.
+                - name: GOMAXPROCS
+                  value: "1"
+                - name: RCLONE_TRANSFERS
+                  value: "2"
+                - name: RCLONE_CHECKERS
+                  value: "4"
+                - name: RCLONE_TPSLIMIT
+                  value: "20"
+                - name: RCLONE_TPSLIMIT_BURST
+                  value: "40"
+                # Optional bandwidth limit. Examples: 25M, 100M, 0 (unlimited).
+                - name: RCLONE_BWLIMIT
+                  value: "0"
+                # Per-bucket hard timeout for rclone sync. Keep this below the hourly cadence
+                # so `concurrencyPolicy: Forbid` cannot accumulate skipped runs.
+                - name: RCLONE_BUCKET_TIMEOUT
+                  value: 45m
+                # Best-effort observability buckets are bounded separately so they cannot starve required backup mirrors.
+                - name: RCLONE_OPTIONAL_BUCKET_TIMEOUT
+                  value: 20m
+                - name: RCLONE_CONFIG_REMOTE_TYPE
+                  value: s3
+                - name: RCLONE_CONFIG_REMOTE_PROVIDER
+                  value: Other
+                - name: RCLONE_CONFIG_REMOTE_ENV_AUTH
+                  value: "false"
+                - name: RCLONE_CONFIG_REMOTE_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: backup-system-garage-s3
+                      key: S3_ACCESS_KEY
+                - name: RCLONE_CONFIG_REMOTE_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: backup-system-garage-s3
+                      key: S3_SECRET_KEY
+                - name: RCLONE_CONFIG_REMOTE_REGION
+                  valueFrom:
+                    secretKeyRef:
+                      name: backup-system-garage-s3
+                      key: S3_REGION
+                - name: RCLONE_CONFIG_REMOTE_ENDPOINT
+                  valueFrom:
+                    secretKeyRef:
+                      name: backup-system-garage-s3
+                      key: S3_ENDPOINT
+                - name: BUCKET_LOGS
+                  valueFrom:
+                    secretKeyRef:
+                      name: backup-system-garage-s3
+                      key: BUCKET_LOGS
+                - name: BUCKET_TRACES
+                  valueFrom:
+                    secretKeyRef:
+                      name: backup-system-garage-s3
+                      key: BUCKET_TRACES
+                - name: BUCKET_METRICS
+                  valueFrom:
+                    secretKeyRef:
+                      name: backup-system-garage-s3
+                      key: BUCKET_METRICS
+                - name: BUCKET_BACKUPS
+                  valueFrom:
+                    secretKeyRef:
+                      name: backup-system-garage-s3
+                      key: BUCKET_BACKUPS
+                      optional: true
+                - name: RCLONE_CRYPT_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: backup-system-s3-mirror-crypt
+                      key: RCLONE_CRYPT_PASSWORD
+                - name: RCLONE_CRYPT_PASSWORD2
+                  valueFrom:
+                    secretKeyRef:
+                      name: backup-system-s3-mirror-crypt
+                      key: RCLONE_CRYPT_PASSWORD2
+                      optional: true
+                - name: REPLICA_S3_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: backup-system-s3-replication-target
+                      key: S3_ACCESS_KEY
+                      optional: true
+                - name: REPLICA_S3_SECRET_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: backup-system-s3-replication-target
+                      key: S3_SECRET_KEY
+                      optional: true
+              volumeMounts:
+                - name: deployment-config
+                  mountPath: /config
+                  readOnly: true
+                - name: tenant-registry
+                  mountPath: /tenant-registry
+                  readOnly: true
+                - name: backup
+                  mountPath: /backup
+                - name: tmp
+                  mountPath: /tmp
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+                readOnlyRootFilesystem: true
+              command:
+                - /bin/bash
+                - -c
+                - |
+                  set -euo pipefail
+
+                  command -v rclone >/dev/null 2>&1 || { echo "missing dependency: rclone" >&2; exit 1; }
+                  command -v jq >/dev/null 2>&1 || { echo "missing dependency: jq" >&2; exit 1; }
+                  command -v sha256sum >/dev/null 2>&1 || { echo "missing dependency: sha256sum" >&2; exit 1; }
+                  command -v yq >/dev/null 2>&1 || { echo "missing dependency: yq" >&2; exit 1; }
+
+                  echo "[s3-mirror] rclone: $(rclone version | head -n 1)"
+
+                  cfg="/config/deployment-config.yaml"
+                  if [ -f "$cfg" ]; then
+                    dep="$(yq -r '.spec.deploymentId // \"\"' "$cfg" 2>/dev/null || true)"
+                    if [ -n "$dep" ]; then
+                      DEPLOYMENT_ID="$dep"
+                      export DEPLOYMENT_ID
+                    fi
+                  fi
+
+                  started_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+                  base="/backup/${DEPLOYMENT_ID}"
+                  out="${base}/s3-mirror"
+                  mkdir -p "${out}"
+
+                  mirror_mode="filesystem"
+                  if [ -f "${cfg}" ]; then
+                    v="$(yq -r '.spec.backup.s3Mirror.mode // "filesystem"' "${cfg}" 2>/dev/null || true)"
+                    case "${v}" in
+                      filesystem|s3-replication) mirror_mode="${v}" ;;
+                    esac
+                  fi
+                  echo "[s3-mirror] mode=${mirror_mode}"
+                  if [ "${mirror_mode}" = "filesystem" ]; then
+                    echo "[s3-mirror] WARN: mode=filesystem is legacy for DR; prefer mode=s3-replication (object-to-object)"
+                  fi
+
+                  bucket_prefix=""
+                  replica_endpoint=""
+                  replica_region=""
+                  replica_bucket=""
+                  replica_prefix=""
+                  if [ "${mirror_mode}" = "s3-replication" ]; then
+                    if [ -f "${cfg}" ]; then
+                      bucket_prefix="$(yq -r '.spec.backup.s3Mirror.replication.destination.bucketPrefix // ""' "${cfg}" 2>/dev/null || true)"
+                      replica_endpoint="$(yq -r '.spec.backup.s3Mirror.replication.destination.endpoint // ""' "${cfg}" 2>/dev/null || true)"
+                      replica_region="$(yq -r '.spec.backup.s3Mirror.replication.destination.region // ""' "${cfg}" 2>/dev/null || true)"
+                      replica_bucket="$(yq -r '.spec.backup.s3Mirror.replication.destination.bucket // ""' "${cfg}" 2>/dev/null || true)"
+                      replica_prefix="$(yq -r '.spec.backup.s3Mirror.replication.destination.prefix // ""' "${cfg}" 2>/dev/null || true)"
+                    fi
+
+                    [ -n "${replica_endpoint}" ] || { echo "missing .spec.backup.s3Mirror.replication.destination.endpoint (required for mode=s3-replication)" >&2; exit 1; }
+                    [ -n "${replica_region}" ] || { echo "missing .spec.backup.s3Mirror.replication.destination.region (required for mode=s3-replication)" >&2; exit 1; }
+                    [ -n "${REPLICA_S3_ACCESS_KEY:-}" ] || { echo "missing REPLICA_S3_ACCESS_KEY (required for mode=s3-replication)" >&2; exit 1; }
+                    [ -n "${REPLICA_S3_SECRET_KEY:-}" ] || { echo "missing REPLICA_S3_SECRET_KEY (required for mode=s3-replication)" >&2; exit 1; }
+
+                    export RCLONE_CONFIG_REPLICA_TYPE=s3
+                    export RCLONE_CONFIG_REPLICA_PROVIDER=Other
+                    export RCLONE_CONFIG_REPLICA_ENV_AUTH=false
+                    export RCLONE_CONFIG_REPLICA_ACCESS_KEY_ID="${REPLICA_S3_ACCESS_KEY}"
+                    export RCLONE_CONFIG_REPLICA_SECRET_ACCESS_KEY="${REPLICA_S3_SECRET_KEY}"
+                    export RCLONE_CONFIG_REPLICA_REGION="${replica_region}"
+                    export RCLONE_CONFIG_REPLICA_ENDPOINT="${replica_endpoint}"
+
+                    # Optional: replicate all source buckets into a single destination bucket using a prefix layout:
+                    #   replica:<bucket>/<prefix><sourceBucket>/<objectKey>
+                    # If unset, fall back to per-bucket replication using destination.bucketPrefix (legacy v1 mode).
+                    replica_prefix="${replica_prefix#/}"
+                    case "${replica_prefix}" in
+                      ""|*/) ;;
+                      *) replica_prefix="${replica_prefix}/" ;;
+                    esac
+                    if [ -n "${replica_bucket}" ]; then
+                      timeout 30s rclone mkdir "replica:${replica_bucket}" >/dev/null 2>&1 || true
+                    fi
+                  else
+                    out_crypt="${out}/crypt"
+                    mkdir -p "${out_crypt}"
+
+                    [ -n "${RCLONE_CRYPT_PASSWORD:-}" ] || { echo "missing required secret value: RCLONE_CRYPT_PASSWORD (required for mode=filesystem)" >&2; exit 1; }
+
+                    crypt_password_obscured="$(rclone obscure "${RCLONE_CRYPT_PASSWORD}")"
+                    crypt_password2_obscured=""
+                    if [ -n "${RCLONE_CRYPT_PASSWORD2:-}" ]; then
+                      crypt_password2_obscured="$(rclone obscure "${RCLONE_CRYPT_PASSWORD2}")"
+                    fi
+
+                    export RCLONE_CONFIG_BACKUPCRYPT_TYPE=crypt
+                    export RCLONE_CONFIG_BACKUPCRYPT_REMOTE="${out_crypt}"
+                    export RCLONE_CONFIG_BACKUPCRYPT_PASSWORD="${crypt_password_obscured}"
+                    if [ -n "${crypt_password2_obscured}" ]; then
+                      export RCLONE_CONFIG_BACKUPCRYPT_PASSWORD2="${crypt_password2_obscured}"
+                    else
+                      unset RCLONE_CONFIG_BACKUPCRYPT_PASSWORD2 || true
+                    fi
+                  fi
+
+                  dst_bucket_for() {
+                    local src_bucket="$1"
+                    local base="${bucket_prefix}${src_bucket}"
+                    if [ "${#base}" -le 63 ]; then
+                      printf '%s' "${base}"
+                      return 0
+                    fi
+
+                    local h
+                    h="$(printf '%s' "${base}" | sha256sum | awk '{print $1}' | cut -c1-8)"
+
+                    local max_src=$((63 - ${#bucket_prefix} - 1 - 8))
+                    local src_trunc="${src_bucket:0:${max_src}}"
+                    src_trunc="${src_trunc%-}"
+                    if [ -z "${src_trunc}" ]; then
+                      src_trunc="b"
+                    fi
+
+                    printf '%s' "${bucket_prefix}${src_trunc}-${h}"
+                  }
+
+                  rclone_flags=(
+                    --checksum
+                    --stats-one-line
+                    --stats 30s
+                    --retries 3
+                    --retries-sleep 10s
+                    --low-level-retries 5
+                    --transfers "${RCLONE_TRANSFERS:-2}"
+                    --checkers "${RCLONE_CHECKERS:-4}"
+                    --tpslimit "${RCLONE_TPSLIMIT:-20}"
+                    --tpslimit-burst "${RCLONE_TPSLIMIT_BURST:-40}"
+                  )
+                  if [ -n "${RCLONE_BWLIMIT:-}" ]; then
+                    rclone_flags+=( --bwlimit "${RCLONE_BWLIMIT}" )
+                  fi
+
+                  required_bucket_timeout="${RCLONE_BUCKET_TIMEOUT:-45m}"
+                  optional_bucket_timeout="${RCLONE_OPTIONAL_BUCKET_TIMEOUT:-20m}"
+                  echo "[s3-mirror] startedAt=${started_ts} requiredBucketTimeout=${required_bucket_timeout} optionalBucketTimeout=${optional_bucket_timeout}"
+
+                  nice_cmd=()
+                  if command -v nice >/dev/null 2>&1; then
+                    nice_cmd=(nice -n 10)
+                  fi
+
+                  bucket_backups="${BUCKET_BACKUPS:-garage-backups}"
+                  required_buckets=("${bucket_backups}")
+                  optional_buckets=()
+                  mirror_observability_buckets="false"
+                  cfg="/config/deployment-config.yaml"
+                  if [ -f "${cfg}" ]; then
+                    v="$(yq -r '.spec.backup.s3Mirror.mirrorObservabilityBuckets // "false"' "${cfg}" 2>/dev/null || true)"
+                    case "${v}" in
+                      true|True|TRUE|1|yes|YES) mirror_observability_buckets="true" ;;
+                    esac
+                  fi
+                  if [ "${mirror_observability_buckets}" = "true" ]; then
+                    for b in "${BUCKET_LOGS:-}" "${BUCKET_TRACES:-}" "${BUCKET_METRICS:-}"; do
+                      if [ -n "${b}" ]; then
+                        optional_buckets+=("${b}")
+                      fi
+                    done
+                  else
+                    echo "[s3-mirror] observability bucket mirroring disabled; skipping logs/traces/metrics"
+                  fi
+                  synced_buckets=()
+                  optional_failures=()
+
+                  sync_bucket() {
+                    local bucket="$1" timeout_value="$2" required="$3"
+                    if [ -z "${bucket}" ]; then
+                      if [ "${required}" = "true" ]; then
+                        echo "empty bucket entry in required allow-list" >&2
+                        return 1
+                      fi
+                      echo "[s3-mirror] skipping empty optional bucket entry"
+                      return 0
+                    fi
+
+                    if [ "${mirror_mode}" = "s3-replication" ]; then
+                      if [ -n "${replica_bucket}" ]; then
+                        dst="replica:${replica_bucket}/${replica_prefix}${bucket}"
+                      else
+                        dst_bucket="$(dst_bucket_for "${bucket}")"
+                        dst="replica:${dst_bucket}"
+                      fi
+                      echo "[s3-mirror] replicating bucket ${bucket} -> ${dst} (required=${required} timeout=${timeout_value})"
+                      if [ -z "${replica_bucket}" ]; then
+                        timeout 30s "${nice_cmd[@]}" rclone mkdir "${dst}" >/dev/null 2>&1 || true
+                      fi
+                      if timeout "${timeout_value}" "${nice_cmd[@]}" rclone sync "${rclone_flags[@]}" "remote:${bucket}" "${dst}"; then
+                        synced_buckets+=("${bucket}")
+                        return 0
+                      fi
+                    else
+                      echo "[s3-mirror] syncing bucket ${bucket} -> backupcrypt:buckets/${bucket} (required=${required} timeout=${timeout_value})"
+                      if timeout "${timeout_value}" "${nice_cmd[@]}" rclone sync "${rclone_flags[@]}" "remote:${bucket}" "backupcrypt:buckets/${bucket}"; then
+                        synced_buckets+=("${bucket}")
+                        return 0
+                      fi
+                    fi
+
+                    if [ "${required}" = "true" ]; then
+                      echo "[s3-mirror] ERROR: required bucket sync failed (bucket=${bucket})" >&2
+                      return 1
+                    fi
+
+                    echo "[s3-mirror] WARN: optional bucket sync failed (bucket=${bucket})" >&2
+                    optional_failures+=("${bucket}")
+                    return 0
+                  }
+
+                  for b in "${required_buckets[@]}"; do
+                    sync_bucket "${b}" "${required_bucket_timeout}" "true"
+                  done
+                  for b in "${optional_buckets[@]}"; do
+                    sync_bucket "${b}" "${optional_bucket_timeout}" "false"
+                  done
+
+                  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+                  marker_tmp="$(mktemp "${out}/.LATEST.json.XXXXXX")"
+                  if [ "${mirror_mode}" = "s3-replication" ]; then
+                    jq -n \
+                      --arg timestamp "$ts" \
+                      --arg status "ok" \
+                      --arg mode "${mirror_mode}" \
+                      --arg replicaEndpoint "${replica_endpoint}" \
+                      --arg replicaRegion "${replica_region}" \
+                      --arg bucketPrefix "${bucket_prefix}" \
+                      --arg replicaBucket "${replica_bucket}" \
+                      --arg replicaPrefix "${replica_prefix}" \
+                      --argjson buckets "$(printf '%s\n' "${synced_buckets[@]}" | jq -R -s -c 'split("\n")[:-1]')" \
+                      --argjson optionalFailures "$(printf '%s\n' "${optional_failures[@]}" | jq -R -s -c 'split("\n")[:-1]')" \
+                      '{timestamp:$timestamp,status:$status,mode:$mode,buckets:$buckets,optionalFailures:$optionalFailures,replication:{destination:{endpoint:$replicaEndpoint,region:$replicaRegion,bucketPrefix:$bucketPrefix,bucket:$replicaBucket,prefix:$replicaPrefix}}}' > "${marker_tmp}"
+                  else
+                    jq -n \
+                      --arg timestamp "$ts" \
+                      --arg status "ok" \
+                      --arg mode "${mirror_mode}" \
+                      --arg encryptionMode "rclone-crypt" \
+                      --arg encryptedRoot "s3-mirror/crypt" \
+                      --argjson buckets "$(printf '%s\n' "${synced_buckets[@]}" | jq -R -s -c 'split("\n")[:-1]')" \
+                      --argjson optionalFailures "$(printf '%s\n' "${optional_failures[@]}" | jq -R -s -c 'split("\n")[:-1]')" \
+                      '{timestamp:$timestamp,status:$status,mode:$mode,buckets:$buckets,optionalFailures:$optionalFailures,encryption:{mode:$encryptionMode,root:$encryptedRoot}}' > "${marker_tmp}"
+                  fi
+                  sha="$(sha256sum "${marker_tmp}" | awk '{print $1}')"
+                  jq --arg sha256 "$sha" '. + {markerSha256:$sha256}' "${marker_tmp}" > "${marker_tmp}.2"
+                  jq -e . "${marker_tmp}.2" >/dev/null
+                  mv -f "${marker_tmp}.2" "${out}/LATEST.json"
+                  rm -f "${marker_tmp}" || true
+
+                  # Tenant-scoped backup bucket mirroring / replication.
+                  # Contract: for each known tenant orgId we mirror/replicate the tenant backup bucket and publish a marker:
+                  # /backup/<deploymentId>/tenants/<orgId>/s3-mirror/LATEST.json
+                  registry="/tenant-registry/tenant-registry.yaml"
+                  if [ -f "${registry}" ]; then
+                    command -v sha256sum >/dev/null 2>&1 || { echo "missing dependency: sha256sum" >&2; exit 1; }
+
+                    bucket_for_org() {
+                      local org_id="$1"
+                      local prefix="tenant-"
+                      local suffix="-backups"
+                      local base="${prefix}${org_id}${suffix}"
+                      if [ "${#base}" -le 63 ]; then
+                        printf '%s' "${base}"
+                        return 0
+                      fi
+
+                      local h
+                      h="$(printf '%s' "${org_id}" | sha256sum | awk '{print $1}' | cut -c1-8)"
+                      local max_org=$((63 - ${#prefix} - ${#suffix} - 1 - 8))
+                      local org_trunc="${org_id:0:${max_org}}"
+                      org_trunc="${org_trunc%-}"
+                      if [ -z "${org_trunc}" ]; then
+                        org_trunc="t"
+                      fi
+                      printf '%s' "${prefix}${org_trunc}-${h}${suffix}"
+                    }
+
+                    yq -r '.tenants[].orgId // ""' "${registry}" | while IFS= read -r org_id; do
+                      [ -n "${org_id}" ] || continue
+
+                      tenant_bucket="$(bucket_for_org "${org_id}")"
+                      tenant_out="${base}/tenants/${org_id}/s3-mirror"
+                      mkdir -p "${tenant_out}"
+
+                      tenant_status="skipped"
+                      if timeout 2m "${nice_cmd[@]}" rclone lsf "remote:${tenant_bucket}" --max-depth 1 >/dev/null 2>&1; then
+                        tenant_status="ok"
+                        if [ "${mirror_mode}" = "s3-replication" ]; then
+                          if [ -n "${replica_bucket}" ]; then
+                            dst="replica:${replica_bucket}/${replica_prefix}${tenant_bucket}"
+                          else
+                            dst_bucket="$(dst_bucket_for "${tenant_bucket}")"
+                            dst="replica:${dst_bucket}"
+                          fi
+                          echo "[s3-mirror] replicating tenant ${org_id} bucket ${tenant_bucket} -> ${dst}"
+                          if [ -z "${replica_bucket}" ]; then
+                            timeout 30s "${nice_cmd[@]}" rclone mkdir "${dst}" >/dev/null 2>&1 || true
+                          fi
+                          if ! timeout "${required_bucket_timeout}" "${nice_cmd[@]}" rclone sync "${rclone_flags[@]}" "remote:${tenant_bucket}" "${dst}"; then
+                            echo "[s3-mirror] WARN: tenant bucket replication failed (tenant=${org_id}, bucket=${tenant_bucket})" >&2
+                            tenant_status="error"
+                          fi
+                        else
+                          tenant_crypt_root="${tenant_out}/crypt"
+                          mkdir -p "${tenant_crypt_root}"
+
+                          export RCLONE_CONFIG_TENANTCRYPT_TYPE=crypt
+                          export RCLONE_CONFIG_TENANTCRYPT_REMOTE="${tenant_crypt_root}"
+                          export RCLONE_CONFIG_TENANTCRYPT_PASSWORD="${crypt_password_obscured}"
+                          if [ -n "${crypt_password2_obscured}" ]; then
+                            export RCLONE_CONFIG_TENANTCRYPT_PASSWORD2="${crypt_password2_obscured}"
+                          else
+                            unset RCLONE_CONFIG_TENANTCRYPT_PASSWORD2 || true
+                          fi
+
+                          echo "[s3-mirror] syncing tenant ${org_id} bucket ${tenant_bucket} -> tenantcrypt:buckets/${tenant_bucket}"
+                          if ! timeout "${required_bucket_timeout}" "${nice_cmd[@]}" rclone sync "${rclone_flags[@]}" "remote:${tenant_bucket}" "tenantcrypt:buckets/${tenant_bucket}"; then
+                            echo "[s3-mirror] WARN: tenant bucket sync failed (tenant=${org_id}, bucket=${tenant_bucket})" >&2
+                            tenant_status="error"
+                          fi
+                        fi
+                      else
+                        echo "[s3-mirror] tenant bucket not accessible; skipping (tenant=${org_id}, bucket=${tenant_bucket})"
+                      fi
+
+                      ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+                      marker_tmp="$(mktemp "${tenant_out}/.LATEST.json.XXXXXX")"
+                      if [ "${mirror_mode}" = "s3-replication" ]; then
+                        jq -n \
+                          --arg timestamp "$ts" \
+                          --arg status "${tenant_status}" \
+                          --arg mode "${mirror_mode}" \
+                          --arg replicaEndpoint "${replica_endpoint}" \
+                          --arg replicaRegion "${replica_region}" \
+                          --arg bucketPrefix "${bucket_prefix}" \
+                          --arg replicaBucket "${replica_bucket}" \
+                          --arg replicaPrefix "${replica_prefix}" \
+                          --argjson buckets "$(printf '%s\n' "${tenant_bucket}" | jq -R -s -c 'split("\n")[:-1]')" \
+                          '{timestamp:$timestamp,status:$status,mode:$mode,buckets:$buckets,replication:{destination:{endpoint:$replicaEndpoint,region:$replicaRegion,bucketPrefix:$bucketPrefix,bucket:$replicaBucket,prefix:$replicaPrefix}}}' > "${marker_tmp}"
+                      else
+                        jq -n \
+                          --arg timestamp "$ts" \
+                          --arg status "${tenant_status}" \
+                          --arg mode "${mirror_mode}" \
+                          --arg encryptionMode "rclone-crypt" \
+                          --arg encryptedRoot "tenants/${org_id}/s3-mirror/crypt" \
+                          --argjson buckets "$(printf '%s\n' "${tenant_bucket}" | jq -R -s -c 'split("\n")[:-1]')" \
+                          '{timestamp:$timestamp,status:$status,mode:$mode,buckets:$buckets,encryption:{mode:$encryptionMode,root:$encryptedRoot}}' > "${marker_tmp}"
+                      fi
+                      sha="$(sha256sum "${marker_tmp}" | awk '{print $1}')"
+                      jq --arg sha256 "$sha" '. + {markerSha256:$sha256}' "${marker_tmp}" > "${marker_tmp}.2"
+                      jq -e . "${marker_tmp}.2" >/dev/null
+                      mv -f "${marker_tmp}.2" "${tenant_out}/LATEST.json"
+                      rm -f "${marker_tmp}" || true
+                    done
+                  else
+                    echo "[s3-mirror] tenant registry not present; skipping tenant bucket mirroring (${registry})"
+                  fi
+
+                  exit 0
+          volumes:
+            - name: deployment-config
+              configMap:
+                name: deploykube-deployment-config
+                defaultMode: 0444
+            - name: tenant-registry
+              configMap:
+                name: deploykube-tenant-registry
+                optional: true
+                items:
+                  - key: tenant-registry.yaml
+                    path: tenant-registry.yaml
+            - name: backup
+              persistentVolumeClaim:
+                claimName: backup-target
+            - name: tmp
+              emptyDir: {}

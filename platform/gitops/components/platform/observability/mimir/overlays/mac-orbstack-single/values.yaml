@@ -1,0 +1,223 @@
+# Low-mem dev profile for OrbStack: single replicas to reduce WAL-write IO.
+# This overlay is consumed via `apps/environments/mac-orbstack-dev` or similar.
+# Keep prod base at HA (zone-aware replication, 3 ingesters) unchanged.
+
+fullnameOverride: mimir
+
+global:
+  extraEnvFrom:
+    - secretRef:
+        name: mimir-s3
+
+minio:
+  enabled: false
+
+# Core alerting components enabled for troubleshooting workflow
+alertmanager:
+  enabled: true
+  replicas: 1
+ruler:
+  enabled: true
+  replicas: 1
+
+# Disable optional components not needed for dev
+ingest_storage:
+  enabled: false
+kafka:
+  enabled: false
+rollout_operator:
+  enabled: false
+
+mimir:
+  useExternalConfig: false
+  externalConfigSecretName: ""
+  configStorageType: configmap
+  externalConfigVersion: "1"
+  structuredConfig: {}
+  config: |
+    activity_tracker:
+      filepath: /data/activity.log
+    alertmanager:
+      data_dir: /data/alertmanager-data
+      enable_api: true
+      external_url: /alertmanager
+    alertmanager_storage:
+      backend: filesystem
+      filesystem:
+        dir: /data/alertmanager
+    blocks_storage:
+      backend: s3
+      bucket_store:
+        sync_dir: /data/tsdb-sync
+      s3:
+        access_key_id: ${AWS_ACCESS_KEY_ID}
+        bucket_name: garage-metrics
+        endpoint: garage.garage.svc:3900
+        insecure: true
+        region: us-east-1
+        bucket_lookup_type: path
+        secret_access_key: ${AWS_SECRET_ACCESS_KEY}
+      tsdb:
+        dir: /data/tsdb
+        head_compaction_interval: 15m
+        wal_replay_concurrency: 3
+    compactor:
+      compaction_interval: 30m
+      data_dir: /data
+      deletion_delay: 2h
+      first_level_compaction_wait_period: 25m
+      max_closing_blocks_concurrency: 2
+      max_opening_blocks_concurrency: 4
+      sharding_ring:
+        heartbeat_period: 1m
+        heartbeat_timeout: 4m
+        wait_stability_min_duration: 1m
+      symbols_flushers_concurrency: 4
+    distributor:
+      remote_timeout: 5s
+      ring:
+        heartbeat_period: 1m
+        heartbeat_timeout: 4m
+    frontend:
+      parallelize_shardable_queries: true
+      scheduler_address: mimir-query-scheduler.mimir.svc:9095
+    frontend_worker:
+      grpc_client_config:
+        max_send_msg_size: 419430400
+      scheduler_address: mimir-query-scheduler.mimir.svc:9095
+    ingest_storage:
+      enabled: false
+    ingester:
+      push_grpc_method_enabled: true
+      ring:
+        final_sleep: 0s
+        heartbeat_period: 2m
+        heartbeat_timeout: 10m
+        num_tokens: 512
+        tokens_file_path: /data/tokens
+        unregister_on_shutdown: false
+        replication_factor: 1
+        zone_awareness_enabled: false
+    ingester_client:
+      grpc_client_config:
+        max_recv_msg_size: 104857600
+        max_send_msg_size: 104857600
+    limits:
+      compactor_blocks_retention_period: 720h
+      ingestion_burst_size: 500000
+      ingestion_rate: 250000
+      max_global_series_per_user: 500000
+      max_cache_freshness: 10m
+      max_query_parallelism: 240
+      max_total_query_length: 12000h
+    memberlist:
+      abort_if_cluster_join_fails: false
+      compression_enabled: false
+      join_members:
+        - dns+mimir-gossip-ring.mimir.svc.cluster.local.:7946
+      rejoin_interval: 1m
+    multitenancy_enabled: true
+    querier:
+      max_concurrent: 16
+    query_scheduler:
+      max_outstanding_requests_per_tenant: 800
+    ruler:
+      # Alertmanager exposes its API under the /alertmanager prefix (see `alertmanager.external_url`).
+      alertmanager_url: http://mimir-alertmanager.mimir.svc.cluster.local:8080/alertmanager
+      enable_api: true
+      evaluation_interval: 1m
+      poll_interval: 30s
+      rule_path: /data
+    ruler_storage:
+      backend: s3
+      storage_prefix: ruler
+      s3:
+        access_key_id: ${AWS_ACCESS_KEY_ID}
+        bucket_name: garage-metrics
+        endpoint: garage.garage.svc:3900
+        insecure: true
+        region: us-east-1
+        bucket_lookup_type: path
+        secret_access_key: ${AWS_SECRET_ACCESS_KEY}
+    runtime_config:
+      file: /var/mimir/runtime.yaml
+    server:
+      log_level: info
+    store_gateway:
+      sharding_ring:
+        heartbeat_period: 1m
+        heartbeat_timeout: 10m
+        kvstore:
+          prefix: multi-zone/
+        tokens_file_path: /data/tokens
+        unregister_on_shutdown: false
+        wait_stability_min_duration: 1m
+        replication_factor: 1
+        zone_awareness_enabled: false
+    usage_stats:
+      enabled: false
+      installation_mode: helm
+
+# --- Dev Scaling: Single replicas to reduce IO ---
+ingester:
+  replicas: 1
+  zoneAwareReplication:
+    enabled: false
+  resources:
+    # Keep a safe baseline so the ingester doesn't start under-requested before VPA converges.
+    requests:
+      cpu: 200m
+      memory: 1Gi
+
+distributor:
+  replicas: 1
+
+querier:
+  replicas: 1
+  maxUnavailable: 0
+
+query_frontend:
+  replicas: 1
+
+query_scheduler:
+  replicas: 1
+
+store_gateway:
+  replicas: 1
+  zoneAwareReplication:
+    enabled: false
+
+compactor:
+  replicas: 1
+
+gateway:
+  enabled: true
+  replicas: 1
+  ingress:
+    enabled: false
+  nginx:
+    config:
+      # NGINX `resolver` expects DNS server IP(s), not a hostname. Using the kube-dns ClusterIP avoids runtime upstream
+      # resolution failures for `proxy_pass http://$upstream`.
+      resolver: 10.43.0.10
+      # Keep the upstream `Host` header compatible with Istio's outbound routing (avoid trailing-dot hostnames).
+      httpSnippet: |-
+        map $proxy_host $deploykube_upstream_host {
+          "~^(?<h>[^:]+)\\.:\\d+$" $h;
+          "~^(?<h>[^:]+):\\d+$" $h;
+          default $proxy_host;
+        }
+      serverSnippet: |-
+        proxy_set_header Host $deploykube_upstream_host;
+
+query_frontend:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+
+metaMonitoring:
+  serviceMonitor:
+    enabled: true

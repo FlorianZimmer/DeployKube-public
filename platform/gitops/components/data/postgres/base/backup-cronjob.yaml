@@ -1,0 +1,111 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: postgres-backup
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: postgres-backup
+  annotations:
+    argocd.argoproj.io/sync-options: Replace=true
+spec:
+  schedule: "0 3 * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 3600
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          annotations:
+            sidecar.istio.io/nativeSidecar: "true"
+            proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}'
+        spec:
+          serviceAccountName: postgres-backup
+          restartPolicy: Never
+          containers:
+            - name: backup
+              image: registry.example.internal/deploykube/bootstrap-tools:1.4
+              imagePullPolicy: IfNotPresent
+              volumeMounts:
+                - name: backup
+                  mountPath: /backups
+                - name: istio-native-exit
+                  mountPath: /helpers
+                  readOnly: true
+              env:
+                - name: PGHOST
+                  value: postgres-rw
+                - name: PGDATABASE
+                  valueFrom:
+                    secretKeyRef:
+                      name: postgres-app
+                      key: database
+                - name: BACKUP_SOURCE
+                  value: postgres
+                - name: PG_DUMP_TIMEOUT
+                  value: 20m
+                - name: AGE_RECIPIENT
+                  valueFrom:
+                    configMapKeyRef:
+                      name: backup-encryption
+                      key: AGE_RECIPIENT
+                - name: PGUSER
+                  valueFrom:
+                    secretKeyRef:
+                      name: postgres-superuser
+                      key: username
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: postgres-superuser
+                      key: password
+              command:
+                - /bin/bash
+                - -c
+                - |
+                  set -euo pipefail
+                  ISTIO_HELPER="/helpers/istio-native-exit.sh"
+                  [ -f "$ISTIO_HELPER" ] || { echo "missing istio-native-exit helper" >&2; exit 1; }
+                  . "$ISTIO_HELPER"
+                  trap deploykube_istio_quit_sidecar EXIT INT TERM
+                  command -v pg_dump >/dev/null 2>&1 || { echo "missing dependency: pg_dump" >&2; exit 1; }
+                  command -v curl >/dev/null 2>&1 || { echo "missing dependency: curl" >&2; exit 1; }
+                  command -v jq >/dev/null 2>&1 || { echo "missing dependency: jq" >&2; exit 1; }
+                  command -v sha256sum >/dev/null 2>&1 || { echo "missing dependency: sha256sum" >&2; exit 1; }
+                  command -v age >/dev/null 2>&1 || { echo "missing dependency: age" >&2; exit 1; }
+                  : "${AGE_RECIPIENT:?missing AGE_RECIPIENT}"
+                  : "${PGDATABASE:?missing PGDATABASE}"
+                  ts="$(date -u +%Y%m%dT%H%M%SZ)"
+                  out="/backups/${ts}-dump.sql.gz.age"
+                  out_tmp="${out}.tmp"
+                  rm -f "$out_tmp"
+                  timeout "${PG_DUMP_TIMEOUT}" pg_dump --no-comments --format=plain --clean --if-exists --no-owner --no-privileges "${PGDATABASE}" \
+                    | gzip -c \
+                    | age -r "${AGE_RECIPIENT}" -o "$out_tmp" -
+                  mv "$out_tmp" "$out"
+                  sha="$(sha256sum "$out" | awk '{print $1}')"
+                  marker_tmp="$(mktemp)"
+                  jq -n \
+                    --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+                    --arg status "ok" \
+                    --arg source "${BACKUP_SOURCE}" \
+                    --arg artifact "$(basename "$out")" \
+                    --arg artifactSha256 "${sha}" \
+                    '{timestamp:$timestamp,status:$status,source:$source,artifacts:[$artifact],artifactSha256:$artifactSha256}' > "${marker_tmp}"
+                  chmod 0644 "${marker_tmp}"
+                  mv "${marker_tmp}" /backups/LATEST.json
+                  ls -al /backups
+          volumes:
+            - name: backup
+              persistentVolumeClaim:
+                claimName: postgres-backup-v2
+            - name: istio-native-exit
+              configMap:
+                name: istio-native-exit-script
+                defaultMode: 0444

@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+patches:
+  - path: patch-postgresinstance-backup-proxmox-talos.yaml
+    target:
+      group: data.darksite.cloud
+      version: v1alpha1
+      kind: PostgresInstance
+      name: keycloak-postgres

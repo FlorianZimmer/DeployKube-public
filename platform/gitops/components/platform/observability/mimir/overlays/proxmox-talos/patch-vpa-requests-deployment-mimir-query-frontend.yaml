@@ -1,0 +1,16 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mimir-query-frontend
+  namespace: mimir
+spec:
+  template:
+    spec:
+      containers:
+        - name: query-frontend
+          resources:
+            requests:
+              cpu: "25m"
+              memory: "64Mi"
+            limits:
+              memory: "96Mi"

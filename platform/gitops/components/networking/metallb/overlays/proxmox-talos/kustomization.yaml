@@ -1,0 +1,18 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: metallb-system
+
+resources:
+  - ../../base
+  - ipaddresspool.yaml
+
+patches:
+  # Proxmox schedule: hourly (mac runs more frequently for faster feedback)
+  - patch: |-
+      - op: replace
+        path: /spec/schedule
+        value: "0 * * * *"
+    target:
+      kind: CronJob
+      name: metallb-pool-drift-guard

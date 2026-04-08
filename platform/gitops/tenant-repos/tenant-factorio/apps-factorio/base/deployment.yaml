@@ -1,0 +1,229 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: factorio
+  labels:
+    app: factorio
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: factorio
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: factorio
+    spec:
+      terminationGracePeriodSeconds: 120
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: prepare-opt-config
+          image: factoriotools/factorio:stable
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              cp -R /opt/factorio/config/. /work/config/
+          volumeMounts:
+            - name: factorio-opt-config
+              mountPath: /work/config
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+      containers:
+        - name: factorio
+          image: factoriotools/factorio:stable
+          ports:
+            - containerPort: 34197
+              protocol: UDP
+          env:
+            - name: UPDATE_MODS_ON_START
+              value: "true"
+            - name: VERSION
+              value: "latest"
+            - name: SAVE_NAME
+              value: "save"
+            - name: USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: factorio-secret
+                  key: username
+                  optional: true
+            - name: TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: factorio-secret
+                  key: token
+                  optional: true
+          volumeMounts:
+            - name: data
+              mountPath: /factorio
+            - name: factorio-opt-config
+              mountPath: /opt/factorio/config
+            - name: factorio-server-settings
+              mountPath: /factorio/config/server-settings.json
+              subPath: server-settings.json
+          resources:
+            requests:
+              memory: "1500Mi"
+              cpu: "100m"
+            limits:
+              memory: "4Gi"
+          readinessProbe:
+            tcpSocket:
+              port: 27015
+            initialDelaySeconds: 60
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 27015
+            initialDelaySeconds: 120
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+        - name: backup
+          image: itzg/mc-backup:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: BACKUP_INTERVAL
+              value: 1h
+            - name: RESTIC_RETRY_LOCK
+              value: 5m
+            - name: RESTIC_UNLOCK_TIMEOUT
+              value: 2m
+            - name: RESTIC_PROBE_TIMEOUT
+              value: 10m
+            - name: RESTIC_INIT_TIMEOUT
+              value: 30m
+            - name: RESTIC_BACKUP_TIMEOUT
+              value: 2h
+            - name: RESTIC_PRUNE_TIMEOUT
+              value: 30m
+            - name: PRUNE_RESTIC_RETENTION
+              value: --keep-within 2h --keep-hourly 24 --keep-daily 7 --keep-weekly 52
+            - name: RESTIC_REPOSITORY
+              valueFrom:
+                secretKeyRef:
+                  name: factorio-backup
+                  key: RESTIC_REPOSITORY
+            - name: RESTIC_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: factorio-backup
+                  key: RESTIC_PASSWORD
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: factorio-backup
+                  key: S3_ACCESS_KEY
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: factorio-backup
+                  key: S3_SECRET_KEY
+            - name: AWS_DEFAULT_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: factorio-backup
+                  key: S3_REGION
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              (set -o pipefail 2>/dev/null) || true
+
+              BACKUP_INTERVAL="${BACKUP_INTERVAL:-10m}"
+              RESTIC_RETRY_LOCK="${RESTIC_RETRY_LOCK:-5m}"
+              RESTIC_UNLOCK_TIMEOUT="${RESTIC_UNLOCK_TIMEOUT:-2m}"
+              RESTIC_PROBE_TIMEOUT="${RESTIC_PROBE_TIMEOUT:-10m}"
+              RESTIC_INIT_TIMEOUT="${RESTIC_INIT_TIMEOUT:-30m}"
+              RESTIC_BACKUP_TIMEOUT="${RESTIC_BACKUP_TIMEOUT:-2h}"
+              RESTIC_PRUNE_TIMEOUT="${RESTIC_PRUNE_TIMEOUT:-30m}"
+              PRUNE_RESTIC_RETENTION="${PRUNE_RESTIC_RETENTION:---keep-within 2h --keep-hourly 24 --keep-daily 7 --keep-weekly 52}"
+              RESTIC_LOCK_ARGS="--retry-lock ${RESTIC_RETRY_LOCK}"
+
+              probe_restic_repo() {
+                # `snapshots` can be expensive on large repos; `cat config` is a cheap "does the repo exist" probe.
+                timeout "${RESTIC_PROBE_TIMEOUT}" restic --no-lock cat config >/dev/null 2>&1
+              }
+
+              ensure_restic_repo() {
+                if probe_restic_repo; then
+                  echo "[backup] best-effort restic unlock..."
+                  if ! timeout "${RESTIC_UNLOCK_TIMEOUT}" restic ${RESTIC_LOCK_ARGS} unlock --remove-all; then
+                    echo "[backup] restic unlock did not complete within ${RESTIC_UNLOCK_TIMEOUT}; continuing best-effort" >&2
+                  fi
+                  return 0
+                fi
+                echo "[backup] restic repo not initialized yet; running restic init..."
+                if timeout "${RESTIC_INIT_TIMEOUT}" restic init; then
+                  echo "[backup] restic init complete"
+                  return 0
+                fi
+                echo "[backup] restic init did not complete successfully; re-probing repo..." >&2
+                if probe_restic_repo; then
+                  echo "[backup] restic repo appears to exist; continuing (best-effort)" >&2
+                  return 0
+                fi
+                echo "[backup] restic repo still not reachable; dumping restic error:" >&2
+                restic --no-lock snapshots || true
+                exit 1
+              }
+
+              echo "[backup] starting restic loop (interval=${BACKUP_INTERVAL})"
+              ensure_restic_repo
+              while true; do
+                echo "[backup] restic backup start: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+                # Keep the backup bounded and restore-friendly.
+                # - World state: back up the newest `.zip` from `/factorio/saves` (avoids uploading a full history of autosaves every run).
+                # - Config: server settings and map config.
+                # - Player state: player-data.
+                latest_save="$(ls -1t /factorio/saves/*.zip 2>/dev/null | head -n 1 || true)"
+                if [ -z "${latest_save}" ]; then
+                  echo "[backup] no save zips found under /factorio/saves; skipping backup" >&2
+                else
+                  timeout "${RESTIC_BACKUP_TIMEOUT}" restic ${RESTIC_LOCK_ARGS} backup "${latest_save}" /factorio/config /factorio/player-data.json
+                fi
+                timeout "${RESTIC_PRUNE_TIMEOUT}" restic ${RESTIC_LOCK_ARGS} forget --prune ${PRUNE_RESTIC_RETENTION}
+                echo "[backup] restic backup done: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+                sleep "${BACKUP_INTERVAL}"
+              done
+          volumeMounts:
+            - name: data
+              mountPath: /factorio
+            - name: restore-tmp
+              mountPath: /restore
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: factorio-data
+        - name: factorio-server-settings
+          configMap:
+            name: factorio-server-settings
+        - name: factorio-opt-config
+          emptyDir: {}
+        - name: restore-tmp
+          emptyDir: {}

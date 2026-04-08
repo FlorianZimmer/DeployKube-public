@@ -1,0 +1,51 @@
+# Observability smoke staleness/failure rules (platform tenant)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mimir-rules-observability-smokes
+  namespace: mimir
+  labels:
+    mimir.grafana.com/rules: "true"
+    app.kubernetes.io/component: ruler
+data:
+  observability-smokes.yaml: |
+    # yaml-language-server: $schema=https://json.schemastore.org/prometheus-rule.json
+    groups:
+      - name: observability.smokes
+        interval: 1m
+        rules:
+          - alert: ObservabilitySmokeCronJobStale
+            expr: |
+              (time() - kube_cronjob_status_last_successful_time{
+                namespace="observability",
+                cronjob=~"observability-(log|metric|trace)-smoke|observability-(loki|mimir)-ring-smoke|alloy-metrics-scrape-smoke|mimir-alerting-pipeline-smoke"
+              }) > 7200
+            for: 10m
+            labels:
+              severity: warning
+              team: platform
+              service: observability
+              cluster: deploykube
+              runbook_url: docs/runbooks/observability-smoke-alerts.md
+            annotations:
+              summary: "Observability smoke CronJob stale ({{ $labels.namespace }}/{{ $labels.cronjob }})"
+              description: "No successful run within the expected freshness window. Investigate the most recent Job and backend health."
+
+          - alert: ObservabilitySmokeJobFailed
+            expr: |
+              max by (namespace, job_name) (
+                kube_job_status_failed{
+                  namespace="observability",
+                  job_name=~"observability-(log|metric|trace)-smoke-.*|observability-(loki|mimir)-ring-smoke-.*|alloy-metrics-scrape-smoke-.*|mimir-alerting-pipeline-smoke-.*"
+                }
+              ) > 0
+            for: 2m
+            labels:
+              severity: critical
+              team: platform
+              service: observability
+              cluster: deploykube
+              runbook_url: docs/runbooks/observability-smoke-alerts.md
+            annotations:
+              summary: "Observability smoke Job failed ({{ $labels.namespace }}/{{ $labels.job_name }})"
+              description: "A smoke Job failed. Check logs for the failing Job and confirm Loki/Tempo/Mimir/Alloy health."

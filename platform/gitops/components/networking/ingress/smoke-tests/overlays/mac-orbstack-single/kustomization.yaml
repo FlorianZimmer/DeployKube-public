@@ -1,0 +1,15 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+
+# Dev schedule: every 15 minutes for faster feedback
+patches:
+  - patch: |-
+      - op: replace
+        path: /spec/schedule
+        value: "*/15 * * * *"
+    target:
+      kind: CronJob
+      name: ingress-smoke-substrate
+

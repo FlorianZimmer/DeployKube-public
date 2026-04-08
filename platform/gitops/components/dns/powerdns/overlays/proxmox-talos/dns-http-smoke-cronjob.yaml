@@ -1,0 +1,332 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: powerdns-dns-http-smoke-scripts
+  namespace: dns-system
+data:
+  resolve.py: |
+    import random
+    import socket
+    import struct
+    import sys
+    import time
+
+
+    def die(msg: str) -> None:
+      print(msg, file=sys.stderr)
+      raise SystemExit(1)
+
+
+    def skip_name(buf: bytes, off: int) -> int:
+      while True:
+        if off >= len(buf):
+          return off
+        length = buf[off]
+        if length == 0:
+          return off + 1
+        # name compression pointer
+        if (length & 0xC0) == 0xC0:
+          return off + 2
+        off += 1 + length
+
+    def _parse_a_response(tid: int, name: str, data: bytes) -> str:
+      rid, rflags, qdcount, ancount, _, _ = struct.unpack("!HHHHHH", data[:12])
+      if rid != tid:
+        die("unexpected DNS transaction id")
+
+      rcode = rflags & 0x000F
+      if rcode == 3:
+        die(f"NXDOMAIN: {name}")
+      if rcode != 0:
+        die(f"DNS error rcode={rcode} for {name}")
+
+      off = 12
+      for _ in range(qdcount):
+        off = skip_name(data, off)
+        off += 4  # qtype + qclass
+
+      ips = []
+      for _ in range(ancount):
+        off = skip_name(data, off)
+        rtype, rclass = struct.unpack("!HH", data[off : off + 4])
+        off += 4
+        off += 4  # ttl
+        rdlen = struct.unpack("!H", data[off : off + 2])[0]
+        off += 2
+        rdata = data[off : off + rdlen]
+        off += rdlen
+        if rtype == 1 and rclass == 1 and rdlen == 4:
+          ips.append(socket.inet_ntoa(rdata))
+
+      if not ips:
+        die(f"no A record in answer for {name}")
+
+      return ips[0]
+
+
+    def resolve_a_udp(server: str, name: str) -> str:
+      name = name.rstrip(".")
+      tid = random.randint(0, 65535)
+      flags = 0x0100  # recursion desired
+      header = struct.pack("!HHHHHH", tid, flags, 1, 0, 0, 0)
+      qname = b"".join(bytes([len(p)]) + p.encode("ascii") for p in name.split(".")) + b"\x00"
+      question = qname + struct.pack("!HH", 1, 1)  # A IN
+      msg = header + question
+
+      data = None
+      for attempt in range(2):
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(2.0)
+        try:
+          s.sendto(msg, (server, 53))
+          data, _ = s.recvfrom(4096)
+          break
+        finally:
+          s.close()
+      if data is None:
+        raise socket.timeout()
+
+      return _parse_a_response(tid, name, data)
+
+
+    def resolve_a_tcp(server: str, name: str) -> str:
+      name = name.rstrip(".")
+      tid = random.randint(0, 65535)
+      flags = 0x0100  # recursion desired
+      header = struct.pack("!HHHHHH", tid, flags, 1, 0, 0, 0)
+      qname = b"".join(bytes([len(p)]) + p.encode("ascii") for p in name.split(".")) + b"\x00"
+      question = qname + struct.pack("!HH", 1, 1)  # A IN
+      msg = header + question
+
+      s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+      s.settimeout(2.0)
+      try:
+        s.connect((server, 53))
+        s.sendall(struct.pack("!H", len(msg)) + msg)
+
+        prefix = s.recv(2)
+        if len(prefix) != 2:
+          raise socket.timeout()
+        length = struct.unpack("!H", prefix)[0]
+
+        data = b""
+        while len(data) < length:
+          chunk = s.recv(length - len(data))
+          if not chunk:
+            break
+          data += chunk
+        if len(data) != length:
+          raise socket.timeout()
+      finally:
+        s.close()
+
+      return _parse_a_response(tid, name, data)
+
+
+    def resolve_a(server: str, name: str) -> str:
+      # This is a smoke check, not a latency benchmark.
+      # Retries reduce false negatives from transient UDP loss / VIP failovers.
+      last_exc = None
+      for attempt in range(3):
+        try:
+          try:
+            return resolve_a_udp(server, name)
+          except socket.timeout:
+            return resolve_a_tcp(server, name)
+        except socket.timeout as e:
+          last_exc = e
+          if attempt < 2:
+            time.sleep(0.2 * (attempt + 1))
+            continue
+          raise
+
+
+    def main() -> int:
+      if len(sys.argv) != 3:
+        die("usage: resolve.py <server> <name>")
+      server = sys.argv[1]
+      name = sys.argv[2]
+      try:
+        print(resolve_a(server, name))
+        return 0
+      except socket.timeout:
+        die(f"timeout querying {server} for {name}")
+      return 1
+
+
+    raise SystemExit(main())
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: powerdns-dns-http-smoke
+  namespace: dns-system
+  labels:
+    app: powerdns-smoke
+spec:
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 300
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          labels:
+            app: powerdns-smoke
+          annotations:
+            sidecar.istio.io/inject: "false"
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          hostNetwork: true
+          dnsPolicy: ClusterFirstWithHostNet
+          affinity:
+            podAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchLabels:
+                      app: powerdns
+                      component: authoritative
+                  topologyKey: kubernetes.io/hostname
+          volumes:
+            - name: scripts
+              configMap:
+                name: powerdns-dns-http-smoke-scripts
+          containers:
+            - name: smoke
+              image: registry.example.internal/deploykube/bootstrap-tools:1.4
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: POWERDNS_SERVER
+                  valueFrom:
+                    configMapKeyRef:
+                      name: deploykube-dns-wiring
+                      key: POWERDNS_SERVER
+                - name: LAN_DNS_SERVERS
+                  valueFrom:
+                    configMapKeyRef:
+                      name: deploykube-dns-wiring
+                      key: LAN_DNS_SERVERS
+                - name: DNS_HOSTS
+                  valueFrom:
+                    configMapKeyRef:
+                      name: deploykube-dns-wiring
+                      key: DNS_HOSTS
+                - name: HTTP_HOSTS
+                  valueFrom:
+                    configMapKeyRef:
+                      name: deploykube-dns-wiring
+                      key: HTTP_HOSTS
+              volumeMounts:
+                - name: scripts
+                  mountPath: /scripts
+                  readOnly: true
+              command:
+                - /bin/bash
+                - -c
+                - |
+                  set -euo pipefail
+                  command -v curl >/dev/null 2>&1 || { echo "missing dependency: curl" >&2; exit 1; }
+                  command -v python3 >/dev/null 2>&1 || { echo "missing dependency: python3" >&2; exit 1; }
+
+                  : "${POWERDNS_SERVER:?missing POWERDNS_SERVER (ConfigMap/deploykube-dns-wiring)}"
+                  : "${DNS_HOSTS:?missing DNS_HOSTS (ConfigMap/deploykube-dns-wiring)}"
+                  : "${HTTP_HOSTS:?missing HTTP_HOSTS (ConfigMap/deploykube-dns-wiring)}"
+                  DNS_SERVERS="${POWERDNS_SERVER} ${LAN_DNS_SERVERS:-}"
+                  DNS_SERVERS="$(echo "${DNS_SERVERS}" | xargs)"
+
+                  resolve() {
+                    local server="$1"
+                    local host="$2"
+                    python3 /scripts/resolve.py "${server}" "${host}"
+                  }
+
+                  resolve_with_backoff() {
+                    local server="$1"
+                    local host="$2"
+                    local ip=""
+                    : >/tmp/resolve.err
+                    for attempt in 1 2 3; do
+                      ip="$(resolve "${server}" "${host}" 2>/tmp/resolve.err || true)"
+                      if [ -n "$ip" ]; then
+                        echo "$ip"
+                        return 0
+                      fi
+                      if [ "$attempt" -lt 3 ]; then
+                        sleep $((attempt))
+                      fi
+                    done
+                    return 1
+                  }
+
+                  http_head_code() {
+                    local host="$1"
+                    local ip="$2"
+                    curl -skI --connect-timeout 5 --max-time 10 --resolve "${host}:443:${ip}" "https://${host}" | awk 'NR==1{print $2}'
+                  }
+
+                  http_is_ok() {
+                    local code="$1"
+                    case "$code" in
+                      2*|3*|401|403)
+                        return 0
+                        ;;
+                      *)
+                        return 1
+                        ;;
+                    esac
+                  }
+
+                  fail=0
+                  for server in $DNS_SERVERS; do
+                    echo "[dns] server=${server}"
+                    for host in $DNS_HOSTS; do
+                      ip="$(resolve_with_backoff "${server}" "${host}" || true)"
+                      if [ -z "$ip" ]; then
+                        echo "[dns] FAIL ${host} (no answer via ${server})"
+                        if [ -s /tmp/resolve.err ]; then
+                          sed 's/^/[dns]   /' /tmp/resolve.err
+                        fi
+                        fail=1
+                        continue
+                      fi
+                      echo "[dns] OK ${host} -> ${ip}"
+                    done
+
+                    for host in $HTTP_HOSTS; do
+                      ip="$(resolve_with_backoff "${server}" "${host}" || true)"
+                      if [ -z "$ip" ]; then
+                        echo "[http] FAIL ${host} (no DNS answer via ${server})"
+                        if [ -s /tmp/resolve.err ]; then
+                          sed 's/^/[http]  /' /tmp/resolve.err
+                        fi
+                        fail=1
+                        continue
+                      fi
+                      code=""
+                      ok=0
+                      for attempt in 1 2 3; do
+                        code="$(http_head_code "${host}" "${ip}" 2>/dev/null || true)"
+                        if http_is_ok "${code}"; then
+                          ok=1
+                          break
+                        fi
+                        if [ "$attempt" -lt 3 ]; then
+                          sleep $((attempt))
+                        fi
+                      done
+                      if [ "${ok}" -eq 1 ]; then
+                        echo "[http] OK ${host} -> ${code}"
+                      else
+                        echo "[http] FAIL ${host} -> ${code:-no-response}"
+                        fail=1
+                      fi
+                    done
+                  done
+
+                  exit "$fail"

@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: istio-system
+
+resources:
+  - ../../base
+  - httproute.yaml
+  - tests/job-kiali-oidc-smoke.yaml
+
+helmGlobals:
+  # Vendored chart shared at component root.
+  chartHome: ../../charts
+
+helmCharts:
+  - name: kiali-server
+    version: 2.15.0
+    releaseName: kiali
+    namespace: istio-system
+    valuesFile: values.yaml

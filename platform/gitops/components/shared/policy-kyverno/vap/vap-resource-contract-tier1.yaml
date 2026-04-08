@@ -1,0 +1,51 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: darksite-resource-contract-tier1
+  annotations:
+    argocd.argoproj.io/sync-wave: "-4"
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+  validations:
+    - expression: |
+        object.spec.containers.all(c,
+          has(c.resources) &&
+          "requests" in c.resources &&
+          "cpu" in c.resources.requests &&
+          "memory" in c.resources.requests &&
+          "limits" in c.resources &&
+          "memory" in c.resources.limits
+        ) &&
+        (!has(object.spec.initContainers) ||
+          object.spec.initContainers.all(c,
+            has(c.resources) &&
+            "requests" in c.resources &&
+            "cpu" in c.resources.requests &&
+            "memory" in c.resources.requests &&
+            "limits" in c.resources &&
+            "memory" in c.resources.limits
+          )
+        )
+      message: "Resource contract Tier 1: every container/initContainer must set requests.cpu, requests.memory, and limits.memory."
+
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: darksite-resource-contract-tier1
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3.9"
+spec:
+  policyName: darksite-resource-contract-tier1
+  validationActions: ["Deny"]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        darksite.cloud/resource-contract: strict
+    objectSelector: {}

@@ -1,0 +1,24 @@
+# Local secrets / generated CA config
+bootstrap/mac-orbstack/step-ca/values.local.yaml
+# Legacy env overlays removed; keep bootstrap values only
+
+# Host-side export created by shared/scripts/orb-nfs-host.sh
+nfs-data/
+
+# Bootstrap temp artifacts (password caches, logs)
+tmp/
+
+# macOS
+.DS_Store
+
+# python
+__pycache__/
+*.pyc
+
+# repomix artifacts
+repomix/work/
+.repomix_bridge/ # legacy (migrated to repomix/work/)
+repomix-bridge.xml
+
+# kustomize --enable-helm renders Helm charts into local cache dirs
+platform/gitops/components/**/charts/

@@ -1,0 +1,12 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: argocd-ui-extensions
+  namespace: argocd
+  labels:
+    darksite.cloud/ha-tier: tier-1
+spec:
+  template:
+    metadata:
+      labels:
+        darksite.cloud/ha-tier: tier-1

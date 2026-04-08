@@ -1,0 +1,41 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Include non-overlay apps from base and overlay apps from the dev renderer.
+resources:
+  - deployment-secrets-bundle.yaml
+  - ../../base
+  - ../../tenants/overlays/dev
+
+patches:
+  - path: patches/patch-app-networking-metallb-config.yaml
+
+  # Disable always-on observability apps from apps/base (reduce CPU + SSD writes).
+  # The remaining Grafana/Loki/Mimir apps are already disabled via the PlatformApps
+  # overlay in components/platform/platform-apps-controller/overlays/mac-orbstack-single.
+  - path: patches/delete-platform-observability-alloy-metrics.yaml
+  - path: patches/delete-platform-observability-alloy.yaml
+  - path: patches/delete-platform-observability-metrics.yaml
+  - path: patches/delete-platform-observability-namespaces.yaml
+  - path: patches/delete-platform-observability-secrets.yaml
+  - path: patches/delete-platform-observability-smoke-tests.yaml
+  - path: patches/delete-platform-observability-tempo.yaml
+  - path: patches/delete-platform-observability-tests.yaml
+
+  # Single-node / low-mem component overlays
+  - path: patches/patch-secrets-vault.yaml
+
+  # Keep existing dev behaviour for these components (already low-mem)
+  - path: patches/patch-secrets-external-secrets.yaml
+  - path: patches/patch-data-postgres-keycloak.yaml
+  - path: patches/patch-data-postgres-powerdns.yaml
+  - path: patches/patch-platform-forgejo-postgres.yaml
+  # VPA recommendations differ by deployment.
+  - path: patches/patch-platform-ops-vpa-recommendations.yaml
+
+  # Select deployment-specific platform-apps-controller overlay.
+  - path: patches/patch-platform-platform-apps-controller.yaml
+
+  # Single-node local-first storage profile (docs/design/storage-single-node.md)
+  - path: patches/delete-storage-nfs-provisioner.yaml
+  - path: patches/patch-storage-shared-rwo-local.yaml

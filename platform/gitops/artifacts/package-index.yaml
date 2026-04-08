@@ -1,0 +1,52 @@
+apiVersion: darksite.cloud/v1alpha1
+kind: PackageIndex
+metadata:
+  name: deploykube
+spec:
+  # Phase 0: this index is intentionally small and starts with Stage 0/Stage 1 bootstrap artefacts,
+  # plus selected platform-owned runtime images that need a first-class mirror/scan contract.
+  #
+  # Future (tracked under docs/component-issues/distribution-bundles.md):
+  # - expand to cover the full platform GitOps payload (Mode C bundles),
+  # - record resolved digests for all entries, and
+  # - add policy metadata for curated ingress (ARC) + Harbor.
+  images:
+    # DeployKube-owned utility images used by multiple GitOps hook Jobs.
+    - name: bootstrap-tools
+      class: platform-required
+      source: registry.example.internal/deploykube/bootstrap-tools:1.4
+      # Destination is a logical intent; Phase 0 mirrors still use per-registry ports.
+      destination: mirror/registry.example.internal/deploykube/bootstrap-tools:1.4
+    - name: validation-tools-core
+      class: platform-required
+      source: registry.example.internal/deploykube/validation-tools-core:0.1.0
+      destination: mirror/registry.example.internal/deploykube/validation-tools-core:0.1.0
+    - name: tenant-provisioner
+      class: platform-required
+      source: registry.example.internal/deploykube/tenant-provisioner:0.2.24
+      destination: mirror/registry.example.internal/deploykube/tenant-provisioner:0.2.24
+    - name: scim-bridge
+      class: platform-service
+      source: registry.example.internal/deploykube/scim-bridge:0.1.0
+      destination: mirror/registry.example.internal/deploykube/scim-bridge:0.1.0
+  charts:
+    # Charts required before GitOps takes over (Stage 0/Stage 1).
+    - name: forgejo
+      source: oci://code.forgejo.org/forgejo-helm/forgejo
+      version: 15.0.2
+    - name: argo-cd
+      source: https://argoproj.github.io/argo-helm
+      chart: argo-cd
+      version: 9.1.0
+    - name: cilium
+      source: https://helm.cilium.io
+      chart: cilium
+      version: 1.18.5
+    - name: metallb
+      source: https://metallb.github.io/metallb
+      chart: metallb
+      version: 0.15.2
+    - name: nfs-subdir-external-provisioner
+      source: https://kubernetes-sigs.github.io/nfs-subdir-external-provisioner
+      chart: nfs-subdir-external-provisioner
+      version: 4.0.18

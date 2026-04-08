@@ -1,0 +1,110 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: alloy-metrics-scrape-smoke
+  namespace: observability
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  # Intentionally offset from :00 to avoid top-of-hour kube-apiserver contention.
+  schedule: "13,43 * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 300
+      ttlSecondsAfterFinished: 900
+      template:
+        metadata:
+          annotations:
+            sidecar.istio.io/nativeSidecar: "true"
+            proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}'
+        spec:
+          restartPolicy: Never
+          volumes:
+            - name: istio-native-exit
+              configMap:
+                name: istio-native-exit-script
+                defaultMode: 0444
+          containers:
+            - name: alloy-metrics-scrape-smoke
+              image: registry.example.internal/deploykube/bootstrap-tools:1.4
+              imagePullPolicy: IfNotPresent
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  memory: 256Mi
+              volumeMounts:
+                - name: istio-native-exit
+                  mountPath: /helpers
+                  readOnly: true
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -euo pipefail
+                  ISTIO_HELPER="/helpers/istio-native-exit.sh"
+                  [ -f "${ISTIO_HELPER}" ] || { echo "missing istio-native-exit helper" >&2; exit 1; }
+                  . "${ISTIO_HELPER}"
+                  trap deploykube_istio_quit_sidecar EXIT INT TERM
+
+                  qurl="http://mimir-querier.mimir.svc.cluster.local:8080/prometheus/api/v1/query"
+                  hdr_tenant="X-Scope-OrgID: platform"
+
+                  query_one() {
+                    q="$1"
+                    curl -fsS -G "${qurl}" -H "${hdr_tenant}" --data-urlencode "query=${q}"
+                  }
+
+                  probe_rc=0
+                  curl -fsS -G "${qurl}" -H "${hdr_tenant}" --data-urlencode 'query=1' >/dev/null 2>&1 || probe_rc=$?
+                  if [ "${probe_rc}" -eq 6 ]; then
+                    echo "[alloy-metrics-smoke] SKIP: mimir-querier DNS not found (Mimir disabled for this deployment)"
+                    exit 0
+                  fi
+                  if [ "${probe_rc}" -ne 0 ]; then
+                    echo "[alloy-metrics-smoke] FAIL: cannot reach mimir-querier (curl exit ${probe_rc})" >&2
+                    exit "${probe_rc}"
+                  fi
+
+                  wait_nonempty_vector() {
+                    name="$1"
+                    q="$2"
+                    attempts=18
+                    sleep_s=10
+                    i=1
+                    while [ "${i}" -le "${attempts}" ]; do
+                      echo "[alloy-metrics-smoke] ${name}: attempt ${i}/${attempts}"
+                      resp="$(query_one "${q}")"
+                      if echo "${resp}" | jq -e '.status == "success"' >/dev/null \
+                        && echo "${resp}" | jq -e '.data.result | length > 0' >/dev/null; then
+                        echo "${resp}" | jq -c '.data.result[0]' || true
+                        return 0
+                      fi
+                      i=$((i + 1))
+                      sleep "${sleep_s}"
+                    done
+                    echo "[alloy-metrics-smoke] FAIL: ${name}: no data after ${attempts} attempts" >&2
+                    echo "${resp}" >&2
+                    return 1
+                  }
+
+                  # Prefer `up{job=...}` checks because they prove scrape + remote_write.
+                  wait_nonempty_vector "node-exporter up" 'sum(up{job="node-exporter",cluster="deploykube",tenant="platform"})'
+                  wait_nonempty_vector "kube-state-metrics up" 'sum(up{job="kube-state-metrics",cluster="deploykube",tenant="platform"})'
+                  wait_nonempty_vector "kube-apiserver up" 'sum(up{job="kube-apiserver",cluster="deploykube",tenant="platform"})'
+                  wait_nonempty_vector "kubelet up" 'sum(up{job="kubelet",cluster="deploykube",tenant="platform"})'
+                  wait_nonempty_vector "cadvisor up" 'sum(up{job="cadvisor",cluster="deploykube",tenant="platform"})'
+
+                  # Sanity: verify representative series exist (not just `up`).
+                  wait_nonempty_vector "node_cpu_seconds_total" 'count(node_cpu_seconds_total{cluster="deploykube",tenant="platform"})'
+                  wait_nonempty_vector "kube_pod_info" 'count(kube_pod_info{cluster="deploykube",tenant="platform"})'
+                  wait_nonempty_vector "container_cpu_usage_seconds_total" 'count(container_cpu_usage_seconds_total{cluster="deploykube",tenant="platform"})'
+                  wait_nonempty_vector "apiserver_request_total" 'count(apiserver_request_total{cluster="deploykube",tenant="platform"})'
+
+                  echo "[alloy-metrics-smoke] ok"

@@ -1,0 +1,12 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: rbac-secrets-smoke-forgejo-repo-tls-read
+subjects:
+  - kind: ServiceAccount
+    name: rbac-secrets-smoke
+    namespace: rbac-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: forgejo-repo-tls-reader

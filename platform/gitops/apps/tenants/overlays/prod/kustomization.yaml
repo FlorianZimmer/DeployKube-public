@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+  - tenant-intent-smoke-demo.yaml
+  - tenant-intent-other-demo.yaml
+  - tenant-intent-factorio-factorio.yaml
+
+patches:
+  # storage-garage and storage-backup-system own their namespaces; ensure they exist before writing
+  # tenant registry state there.
+  - path: patches/add-sync-wave-garage-tenant-registry.yaml
+  - path: patches/add-sync-wave-backup-system-tenant-registry.yaml
+  # shared-rbac owns Namespace/rbac-system; avoid root app sync races during bootstrap.
+  - path: patches/add-sync-wave-rbac-system-tenant-registry.yaml

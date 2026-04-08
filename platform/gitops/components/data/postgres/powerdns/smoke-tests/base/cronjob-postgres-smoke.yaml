@@ -1,0 +1,113 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: powerdns-postgres-smoke
+  namespace: dns-system
+  labels:
+    app.kubernetes.io/name: powerdns-postgres-smoke
+spec:
+  # Intentionally offset from :00 to avoid top-of-hour kube-apiserver contention.
+  schedule: "53 * * * *" # hourly
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 300
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: powerdns-postgres-smoke
+          annotations:
+            sidecar.istio.io/inject: "false"
+        spec:
+          serviceAccountName: powerdns-postgres-smoke
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: smoke
+              image: registry.example.internal/deploykube/bootstrap-tools:1.4
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              env:
+                - name: PGHOST
+                  value: postgres-rw.dns-system.svc.cluster.local
+                - name: PGPORT
+                  value: "5432"
+                - name: PGSSLMODE
+                  value: verify-full
+                - name: PGSSLROOTCERT
+                  value: /etc/postgres/ca/ca.crt
+                - name: PGDATABASE
+                  valueFrom:
+                    secretKeyRef:
+                      name: powerdns-postgres-app
+                      key: database
+                - name: PGUSER
+                  valueFrom:
+                    secretKeyRef:
+                      name: powerdns-postgres-app
+                      key: username
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: powerdns-postgres-app
+                      key: password
+              command:
+                - /bin/sh
+                - -c
+              args:
+                - |
+                  set -euo pipefail
+
+                  command -v pg_isready >/dev/null 2>&1 || { echo "missing dependency: pg_isready" >&2; exit 1; }
+                  command -v psql >/dev/null 2>&1 || { echo "missing dependency: psql" >&2; exit 1; }
+
+                  : "${PGHOST:?missing PGHOST}"
+                  : "${PGPORT:?missing PGPORT}"
+                  : "${PGDATABASE:?missing PGDATABASE}"
+                  : "${PGUSER:?missing PGUSER}"
+                  : "${PGPASSWORD:?missing PGPASSWORD}"
+
+                  pg_isready -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" -t 5
+                  psql -v ON_ERROR_STOP=1 -tAc 'select 1' >/dev/null
+                  ssl="$(psql -v ON_ERROR_STOP=1 -tAc "select ssl from pg_stat_ssl where pid=pg_backend_pid();" | tr -d '[:space:]')"
+                  if [ "${ssl}" != "t" ]; then
+                    echo "FAIL: expected TLS connection (pg_stat_ssl.ssl=true), got: ${ssl}" >&2
+                    exit 1
+                  fi
+
+                  # Basic PowerDNS schema health: ensure core tables exist.
+                  failed=0
+                  for t in domains records supermasters comments domainmetadata cryptokeys tsigkeys; do
+                    present="$(psql -v ON_ERROR_STOP=1 -tAc "select to_regclass('public.${t}') is not null;" | tr -d '[:space:]')"
+                    if [ "${present}" != "t" ]; then
+                      echo "FAIL: missing table public.${t}" >&2
+                      failed=1
+                    fi
+                  done
+                  if [ "${failed}" -ne 0 ]; then
+                    echo "FAIL: PowerDNS schema is not healthy" >&2
+                    exit 1
+                  fi
+              volumeMounts:
+                - name: postgres-ca
+                  mountPath: /etc/postgres/ca
+                  readOnly: true
+          volumes:
+            - name: postgres-ca
+              secret:
+                secretName: postgres-ca
+                defaultMode: 0444

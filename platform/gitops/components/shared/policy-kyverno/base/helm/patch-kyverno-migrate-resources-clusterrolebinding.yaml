@@ -1,0 +1,9 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kyverno:migrate-resources
+  finalizers: []
+  annotations:
+    helm.sh/hook: null
+    helm.sh/hook-delete-policy: null
+    helm.sh/hook-weight: null

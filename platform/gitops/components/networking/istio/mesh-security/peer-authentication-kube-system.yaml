@@ -1,0 +1,10 @@
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: kube-system-permissive
+  namespace: kube-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "4.5"
+spec:
+  mtls:
+    mode: PERMISSIVE

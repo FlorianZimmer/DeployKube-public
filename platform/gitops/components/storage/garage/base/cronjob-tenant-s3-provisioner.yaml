@@ -1,0 +1,375 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: garage-tenant-s3-provisioner
+  namespace: garage
+
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: garage-tenant-s3-provisioner
+  namespace: garage
+  annotations:
+    # Intentionally offset from :00 to avoid top-of-hour kube-apiserver contention.
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  schedule: "23 * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 900
+      ttlSecondsAfterFinished: 21600
+      template:
+        metadata:
+          annotations:
+            sidecar.istio.io/nativeSidecar: "true"
+          labels:
+            app.kubernetes.io/name: garage
+            app.kubernetes.io/component: tenant-s3-provisioner
+        spec:
+          serviceAccountName: garage-tenant-s3-provisioner
+          restartPolicy: OnFailure
+          containers:
+            - name: provision
+              image: registry.example.internal/deploykube/bootstrap-tools:1.4
+              imagePullPolicy: IfNotPresent
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  cpu: 250m
+                  memory: 512Mi
+              envFrom:
+                - secretRef:
+                    name: garage-credentials
+              env:
+                - name: VAULT_ADDR
+                  value: http://vault-active.vault-system.svc:8200
+                - name: VAULT_K8S_AUTH_MOUNT
+                  value: kubernetes
+                - name: VAULT_K8S_AUTH_ROLE
+                  value: k8s-garage-tenant-s3-provisioner
+                - name: PLATFORM_S3_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: garage-s3
+                      key: S3_ACCESS_KEY
+                - name: GARAGE_ADMIN_ENDPOINT
+                  value: http://garage.garage.svc:3903
+                - name: GARAGE_S3_ENDPOINT
+                  value: http://garage.garage.svc:3900
+                - name: GARAGE_S3_REGION
+                  valueFrom:
+                    secretKeyRef:
+                      name: garage-s3
+                      key: S3_REGION
+              command:
+                - /bin/bash
+                - -lc
+                - |
+                  set -euo pipefail
+
+                  command -v kubectl >/dev/null 2>&1 || { echo "missing dependency: kubectl" >&2; exit 1; }
+
+                  ISTIO_HELPER="/helpers/istio-native-exit.sh"
+                  [ -f "$ISTIO_HELPER" ] || { echo "missing istio-native-exit helper" >&2; exit 1; }
+                  . "$ISTIO_HELPER"
+                  trap deploykube_istio_quit_sidecar EXIT INT TERM
+
+                  python3 - <<'PY'
+                  import datetime
+                  import hashlib
+                  import json
+                  import os
+                  import secrets
+                  import subprocess
+                  import time
+                  import urllib.error
+                  import urllib.parse
+                  import urllib.request
+
+                  vault_addr = os.environ.get("VAULT_ADDR", "").strip()
+                  vault_mount = os.environ.get("VAULT_K8S_AUTH_MOUNT", "kubernetes").strip()
+                  vault_role = os.environ.get("VAULT_K8S_AUTH_ROLE", "").strip()
+                  if not vault_addr or not vault_role:
+                    raise SystemExit("missing VAULT_ADDR/VAULT_K8S_AUTH_ROLE")
+
+                  garage_admin_endpoint = os.environ.get("GARAGE_ADMIN_ENDPOINT", "http://garage.garage.svc:3903").strip()
+                  garage_s3_endpoint = os.environ.get("GARAGE_S3_ENDPOINT", "http://garage.garage.svc:3900").strip()
+                  garage_s3_region = os.environ.get("GARAGE_S3_REGION", "us-east-1").strip()
+                  platform_access = os.environ.get("PLATFORM_S3_ACCESS_KEY", "").strip()
+
+                  garage_admin_token = os.environ.get("GARAGE_ADMIN_TOKEN", "").strip()
+                  if not garage_admin_token:
+                    raise SystemExit("missing GARAGE_ADMIN_TOKEN (expected from Secret/garage-credentials)")
+
+                  def _vault_request(method, path, token=None, payload=None, timeout=10):
+                    url = vault_addr.rstrip("/") + path
+                    data = None if payload is None else json.dumps(payload).encode("utf-8")
+                    headers = {"Content-Type": "application/json"}
+                    if token:
+                      headers["X-Vault-Token"] = token
+                    req = urllib.request.Request(url, method=method, data=data, headers=headers)
+                    try:
+                      with urllib.request.urlopen(req, timeout=timeout) as resp:
+                        return resp.status, resp.read()
+                    except urllib.error.HTTPError as e:
+                      return e.code, e.read()
+                    except Exception as e:
+                      return 0, str(e).encode("utf-8", errors="replace")
+
+                  def vault_login():
+                    jwt_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+                    with open(jwt_path, "r", encoding="utf-8") as f:
+                      jwt = f.read().strip()
+                    st, data = _vault_request(
+                      "POST",
+                      f"/v1/auth/{vault_mount}/login",
+                      token=None,
+                      payload={"role": vault_role, "jwt": jwt},
+                      timeout=10,
+                    )
+                    if st != 200:
+                      raise RuntimeError(f"vault login failed: status={st} err={data[:300]!r}")
+                    out = json.loads(data.decode("utf-8"))
+                    token = (out.get("auth") or {}).get("client_token") or ""
+                    if not token:
+                      raise RuntimeError(f"vault login returned no token: {out!r}")
+                    return token
+
+                  def vault_read(token, vault_key):
+                    st, data = _vault_request("GET", f"/v1/secret/data/{vault_key}", token=token, payload=None, timeout=10)
+                    if st == 404:
+                      return None
+                    if st != 200:
+                      raise RuntimeError(f"vault read failed: key={vault_key} status={st} err={data[:300]!r}")
+                    out = json.loads(data.decode("utf-8"))
+                    return ((out.get("data") or {}).get("data") or {})
+
+                  def vault_write(token, vault_key, values):
+                    st, data = _vault_request(
+                      "POST",
+                      f"/v1/secret/data/{vault_key}",
+                      token=token,
+                      payload={"data": values},
+                      timeout=10,
+                    )
+                    if st not in (200, 204):
+                      raise RuntimeError(f"vault write failed: key={vault_key} status={st} err={data[:300]!r}")
+
+                  def _json_request(method, url, payload=None, timeout=10):
+                    body = b"" if payload is None else json.dumps(payload).encode("utf-8")
+                    headers = {"Authorization": f"Bearer {garage_admin_token}"}
+                    if payload is not None:
+                      headers["Content-Type"] = "application/json"
+                    req = urllib.request.Request(url, method=method, data=(body if payload is not None else None), headers=headers)
+                    try:
+                      with urllib.request.urlopen(req, timeout=timeout) as resp:
+                        return resp.status, resp.read()
+                    except urllib.error.HTTPError as e:
+                      return e.code, e.read()
+                    except Exception as e:
+                      return 0, str(e).encode("utf-8", errors="replace")
+
+                  def _admin_get(path):
+                    url = garage_admin_endpoint.rstrip("/") + path
+                    status, data = _json_request("GET", url, payload=None, timeout=10)
+                    if status != 200:
+                      raise RuntimeError(f"admin GET {path} failed: status={status} err={data[:300]!r}")
+                    return json.loads(data.decode("utf-8"))
+
+                  def _admin_post(path, payload):
+                    url = garage_admin_endpoint.rstrip("/") + path
+                    status, data = _json_request("POST", url, payload=payload, timeout=15)
+                    if status != 200:
+                      raise RuntimeError(f"admin POST {path} failed: status={status} err={data[:300]!r}")
+                    return json.loads(data.decode("utf-8")) if data else {}
+
+                  def _retry(fn, what, attempts, sleep_s):
+                    last_err = None
+                    for _ in range(attempts):
+                      try:
+                        return fn()
+                      except Exception as e:
+                        last_err = e
+                        time.sleep(sleep_s)
+                    raise RuntimeError(f"{what} failed after {attempts} attempts: {last_err}")
+
+                  def load_intents():
+                    raw = subprocess.check_output(
+                      ["kubectl", "-n", "garage", "get", "configmap", "-l", "darksite.cloud/tenant-s3-intent=true", "-o", "json"],
+                      text=True,
+                    )
+                    out = json.loads(raw)
+                    items = out.get("items") or []
+                    intents = []
+                    for cm in items:
+                      name = ((cm.get("metadata") or {}).get("name") or "").strip()
+                      data = cm.get("data") or {}
+                      payload = (data.get("intent.json") or "").strip()
+                      if not payload:
+                        raise SystemExit(f"ConfigMap/garage/{name} is missing data.intent.json")
+                      try:
+                        doc = json.loads(payload)
+                      except Exception as e:
+                        raise SystemExit(f"ConfigMap/garage/{name} has invalid JSON in data.intent.json: {e}")
+                      org_id = (doc.get("orgId") or "").strip()
+                      bucket_name = (doc.get("bucketName") or "").strip()
+                      if not org_id or not bucket_name:
+                        raise SystemExit(f"ConfigMap/garage/{name} must set intent.json orgId and bucketName")
+                      intents.append((org_id, bucket_name, name))
+                    return intents
+
+                  def _is_dns_label(value: str) -> bool:
+                    if not value or len(value) > 63:
+                      return False
+                    import re
+
+                    return re.match(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", value) is not None
+
+                  def bucket_alias_for(org_id: str, bucket_name: str) -> str:
+                    prefix = "tenant-"
+                    base = f"{prefix}{org_id}-{bucket_name}"
+                    if len(base) <= 63:
+                      return base
+                    h = hashlib.sha256(f"{org_id}:{bucket_name}".encode("utf-8")).hexdigest()[:8]
+                    max_slug = 63 - len(prefix) - 1 - len(h)
+                    slug = f"{org_id}-{bucket_name}"[:max_slug].rstrip("-")
+                    if not slug:
+                      slug = "t"
+                    return f"{prefix}{slug}-{h}"
+
+                  def valid_access(k: str) -> bool:
+                    if not k.startswith("GK") or len(k) != 26:
+                      return False
+                    return all(c in "0123456789abcdef" for c in k[2:].lower())
+
+                  def valid_secret(k: str) -> bool:
+                    if len(k) != 64:
+                      return False
+                    return all(c in "0123456789abcdef" for c in k.lower())
+
+                  intents = _retry(load_intents, "Load intents (ConfigMaps)", attempts=60, sleep_s=1)
+                  if not intents:
+                    print("[tenant-s3] no intents found in ConfigMaps; nothing to do", flush=True)
+                    raise SystemExit(0)
+
+                  dedup = []
+                  seen = set()
+                  for org_id, bucket_name, src in intents:
+                    if not _is_dns_label(org_id):
+                      raise SystemExit(f"ConfigMap/garage/{src}: orgId must be DNS-label-safe: {org_id!r}")
+                    if not _is_dns_label(bucket_name):
+                      raise SystemExit(f"ConfigMap/garage/{src}: bucketName must be DNS-label-safe: {bucket_name!r}")
+                    key = (org_id, bucket_name)
+                    if key in seen:
+                      continue
+                    seen.add(key)
+                    dedup.append(key)
+
+                  print(f"[tenant-s3] loaded {len(dedup)} intent(s)", flush=True)
+
+                  token = _retry(vault_login, "Vault login", attempts=12, sleep_s=5)
+
+                  print(f"Waiting for Garage admin API ({garage_admin_endpoint})...", flush=True)
+                  _retry(lambda: _admin_get("/v2/GetClusterHealth"), "GetClusterHealth", attempts=60, sleep_s=5)
+
+                  def _get_key(access_key):
+                    url = garage_admin_endpoint.rstrip("/") + "/v2/GetKeyInfo?" + urllib.parse.urlencode({"id": access_key})
+                    st, data = _json_request("GET", url, payload=None, timeout=10)
+                    if st != 200:
+                      return None
+                    try:
+                      return json.loads(data.decode("utf-8"))
+                    except Exception:
+                      return None
+
+                  def _list_buckets():
+                    url = garage_admin_endpoint.rstrip("/") + "/v2/ListBuckets"
+                    st, data = _json_request("GET", url, payload=None, timeout=10)
+                    if st != 200:
+                      raise RuntimeError(f"ListBuckets failed: status={st} err={data[:300]!r}")
+                    return json.loads(data.decode("utf-8"))
+
+                  def _bucket_id_for_alias(alias):
+                    for it in _list_buckets():
+                      for ga in it.get("globalAliases") or []:
+                        if ga == alias:
+                          return it.get("id")
+                    return None
+
+                  for org_id, bucket_name in dedup:
+                    vault_key = f"tenants/{org_id}/s3/{bucket_name}"
+                    existing = _retry(lambda: vault_read(token, vault_key) or {}, f"Vault KV read ({vault_key})", attempts=5, sleep_s=2)
+
+                    bucket_alias = existing.get("S3_BUCKET") or bucket_alias_for(org_id, bucket_name)
+                    access = existing.get("S3_ACCESS_KEY") or ("GK" + secrets.token_hex(12))
+                    secret_key = existing.get("S3_SECRET_KEY") or secrets.token_hex(32)
+
+                    if not valid_access(access):
+                      raise SystemExit(f"existing S3_ACCESS_KEY is invalid for {vault_key} (expected GK+24hex)")
+                    if not valid_secret(secret_key):
+                      raise SystemExit(f"existing S3_SECRET_KEY is invalid for {vault_key} (expected 64 hex chars)")
+
+                    values = dict(existing)
+                    values.update(
+                      {
+                        "S3_ENDPOINT": existing.get("S3_ENDPOINT") or garage_s3_endpoint,
+                        "S3_REGION": existing.get("S3_REGION") or garage_s3_region,
+                        "S3_BUCKET": bucket_alias,
+                        "S3_ACCESS_KEY": access,
+                        "S3_SECRET_KEY": secret_key,
+                        "PROVISIONED_AT": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        "PROVISIONED_BY": "garage-tenant-s3-provisioner",
+                      }
+                    )
+
+                    _retry(lambda: vault_write(token, vault_key, values), f"Vault KV write ({vault_key})", attempts=5, sleep_s=2)
+                    print(f"[tenant-s3] ensured Vault key secret/{vault_key} (bucket={bucket_alias})", flush=True)
+
+                    key_info = _retry(lambda: _get_key(access) or {}, f"GetKeyInfo ({bucket_alias})", attempts=10, sleep_s=2)
+                    if not key_info.get("accessKeyId"):
+                      _admin_post("/v2/ImportKey", {"accessKeyId": access, "secretAccessKey": secret_key, "name": f"tenant-{org_id}-s3-{bucket_name}"})
+                      key_info = _retry(lambda: _get_key(access) or {}, f"GetKeyInfo after import ({bucket_alias})", attempts=10, sleep_s=2)
+                    if key_info.get("accessKeyId") != access:
+                      raise SystemExit(f"could not confirm tenant S3 key exists for bucket={bucket_alias}")
+
+                    bucket_id = _retry(lambda: _bucket_id_for_alias(bucket_alias), f"bucket appears ({bucket_alias})", attempts=10, sleep_s=2)
+                    if not bucket_id:
+                      _admin_post("/v2/CreateBucket", {"globalAlias": bucket_alias})
+                      bucket_id = _retry(lambda: _bucket_id_for_alias(bucket_alias), f"bucket appears ({bucket_alias})", attempts=10, sleep_s=2)
+                    if not bucket_id:
+                      raise SystemExit(f"bucket {bucket_alias} still not visible after creation")
+
+                    _admin_post(
+                      "/v2/AllowBucketKey",
+                      {"bucketId": bucket_id, "accessKeyId": access, "permissions": {"read": True, "write": True, "owner": True}},
+                    )
+                    print(f"[tenant-s3] ensured Garage bucket ACL for tenant key on {bucket_alias}", flush=True)
+
+                    if platform_access:
+                      if not valid_access(platform_access):
+                        raise SystemExit("PLATFORM_S3_ACCESS_KEY is invalid (expected GK+24hex)")
+                      try:
+                        _admin_post(
+                          "/v2/AllowBucketKey",
+                          {"bucketId": bucket_id, "accessKeyId": platform_access, "permissions": {"read": True, "write": False, "owner": False}},
+                        )
+                      except Exception as e:
+                        print(f"[tenant-s3] WARN: failed to grant platform mirror key read access (bucket={bucket_alias}): {e}", flush=True)
+                  PY
+              volumeMounts:
+                - name: istio-native-exit
+                  mountPath: /helpers
+                  readOnly: true
+          volumes:
+            - name: istio-native-exit
+              configMap:
+                name: istio-native-exit-script
+                defaultMode: 0444

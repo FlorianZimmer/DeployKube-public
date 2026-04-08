@@ -1,0 +1,15 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: valkey
+spec:
+  template:
+    spec:
+      containers:
+        - name: valkey
+          resources:
+            requests:
+              cpu: "25m"
+              memory: "64Mi"
+            limits:
+              memory: "96Mi"

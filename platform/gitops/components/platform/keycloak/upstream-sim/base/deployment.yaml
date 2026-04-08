@@ -1,0 +1,98 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak-upstream-sim
+  namespace: keycloak-upstream-sim
+  labels:
+    app.kubernetes.io/name: keycloak-upstream-sim
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: keycloak-upstream-sim
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: keycloak-upstream-sim
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: keycloak
+          image: quay.io/keycloak/keycloak:26.4.4
+          imagePullPolicy: IfNotPresent
+          args:
+            - start-dev
+            - --http-enabled=true
+            - --https-port=8443
+            - --https-certificate-file=/certs/tls.crt
+            - --https-certificate-key-file=/certs/tls.key
+            - --hostname=keycloak-upstream-sim.keycloak-upstream-sim.svc.cluster.local
+            - --hostname-strict=true
+          env:
+            - name: KC_HEALTH_ENABLED
+              value: "true"
+            - name: KC_METRICS_ENABLED
+              value: "false"
+            - name: KEYCLOAK_ADMIN
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-upstream-sim-values
+                  key: adminUsername
+            - name: KEYCLOAK_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-upstream-sim-values
+                  key: adminPassword
+            - name: JAVA_OPTS_APPEND
+              value: -XX:MaxRAMPercentage=70 -Djava.net.preferIPv4Stack=true
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: https
+              containerPort: 8443
+              protocol: TCP
+          readinessProbe:
+            tcpSocket:
+              port: 8443
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 12
+          startupProbe:
+            tcpSocket:
+              port: 8443
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 60
+          livenessProbe:
+            tcpSocket:
+              port: 8443
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 2
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 50m
+              memory: 384Mi
+            limits:
+              cpu: 1
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tls
+              mountPath: /certs
+              readOnly: true
+      volumes:
+        - name: tls
+          secret:
+            secretName: keycloak-upstream-sim-tls

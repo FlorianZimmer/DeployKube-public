@@ -1,0 +1,15 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: forgejo-team-sync
+  namespace: rbac-system
+spec:
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: sync
+              env:
+                - name: KEYCLOAK_BASE_URL
+                  value: "https://keycloak.dev-single.internal.example.com:8443"

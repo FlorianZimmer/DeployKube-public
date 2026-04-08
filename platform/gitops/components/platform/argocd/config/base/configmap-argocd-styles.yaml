@@ -1,0 +1,44 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-styles-cm
+  namespace: argocd
+data:
+  # Argo CD UI loads /extensions.js if present. We serve this file via an internal
+  # static service and route it via Gateway, so we can patch SPA navigation.
+  #
+  # Why: Argo CD v3 UI navigations to /explore/repos render a blank page.
+  extensions.js: |
+    (() => {
+      const LEGACY = '/explore/repos'
+      const TARGET = '/settings/repos'
+
+      const isLegacy = (path) => path === LEGACY || path.startsWith(`${LEGACY}/`)
+
+      const redirectIfNeeded = () => {
+        if (!isLegacy(window.location.pathname || '')) return
+        const suffix = window.location.pathname.slice(LEGACY.length)
+        const next = `${TARGET}${suffix}${window.location.search || ''}${window.location.hash || ''}`
+        // Use replace() to avoid trapping the back button in a redirect loop.
+        window.location.replace(next)
+      }
+
+      // Run once on initial load.
+      redirectIfNeeded()
+
+      // Capture SPA navigations.
+      const originalPushState = history.pushState.bind(history)
+      history.pushState = function pushStatePatched(...args) {
+        originalPushState(...args)
+        redirectIfNeeded()
+      }
+      const originalReplaceState = history.replaceState.bind(history)
+      history.replaceState = function replaceStatePatched(...args) {
+        originalReplaceState(...args)
+        redirectIfNeeded()
+      }
+
+      window.addEventListener('popstate', redirectIfNeeded)
+      window.addEventListener('hashchange', redirectIfNeeded)
+    })()
+

@@ -1,0 +1,58 @@
+# Grafana dashboard data availability rules (Mimir-side)
+# Alerts when core series required by Grafana dashboards disappear.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mimir-rules-grafana-data-health
+  namespace: mimir
+  labels:
+    mimir.grafana.com/rules: "true"
+    app.kubernetes.io/component: ruler
+data:
+  grafana-data-health.yaml: |
+    # yaml-language-server: $schema=https://json.schemastore.org/prometheus-rule.json
+    groups:
+      - name: grafana.data.health
+        interval: 1m
+        rules:
+          - alert: GrafanaDashboardsNoNodeExporterData
+            expr: |
+              (sum(up{job="node-exporter", cluster="deploykube"}) or vector(0)) < 1
+            for: 10m
+            labels:
+              severity: critical
+              service: grafana
+              team: platform
+              cluster: deploykube
+              runbook_url: docs/runbooks/grafana-dashboards-no-node-exporter-data.md
+            annotations:
+              summary: "Grafana dashboards missing node-exporter data"
+              description: "Mimir has no healthy node-exporter scrapes for cluster=deploykube (up==0 or missing). Grafana dashboards will show no data."
+
+          - alert: GrafanaDashboardsNoKubeStateMetricsData
+            expr: |
+              (sum(up{job="kube-state-metrics", cluster="deploykube"}) or vector(0)) < 1
+            for: 10m
+            labels:
+              severity: critical
+              service: grafana
+              team: platform
+              cluster: deploykube
+              runbook_url: docs/runbooks/grafana-dashboards-no-kube-state-metrics-data.md
+            annotations:
+              summary: "Grafana dashboards missing kube-state-metrics data"
+              description: "Mimir has no healthy kube-state-metrics scrapes for cluster=deploykube (up==0 or missing). Grafana dashboards will show no data."
+
+          - alert: GrafanaSmokeCronNotRunning
+            expr: |
+              (time() - kube_cronjob_status_last_successful_time{namespace="grafana", cronjob="grafana-datasource-smoke"}) > 3600
+            for: 15m
+            labels:
+              severity: warning
+              service: grafana
+              team: platform
+              cluster: deploykube
+              runbook_url: docs/runbooks/grafana-smoke-stale.md
+            annotations:
+              summary: "Grafana datasource smoke CronJob is stale"
+              description: "No successful run of CronJob grafana/grafana-datasource-smoke in > 60 minutes."

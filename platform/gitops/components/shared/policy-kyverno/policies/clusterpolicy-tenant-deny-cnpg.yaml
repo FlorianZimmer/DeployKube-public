@@ -1,0 +1,41 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: tenant-deny-cnpg
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  admission: true
+  validationFailureAction: Enforce
+  background: false
+  emitWarning: false
+  rules:
+    - name: deny-cnpg-apis
+      match:
+        any:
+          - resources:
+              kinds:
+                - postgresql.cnpg.io/v1/Backup
+                - postgresql.cnpg.io/v1/Cluster
+                - postgresql.cnpg.io/v1/Database
+                - postgresql.cnpg.io/v1/FailoverQuorum
+                - postgresql.cnpg.io/v1/Pooler
+                - postgresql.cnpg.io/v1/Publication
+                - postgresql.cnpg.io/v1/ScheduledBackup
+                - postgresql.cnpg.io/v1/Subscription
+              namespaceSelector:
+                matchLabels:
+                  darksite.cloud/rbac-profile: tenant
+      skipBackgroundRequests: true
+      validate:
+        message: "Tenant namespaces may not create CloudNativePG resources directly; Postgres clusters are platform-owned."
+        allowExistingViolations: true
+        deny:
+          conditions:
+            any:
+              - key: "{{ request.operation }}"
+                operator: Equals
+                value: CREATE
+              - key: "{{ request.operation }}"
+                operator: Equals
+                value: UPDATE

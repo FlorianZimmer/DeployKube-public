@@ -1,0 +1,10 @@
+# Tenant metadata (DeployKube internal input; not a Kubernetes object)
+apiVersion: tenancy.darksite.cloud/v1alpha1
+kind: TenantMetadata
+orgId: factorio
+description: Internal canary tenant for Factorio migration testing.
+tier: S
+retention:
+  mode: immediate # immediate|grace|legal-hold
+deletion:
+  deleteFromBackups: retention-only # retention-only|tenant-scoped|strict-sla

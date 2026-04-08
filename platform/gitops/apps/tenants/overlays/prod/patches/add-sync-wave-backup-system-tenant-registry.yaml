@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: deploykube-tenant-registry
+  namespace: backup-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"

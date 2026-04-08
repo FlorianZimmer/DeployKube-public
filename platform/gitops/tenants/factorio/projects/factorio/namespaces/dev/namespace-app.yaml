@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: t-factorio-p-factorio-dev-app
+  labels:
+    darksite.cloud/rbac-profile: tenant
+    darksite.cloud/backup-scope: enabled
+    darksite.cloud/tenant-id: factorio
+    darksite.cloud/project-id: factorio
+    observability.grafana.com/tenant: factorio

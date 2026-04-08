@@ -1,0 +1,64 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: networking-metallb
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  project: platform
+  destination:
+    name: in-cluster
+    namespace: metallb-system
+  source:
+    repoURL: https://forgejo-https.forgejo.svc.cluster.local/platform/cluster-config.git
+    targetRevision: main
+    path: components/networking/metallb/helm/charts/metallb-0.15.2/metallb
+    helm:
+      releaseName: metallb
+      values: |
+        controller:
+          logLevel: info
+          replicaCount: 2
+          resources:
+            requests:
+              cpu: 15m
+              memory: 128Mi
+            limits:
+              memory: 192Mi
+        speaker:
+          logLevel: info
+          resources:
+            requests:
+              cpu: 15m
+              memory: 48Mi
+            limits:
+              memory: 72Mi
+          frr:
+            resources:
+              requests:
+                cpu: 15m
+                memory: 48Mi
+              limits:
+                memory: 72Mi
+          reloader:
+            resources:
+              requests:
+                cpu: 15m
+                memory: 32Mi
+              limits:
+                memory: 48Mi
+          frrMetrics:
+            resources:
+              requests:
+                cpu: 15m
+                memory: 48Mi
+              limits:
+                memory: 72Mi
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground

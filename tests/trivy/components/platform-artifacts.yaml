@@ -1,0 +1,18 @@
+schemaVersion: v1alpha1
+description: Component-owned Trivy targets for platform-owned package index images.
+watch_paths:
+  - platform/gitops/artifacts/package-index.yaml
+  - shared/images/bootstrap-tools
+  - shared/images/validation-tools-core
+  - tests/trivy/components/platform-artifacts.yaml
+  - tools/tenant-provisioner
+image_targets:
+  - id: bootstrap-tools
+    artifact_catalog: package-index
+    artifact_name: bootstrap-tools
+  - id: validation-tools-core
+    artifact_catalog: package-index
+    artifact_name: validation-tools-core
+  - id: tenant-provisioner
+    artifact_catalog: package-index
+    artifact_name: tenant-provisioner

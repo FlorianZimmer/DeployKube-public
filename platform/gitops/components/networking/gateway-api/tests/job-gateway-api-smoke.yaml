@@ -1,0 +1,46 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gateway-api-smoke
+  namespace: gateway-system
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: HookSucceeded,BeforeHookCreation
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 120
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      restartPolicy: Never
+      serviceAccountName: gateway-api-smoke
+      containers:
+        - name: smoke
+          image: registry.example.internal/deploykube/bootstrap-tools:1.4
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - -lc
+            - |
+              set -euo pipefail
+
+              dump_on_error() {
+                echo "[gateway-api-smoke] diagnostics (best-effort)" >&2
+                kubectl get crd gatewayclasses.gateway.networking.k8s.io -o yaml >&2 || true
+                kubectl get crd gateways.gateway.networking.k8s.io -o yaml >&2 || true
+                kubectl get crd httproutes.gateway.networking.k8s.io -o yaml >&2 || true
+                kubectl -n gateway-system get events --sort-by=.lastTimestamp >&2 || true
+              }
+              trap dump_on_error ERR
+
+              echo "[gateway-api-smoke] waiting for Gateway API CRDs to be Established"
+              kubectl wait --for=condition=Established --timeout=60s \
+                crd/gatewayclasses.gateway.networking.k8s.io \
+                crd/gateways.gateway.networking.k8s.io \
+                crd/httproutes.gateway.networking.k8s.io
+
+              echo "[gateway-api-smoke] ok"
+

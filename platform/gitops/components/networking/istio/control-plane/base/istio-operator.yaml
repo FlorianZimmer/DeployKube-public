@@ -1,0 +1,57 @@
+apiVersion: install.istio.io/v1alpha1
+kind: IstioOperator
+metadata:
+  name: istio-control-plane
+  namespace: istio-system
+spec:
+  profile: default
+  meshConfig:
+    accessLogFile: /dev/stdout
+  components:
+    pilot:
+      enabled: true
+      k8s:
+        replicaCount: 2
+        affinity:
+          podAntiAffinity:
+            preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                podAffinityTerm:
+                  labelSelector:
+                    matchLabels:
+                      app: istiod
+                  topologyKey: kubernetes.io/hostname
+    ingressGateways:
+      - name: istio-ingressgateway
+        enabled: true
+        k8s:
+          replicaCount: 2
+          affinity:
+            podAntiAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+                - weight: 100
+                  podAffinityTerm:
+                    labelSelector:
+                      matchLabels:
+                        istio: ingressgateway
+                    topologyKey: kubernetes.io/hostname
+          serviceAnnotations:
+            metallb.universe.tf/address-pool: orbstack-pool
+          service:
+            type: LoadBalancer
+            ports:
+              - name: status-port
+                port: 15021
+                targetPort: 15021
+              - name: http2
+                port: 80
+                targetPort: 8080
+              - name: https
+                port: 443
+                targetPort: 8443
+  values:
+    global:
+      proxy:
+        logLevel: warning
+    pilot:
+      autoscaleEnabled: false

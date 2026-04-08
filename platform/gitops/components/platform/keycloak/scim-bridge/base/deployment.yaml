@@ -1,0 +1,84 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak-scim-bridge
+  namespace: keycloak
+  labels:
+    app.kubernetes.io/name: keycloak-scim-bridge
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: keycloak-scim-bridge
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: keycloak-scim-bridge
+      annotations:
+        sidecar.istio.io/nativeSidecar: "true"
+    spec:
+      serviceAccountName: keycloak-scim-bridge
+      containers:
+        - name: bridge
+          image: registry.example.internal/deploykube/scim-bridge:0.1.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: SCIM_BRIDGE_LISTEN_ADDR
+              value: ":8080"
+            - name: KEYCLOAK_URL
+              value: http://keycloak.keycloak.svc.cluster.local:8080
+            - name: KEYCLOAK_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-scim-bridge-client
+                  key: clientId
+            - name: KEYCLOAK_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-scim-bridge-client
+                  key: clientSecret
+            - name: KEYCLOAK_REALM
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-scim-bridge-client
+                  key: realm
+            - name: KEYCLOAK_TOKEN_REALM
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-scim-bridge-client
+                  key: tokenRealm
+            - name: SCIM_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-upstream-scim
+                  key: token
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 20m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532

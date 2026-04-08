@@ -1,0 +1,16 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mimir-alertmanager
+  namespace: mimir
+spec:
+  template:
+    spec:
+      containers:
+        - name: alertmanager
+          resources:
+            requests:
+              cpu: "25m"
+              memory: "128Mi"
+            limits:
+              memory: "192Mi"

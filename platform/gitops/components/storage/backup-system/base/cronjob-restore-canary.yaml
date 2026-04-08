@@ -1,0 +1,164 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: storage-canary-restore
+  annotations:
+    darksite.cloud/restore-validation-max-age-seconds: "86400"
+    darksite.cloud/restore-validation-pvcs: backup-restore-canary-data
+    deploykube.gitops/validation-job: "true"
+  labels:
+    darksite.cloud/restore-validation-hook: enabled
+spec:
+  # Intentionally offset from :00 to avoid top-of-hour kube-apiserver contention.
+  schedule: "49 */6 * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 1200
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          annotations:
+            sidecar.istio.io/inject: "false"
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsUser: 65532
+            runAsGroup: 65532
+            runAsNonRoot: true
+            fsGroup: 65532
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile:
+              type: RuntimeDefault
+          affinity:
+            nodeAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+                # Prefer non-control-plane nodes when present, but remain schedulable on single-node clusters.
+                - weight: 100
+                  preference:
+                    matchExpressions:
+                      - key: node-role.kubernetes.io/control-plane
+                        operator: DoesNotExist
+                - weight: 50
+                  preference:
+                    matchExpressions:
+                      - key: node-role.kubernetes.io/master
+                        operator: DoesNotExist
+          initContainers:
+            - name: restic-binary
+              image: docker.io/restic/restic@sha256:39d9072fb5651c80d75c7a811612eb60b4c06b32ffe87c2e9f3c7222e1797e76
+              imagePullPolicy: IfNotPresent
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -eu
+                  cp "$(command -v restic)" /work/restic
+                  chmod 0755 /work/restic
+              volumeMounts:
+                - name: restic-bin
+                  mountPath: /work
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+                readOnlyRootFilesystem: true
+          containers:
+            - name: restore
+              image: registry.example.internal/deploykube/bootstrap-tools@sha256:e7be47a69e3a11bc58c857f2d690a71246ada91ac3a60bdfb0a547f091f6485a
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: DEPLOYMENT_ID
+                  value: proxmox-talos
+                - name: CANARY_PVC_NAME
+                  value: backup-restore-canary-data
+                - name: TMPDIR
+                  value: /tmp
+                - name: RESTIC_CACHE_DIR
+                  value: /tmp/restic-cache
+                - name: RESTIC_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: backup-system-pvc-restic
+                      key: RESTIC_PASSWORD
+              command:
+                - /bin/bash
+                - -c
+                - |
+                  set -euo pipefail
+                  command -v yq >/dev/null 2>&1 || { echo "missing dependency: yq" >&2; exit 1; }
+                  test -x /work/restic || { echo "missing restic binary in /work/restic" >&2; exit 1; }
+
+                  cfg="/config/deployment-config.yaml"
+                  if [ -f "$cfg" ]; then
+                    dep="$(yq -r '.spec.deploymentId // ""' "$cfg" 2>/dev/null || true)"
+                    [ -n "$dep" ] && DEPLOYMENT_ID="$dep"
+                  fi
+
+                  repo="/backup/${DEPLOYMENT_ID}/pvc-restic/namespaces/backup-system/persistentvolumeclaims/${CANARY_PVC_NAME}/repo"
+                  test -f "${repo}/config" || { echo "missing restic repo config at ${repo}" >&2; exit 1; }
+
+                  export RESTIC_REPOSITORY="${repo}"
+                  export RESTIC_PASSWORD
+
+                  /work/restic --no-lock snapshots --latest 1 >/dev/null
+
+                  rm -rf /restore/* || true
+                  /work/restic --no-lock restore latest \
+                    --target /restore \
+                    --include /source/payload.txt \
+                    --include /source/payload.sha256
+
+                  test -f /restore/source/payload.txt
+                  test -f /restore/source/payload.sha256
+                  expected="$(tr -d '[:space:]' < /restore/source/payload.sha256)"
+                  actual="$(sha256sum /restore/source/payload.txt | awk '{print $1}')"
+                  [ "${expected}" = "${actual}" ]
+
+                  echo "[platform-restore-canary] OK: restored latest snapshot and verified payload checksum"
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+                readOnlyRootFilesystem: true
+              volumeMounts:
+                - name: deployment-config
+                  mountPath: /config
+                  readOnly: true
+                - name: restic-bin
+                  mountPath: /work
+                  readOnly: true
+                - name: backup-target
+                  mountPath: /backup
+                  readOnly: true
+                - name: tmp
+                  mountPath: /tmp
+                - name: restore
+                  mountPath: /restore
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  memory: 512Mi
+          volumes:
+            - name: deployment-config
+              configMap:
+                name: deploykube-deployment-config
+                defaultMode: 0444
+            - name: restic-bin
+              emptyDir: {}
+            - name: backup-target
+              persistentVolumeClaim:
+                claimName: backup-target
+            - name: tmp
+              emptyDir: {}
+            - name: restore
+              emptyDir: {}

@@ -1,0 +1,17 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vpa-recommender
+  namespace: kube-system
+spec:
+  template:
+    spec:
+      containers:
+        - name: recommender
+          args:
+            # Lower defaults than upstream to avoid inflating "cold start" recommendations.
+            - --pod-recommendation-min-cpu-millicores=10
+            - --pod-recommendation-min-memory-mb=64
+            # Quantize recommendations to improve bin packing (rounds up).
+            - --round-cpu-millicores=5
+            - --round-memory-bytes=16777216 # 16Mi

@@ -1,0 +1,37 @@
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: orbstack-pool
+  namespace: metallb-system
+spec:
+  addresses:
+    - 203.0.113.240-203.0.113.244
+    - 203.0.113.246-203.0.113.250
+---
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: orbstack-l2
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+    - orbstack-pool
+---
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: powerdns-pool
+  namespace: metallb-system
+spec:
+  autoAssign: false
+  addresses:
+    - 203.0.113.245-203.0.113.245
+---
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: powerdns-l2
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+    - powerdns-pool

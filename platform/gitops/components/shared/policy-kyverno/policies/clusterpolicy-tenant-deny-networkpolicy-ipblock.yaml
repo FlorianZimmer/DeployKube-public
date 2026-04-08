@@ -1,0 +1,41 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: tenant-deny-networkpolicy-ipblock
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  admission: true
+  validationFailureAction: Enforce
+  background: false
+  emitWarning: false
+  rules:
+    - name: deny-ipblock-egress-and-ingress
+      match:
+        any:
+          - resources:
+              kinds: ["NetworkPolicy"]
+              namespaceSelector:
+                matchLabels:
+                  darksite.cloud/rbac-profile: tenant
+      skipBackgroundRequests: true
+      validate:
+        message: "Tenant NetworkPolicies must not use ipBlock (egress to backend endpoints is platform-managed; no per-namespace ipBlock allowlists)."
+        allowExistingViolations: true
+        foreach:
+          - list: "request.object.spec.egress[].to[] || []"
+            deny:
+              conditions:
+                any:
+                  # Kyverno strict variable substitution can fail when referencing a missing key
+                  # (e.g., NetworkPolicyPeers without ipBlock). Check for key presence instead.
+                  - key: "{{ element != null && contains(keys(element), 'ipBlock') }}"
+                    operator: Equals
+                    value: true
+          - list: "request.object.spec.ingress[].from[] || []"
+            deny:
+              conditions:
+                any:
+                  - key: "{{ element != null && contains(keys(element), 'ipBlock') }}"
+                    operator: Equals
+                    value: true

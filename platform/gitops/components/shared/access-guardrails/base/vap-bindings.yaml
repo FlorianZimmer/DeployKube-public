@@ -1,0 +1,41 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: deploykube-rbac-mutation-lock
+  annotations:
+    argocd.argoproj.io/sync-wave: "-9"
+spec:
+  policyName: deploykube-rbac-mutation-lock
+  validationActions: ["Deny"]
+  matchResources:
+    namespaceSelector: {}
+    objectSelector: {}
+
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: deploykube-access-guardrails-self-protection
+  annotations:
+    argocd.argoproj.io/sync-wave: "-9"
+spec:
+  policyName: deploykube-access-guardrails-self-protection
+  validationActions: ["Deny"]
+  matchResources:
+    namespaceSelector: {}
+    objectSelector: {}
+
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: deploykube-cluster-admin-binding-restrictions
+  annotations:
+    argocd.argoproj.io/sync-wave: "-9"
+spec:
+  policyName: deploykube-cluster-admin-binding-restrictions
+  validationActions: ["Deny"]
+  matchResources:
+    namespaceSelector: {}
+    objectSelector: {}
+

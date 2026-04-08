@@ -1,0 +1,4 @@
+resources:
+- recommender-deployment.yaml
+- vpa-rbac.yaml
+- vpa-v1-crd-gen.yaml

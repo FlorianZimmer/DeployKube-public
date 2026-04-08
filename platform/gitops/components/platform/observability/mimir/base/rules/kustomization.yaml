@@ -1,0 +1,21 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Platform alert rules for Mimir Ruler
+# These ConfigMaps are loaded by Mimir ruler to evaluate alert rules.
+# See docs/design/observability-lgtm-troubleshooting-alerting.md for the alerting strategy.
+
+resources:
+  - rbac-rules-sync.yaml
+  - job-rules-sync.yaml
+  - configmap-kubernetes-pods.yaml
+  - configmap-lgtm-health.yaml
+  - configmap-grafana-data-health.yaml
+  - configmap-dns-powerdns-health.yaml
+  - configmap-certificates-health.yaml
+  - configmap-access-guardrails.yaml
+  - configmap-apps-minecraft-monifactory.yaml
+  - configmap-backup-system.yaml
+  - configmap-observability-smokes.yaml
+  - configmap-security-scanning-ci.yaml
+  - configmap-resource-contract-runtime.yaml

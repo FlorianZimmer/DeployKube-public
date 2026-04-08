@@ -1,0 +1,82 @@
+name: tenant-pr-gates
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  tenant-pr-gates:
+    name: tenant-pr-gates
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies (rg, jq)
+        run: |
+          set -euo pipefail
+          if command -v rg >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+            rg --version
+            jq --version
+            exit 0
+          fi
+          sudo apt-get update
+          sudo apt-get install -y ripgrep jq
+          rg --version
+          jq --version
+
+      - name: Install yq (mikefarah)
+        run: |
+          set -euo pipefail
+          if command -v yq >/dev/null 2>&1; then
+            yq --version
+            exit 0
+          fi
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.47.2/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
+
+      - name: Install kustomize
+        run: |
+          set -euo pipefail
+          if command -v kustomize >/dev/null 2>&1; then
+            kustomize version
+            exit 0
+          fi
+          KUSTOMIZE_VERSION="v5.6.0"
+          tmpdir="$(mktemp -d)"
+          curl -sSfL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" -o "${tmpdir}/kustomize.tgz"
+          tar -xzf "${tmpdir}/kustomize.tgz" -C "${tmpdir}"
+          sudo mv "${tmpdir}/kustomize" /usr/local/bin/kustomize
+          sudo chmod +x /usr/local/bin/kustomize
+          rm -rf "${tmpdir}"
+          kustomize version
+
+      - name: Run tenant PR gates
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # Repo-per-project product mode contract:
+          # - owner/org: tenant-<orgId>
+          # - repo: apps-<projectId>
+          owner="${REPO%%/*}"
+          repo="${REPO##*/}"
+          if [[ "${owner}" != tenant-* ]]; then
+            echo "error: owner must be 'tenant-<orgId>' (got: ${owner})" >&2
+            exit 1
+          fi
+          if [[ "${repo}" != apps-* ]]; then
+            echo "error: repo must be 'apps-<projectId>' (got: ${repo})" >&2
+            exit 1
+          fi
+          org_id="${owner#tenant-}"
+          project_id="${repo#apps-}"
+
+          bash ./shared/scripts/tenant/run-tenant-pr-gates.sh \
+            --org-id "${org_id}" \
+            --project-id "${project_id}" \
+            --repo-root .

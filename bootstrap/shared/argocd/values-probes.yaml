@@ -1,0 +1,15 @@
+# Argo CD bootstrap probe policy (Helm values).
+#
+# Rationale:
+# - The argo-cd chart defaults repo-server liveness to `/healthz?full=true` with a tight
+#   `timeoutSeconds: 1`.
+# - On proxmox-talos we observed `/healthz?full=true` intermittently exceeding 1s, causing
+#   kubelet liveness failures and frequent restarts/CrashLoopBackOff of the repo-server.
+#
+# The chart does not currently expose the liveness HTTP path as a value (only thresholds/timeouts),
+# so the pragmatic mitigation is to make liveness less timeout-sensitive.
+
+repoServer:
+  livenessProbe:
+    timeoutSeconds: 3
+    failureThreshold: 6

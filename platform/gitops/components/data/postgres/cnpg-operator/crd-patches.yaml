@@ -1,0 +1,69 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: backups.postgresql.cnpg.io
+  annotations:
+    argocd.argoproj.io/sync-options: Replace=true
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: clusterimagecatalogs.postgresql.cnpg.io
+  annotations:
+    argocd.argoproj.io/sync-options: Replace=true
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: clusters.postgresql.cnpg.io
+  annotations:
+    argocd.argoproj.io/sync-options: Replace=true
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: databases.postgresql.cnpg.io
+  annotations:
+    argocd.argoproj.io/sync-options: Replace=true
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: failoverquorums.postgresql.cnpg.io
+  annotations:
+    argocd.argoproj.io/sync-options: Replace=true
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: imagecatalogs.postgresql.cnpg.io
+  annotations:
+    argocd.argoproj.io/sync-options: Replace=true
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: poolers.postgresql.cnpg.io
+  annotations:
+    argocd.argoproj.io/sync-options: Replace=true
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: publications.postgresql.cnpg.io
+  annotations:
+    argocd.argoproj.io/sync-options: Replace=true
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: scheduledbackups.postgresql.cnpg.io
+  annotations:
+    argocd.argoproj.io/sync-options: Replace=true
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: subscriptions.postgresql.cnpg.io
+  annotations:
+    argocd.argoproj.io/sync-options: Replace=true

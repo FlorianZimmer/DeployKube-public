@@ -1,0 +1,100 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: forgejo-team-sync
+  namespace: rbac-system
+spec:
+  # Intentionally offset from :00 to avoid top-of-hour kube-apiserver contention.
+  schedule: "57 * * * *"
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 900
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          annotations:
+            sidecar.istio.io/nativeSidecar: "true"
+            proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}'
+        spec:
+          serviceAccountName: forgejo-team-sync
+          # Avoid retrying without the Istio sidecar after a failure.
+          restartPolicy: Never
+          containers:
+            - name: sync
+              image: registry.example.internal/deploykube/bootstrap-tools:1.4
+              imagePullPolicy: IfNotPresent
+              command: ["/bin/bash", "/scripts/sync.sh"]
+              env:
+                - name: POD_NAMESPACE
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.namespace
+                - name: FORGEJO_BASE_URL
+                  value: "https://forgejo-https.forgejo.svc.cluster.local"
+                - name: FORGEJO_CA_SECRET_NAMESPACE
+                  value: "forgejo"
+                - name: FORGEJO_CA_SECRET_NAME
+                  value: "forgejo-repo-tls"
+                - name: FORGEJO_CA_SECRET_KEY
+                  value: "tls.crt"
+                - name: FORGEJO_ORG
+                  value: "platform"
+                - name: KEYCLOAK_BASE_URL
+                  value: "__KEYCLOAK_BASE_URL__"
+                - name: KEYCLOAK_CONNECT_HOST
+                  value: "keycloak.keycloak.svc.cluster.local"
+                - name: KEYCLOAK_REALM
+                  value: "deploykube-admin"
+                - name: TEAM_PREFIX
+                  value: "app-"
+                - name: FORGEJO_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: forgejo-team-sync
+                      key: forgejoToken
+                      optional: true
+                - name: KEYCLOAK_CLIENT_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: forgejo-team-sync
+                      key: keycloakClientId
+                      optional: true
+                - name: KEYCLOAK_CLIENT_SECRET
+                  valueFrom:
+                    secretKeyRef:
+                      name: forgejo-team-sync
+                      key: keycloakClientSecret
+                      optional: true
+                - name: SSL_CERT_FILE
+                  value: /etc/step-ca/ca.crt
+                - name: CURL_CA_BUNDLE
+                  value: /etc/step-ca/ca.crt
+              volumeMounts:
+                - name: scripts
+                  mountPath: /scripts
+                  readOnly: true
+                - name: istio-native-exit
+                  mountPath: /helpers
+                  readOnly: true
+                - name: oidc-ca
+                  mountPath: /etc/step-ca
+                  readOnly: true
+          volumes:
+            - name: scripts
+              configMap:
+                name: forgejo-team-sync
+                defaultMode: 0555
+            - name: istio-native-exit
+              configMap:
+                name: istio-native-exit-script
+                defaultMode: 0444
+            - name: oidc-ca
+              secret:
+                secretName: forgejo-team-sync
+                optional: true
+                items:
+                  - key: ca.crt
+                    path: ca.crt

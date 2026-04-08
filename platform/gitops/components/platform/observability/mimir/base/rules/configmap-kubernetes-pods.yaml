@@ -1,0 +1,158 @@
+# Kubernetes Pod Alert Rules
+# Baseline alerts for pod health following the golden signals approach.
+# All alerts include required labels per docs/design/observability-lgtm-troubleshooting-alerting.md:
+# - severity, service, team, environment, cluster, runbook_url
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mimir-rules-kubernetes-pods
+  namespace: mimir
+  labels:
+    mimir.grafana.com/rules: "true"
+    app.kubernetes.io/component: ruler
+data:
+  kubernetes-pods.yaml: |
+    # yaml-language-server: $schema=https://json.schemastore.org/prometheus-rule.json
+    groups:
+      - name: kubernetes.pods
+        interval: 1m
+        rules:
+          # Pod crash looping detection
+          - alert: PodCrashLooping
+            expr: |
+              increase(kube_pod_container_status_restarts_total[15m]) > 3
+            for: 5m
+            labels:
+              severity: warning
+              team: platform
+              environment: dev
+              cluster: deploykube
+              runbook_url: docs/runbooks/pod-crash-looping.md
+            annotations:
+              summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} is crash looping"
+              description: "Container {{ $labels.container }} in pod {{ $labels.pod }} has restarted {{ $value | humanize }} times in the last 15 minutes."
+
+          # Pod stuck in pending state
+          - alert: PodPending
+            expr: |
+              kube_pod_status_phase{phase="Pending"} == 1
+            for: 15m
+            labels:
+              severity: warning
+              team: platform
+              environment: dev
+              cluster: deploykube
+              runbook_url: docs/runbooks/pod-pending.md
+            annotations:
+              summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} stuck Pending"
+              description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} has been pending for more than 15 minutes. Check node resources and scheduling constraints."
+
+          # Container waiting with error
+          - alert: ContainerWaiting
+            expr: |
+              kube_pod_container_status_waiting_reason{reason=~"CrashLoopBackOff|ErrImagePull|ImagePullBackOff|CreateContainerConfigError|InvalidImageName|CreateContainerError"} == 1
+            for: 10m
+            labels:
+              severity: warning
+              team: platform
+              environment: dev
+              cluster: deploykube
+              runbook_url: docs/runbooks/container-waiting.md
+            annotations:
+              summary: "Container {{ $labels.container }} in {{ $labels.namespace }}/{{ $labels.pod }} waiting: {{ $labels.reason }}"
+              description: "Container {{ $labels.container }} is stuck in {{ $labels.reason }} state."
+
+          # Pod not ready
+          - alert: PodNotReady
+            expr: |
+              sum by (namespace, pod, cluster) (
+                max by (namespace, pod, cluster) (kube_pod_status_phase{phase=~"Pending|Unknown"}) == 1
+              ) * on (namespace, pod, cluster) group_left(owner_kind)
+              topk by (namespace, pod, cluster) (
+                1, max by (namespace, pod, owner_kind, cluster) (kube_pod_owner{owner_kind!="Job"})
+              ) > 0
+            for: 15m
+            labels:
+              severity: warning
+              team: platform
+              environment: dev
+              cluster: deploykube
+              runbook_url: docs/runbooks/pod-not-ready.md
+            annotations:
+              summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} not ready"
+              description: "Pod {{ $labels.pod }} owned by {{ $labels.owner_kind }} has been not ready for more than 15 minutes."
+
+      - name: kubernetes.deployments
+        interval: 1m
+        rules:
+          # Deployment replica mismatch
+          - alert: DeploymentReplicasMismatch
+            expr: |
+              kube_deployment_spec_replicas
+              !=
+              kube_deployment_status_replicas_available
+            for: 15m
+            labels:
+              severity: warning
+              team: platform
+              environment: dev
+              cluster: deploykube
+              runbook_url: docs/runbooks/deployment-replicas-mismatch.md
+            annotations:
+              summary: "Deployment {{ $labels.namespace }}/{{ $labels.deployment }} replica mismatch"
+              description: "Deployment {{ $labels.deployment }} has {{ $value }} available replicas but expects {{ $labels.spec_replicas }}."
+
+          # Deployment rollout stuck
+          - alert: DeploymentRolloutStuck
+            expr: |
+              kube_deployment_status_observed_generation
+              !=
+              kube_deployment_metadata_generation
+            for: 15m
+            labels:
+              severity: warning
+              team: platform
+              environment: dev
+              cluster: deploykube
+              runbook_url: docs/runbooks/deployment-rollout-stuck.md
+            annotations:
+              summary: "Deployment {{ $labels.namespace }}/{{ $labels.deployment }} rollout stuck"
+              description: "Rollout of deployment {{ $labels.deployment }} is stuck. Generation mismatch indicates controller is not processing updates."
+
+      - name: kubernetes.statefulsets
+        interval: 1m
+        rules:
+          # StatefulSet replica mismatch
+          - alert: StatefulSetReplicasMismatch
+            expr: |
+              kube_statefulset_status_replicas_ready
+              !=
+              kube_statefulset_status_replicas
+            for: 15m
+            labels:
+              severity: warning
+              team: platform
+              environment: dev
+              cluster: deploykube
+              runbook_url: docs/runbooks/statefulset-replicas-mismatch.md
+            annotations:
+              summary: "StatefulSet {{ $labels.namespace }}/{{ $labels.statefulset }} replica mismatch"
+              description: "StatefulSet {{ $labels.statefulset }} has {{ $value }} ready replicas but expects {{ $labels.replicas }}."
+
+      - name: kubernetes.jobs
+        interval: 1m
+        rules:
+          # Job failed
+          - alert: JobFailed
+            expr: |
+              kube_job_status_failed > 0
+            for: 5m
+            labels:
+              severity: warning
+              team: platform
+              environment: dev
+              cluster: deploykube
+              runbook_url: docs/runbooks/job-failed.md
+            annotations:
+              summary: "Job {{ $labels.namespace }}/{{ $labels.job_name }} failed"
+              description: "Job {{ $labels.job_name }} in namespace {{ $labels.namespace }} has failed. Check job logs for details."

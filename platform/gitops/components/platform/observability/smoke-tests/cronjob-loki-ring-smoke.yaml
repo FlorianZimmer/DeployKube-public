@@ -1,0 +1,84 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: observability-loki-ring-smoke
+  namespace: observability
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  # Intentionally offset from :00 to avoid top-of-hour kube-apiserver contention.
+  schedule: "19,49 * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 240
+      ttlSecondsAfterFinished: 900
+      template:
+        metadata:
+          annotations:
+            sidecar.istio.io/nativeSidecar: "true"
+            proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}'
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          volumes:
+            - name: istio-native-exit
+              configMap:
+                name: istio-native-exit-script
+                defaultMode: 0444
+          containers:
+            - name: loki-ring-smoke
+              image: curlimages/curl:8.6.0
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  memory: 256Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+              volumeMounts:
+                - name: istio-native-exit
+                  mountPath: /helpers
+                  readOnly: true
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -euo pipefail
+                  ISTIO_HELPER="/helpers/istio-native-exit.sh"
+                  [ -f "${ISTIO_HELPER}" ] || { echo "missing istio-native-exit helper" >&2; exit 1; }
+                  . "${ISTIO_HELPER}"
+                  trap deploykube_istio_quit_sidecar EXIT INT TERM
+
+                  # Use the gateway Service to avoid having to allow direct access to ingesters in NetworkPolicy.
+                  url="http://loki-gateway.loki.svc.cluster.local/ring"
+                  echo "[loki-ring-smoke] GET ${url}"
+                  resp="$(curl -fsS --max-time 20 "${url}")"
+                  echo "${resp}" | head -n 50
+
+                  if echo "${resp}" | grep -qi "ACTIVE"; then
+                    echo "[loki-ring-smoke] ok: ring contains ACTIVE entries"
+                  else
+                    echo "[loki-ring-smoke] FAIL: ring does not contain ACTIVE entries" >&2
+                    exit 1
+                  fi
+
+                  if echo "${resp}" | grep -qiE "(PENDING|JOINING|LEAVING|UNHEALTHY)"; then
+                    echo "[loki-ring-smoke] FAIL: ring contains non-stable states" >&2
+                    exit 1
+                  fi
+
+                  echo "[loki-ring-smoke] ok"

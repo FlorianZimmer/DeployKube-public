@@ -1,0 +1,73 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: istio-gateway-smoke
+  namespace: istio-system
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: HookSucceeded,BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 300
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      restartPolicy: Never
+      serviceAccountName: istio-gateway-smoke
+      containers:
+        - name: smoke
+          image: registry.example.internal/deploykube/bootstrap-tools:1.4
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - -lc
+            - |
+              set -euo pipefail
+
+              dump_on_error() {
+                echo "[istio-gateway-smoke] diagnostics (best-effort)" >&2
+                kubectl -n istio-system get gateway public-gateway -o yaml >&2 || true
+                kubectl -n istio-system get events --sort-by=.lastTimestamp >&2 || true
+              }
+              trap dump_on_error ERR
+
+              echo "[istio-gateway-smoke] waiting for Gateway/public-gateway to exist"
+              for _ in $(seq 1 60); do
+                if kubectl -n istio-system get gateway/public-gateway >/dev/null 2>&1; then
+                  break
+                fi
+                sleep 2
+              done
+              kubectl -n istio-system get gateway/public-gateway >/dev/null
+
+              echo "[istio-gateway-smoke] waiting for Gateway/public-gateway to be Accepted and Programmed"
+              kubectl -n istio-system wait --for=condition=Accepted=True --timeout=120s gateway/public-gateway
+              kubectl -n istio-system wait --for=condition=Programmed=True --timeout=120s gateway/public-gateway
+
+              echo "[istio-gateway-smoke] verifying listener invariants"
+              mapfile -t have < <(kubectl -n istio-system get gateway public-gateway -o jsonpath='{range .spec.listeners[*]}{.name}{"\n"}{end}' | sort -u)
+              expected=(
+                http
+                https-argocd
+                https-forgejo
+                https-garage
+                https-grafana
+                https-hubble
+                https-kiali
+                https-keycloak
+                https-vault
+              )
+              for want in "${expected[@]}"; do
+                if ! printf '%s\n' "${have[@]}" | grep -qx "${want}"; then
+                  echo "[istio-gateway-smoke] missing listener: ${want}" >&2
+                  echo "[istio-gateway-smoke] have listeners:" >&2
+                  printf '  - %s\n' "${have[@]}" >&2
+                  exit 1
+                fi
+              done
+
+              echo "[istio-gateway-smoke] ok"

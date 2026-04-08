@@ -1,0 +1,13 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: forgejo-team-bootstrap
+  namespace: rbac-system
+spec:
+  template:
+    spec:
+      containers:
+        - name: bootstrap
+          env:
+            - name: KEYCLOAK_BASE_URL
+              value: "https://keycloak.dev-single.internal.example.com:8443"

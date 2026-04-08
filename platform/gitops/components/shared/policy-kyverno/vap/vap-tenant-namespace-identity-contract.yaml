@@ -1,0 +1,97 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: darksite-tenant-namespace-identity-contract
+  annotations:
+    argocd.argoproj.io/sync-wave: "-4"
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["namespaces"]
+  validations:
+    - expression: |
+        !has(object.metadata.labels) ||
+        !("darksite.cloud/rbac-profile" in object.metadata.labels) ||
+        object.metadata.labels["darksite.cloud/rbac-profile"] != "tenant" ||
+        ("darksite.cloud/project-id" in object.metadata.labels)
+      message: "Tenant namespaces (darksite.cloud/rbac-profile=tenant) must set darksite.cloud/project-id."
+    - expression: |
+        !has(object.metadata.labels) ||
+        !("darksite.cloud/rbac-profile" in object.metadata.labels) ||
+        object.metadata.labels["darksite.cloud/rbac-profile"] != "tenant" ||
+        !("darksite.cloud/tenant-id" in object.metadata.labels) ||
+        (
+          size(object.metadata.labels["darksite.cloud/tenant-id"]) <= 63 &&
+          object.metadata.labels["darksite.cloud/tenant-id"].matches("^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
+        )
+      message: "Tenant namespace label darksite.cloud/tenant-id must be a DNS label (lowercase alnum + '-', max 63)."
+    - expression: |
+        !has(object.metadata.labels) ||
+        !("darksite.cloud/rbac-profile" in object.metadata.labels) ||
+        object.metadata.labels["darksite.cloud/rbac-profile"] != "tenant" ||
+        !("darksite.cloud/project-id" in object.metadata.labels) ||
+        (
+          size(object.metadata.labels["darksite.cloud/project-id"]) <= 63 &&
+          object.metadata.labels["darksite.cloud/project-id"].matches("^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
+        )
+      message: "Tenant namespace label darksite.cloud/project-id must be a DNS label (lowercase alnum + '-', max 63)."
+    - expression: |
+        !has(object.metadata.labels) ||
+        !("darksite.cloud/rbac-profile" in object.metadata.labels) ||
+        object.metadata.labels["darksite.cloud/rbac-profile"] != "tenant" ||
+        !("darksite.cloud/vpc-id" in object.metadata.labels) ||
+        (
+          size(object.metadata.labels["darksite.cloud/vpc-id"]) <= 63 &&
+          object.metadata.labels["darksite.cloud/vpc-id"].matches("^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
+        )
+      message: "Tenant namespace label darksite.cloud/vpc-id must be a DNS label (lowercase alnum + '-', max 63) when set."
+    - expression: |
+        request.operation != "UPDATE" ||
+        !has(oldObject.metadata.labels) ||
+        !("darksite.cloud/rbac-profile" in oldObject.metadata.labels) ||
+        oldObject.metadata.labels["darksite.cloud/rbac-profile"] != "tenant" ||
+        (
+          (
+            !("darksite.cloud/tenant-id" in oldObject.metadata.labels) ||
+            (
+              has(object.metadata.labels) &&
+              ("darksite.cloud/tenant-id" in object.metadata.labels) &&
+              object.metadata.labels["darksite.cloud/tenant-id"] == oldObject.metadata.labels["darksite.cloud/tenant-id"]
+            )
+          ) &&
+          (
+            !("darksite.cloud/project-id" in oldObject.metadata.labels) ||
+            (
+              has(object.metadata.labels) &&
+              ("darksite.cloud/project-id" in object.metadata.labels) &&
+              object.metadata.labels["darksite.cloud/project-id"] == oldObject.metadata.labels["darksite.cloud/project-id"]
+            )
+          ) &&
+          (
+            !("darksite.cloud/vpc-id" in oldObject.metadata.labels) ||
+            (
+              has(object.metadata.labels) &&
+              ("darksite.cloud/vpc-id" in object.metadata.labels) &&
+              object.metadata.labels["darksite.cloud/vpc-id"] == oldObject.metadata.labels["darksite.cloud/vpc-id"]
+            )
+          )
+        )
+      message: "Tenant identity labels darksite.cloud/{tenant-id,project-id,vpc-id} are set-once: updates cannot change or remove values."
+
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: darksite-tenant-namespace-identity-contract
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3.8"
+spec:
+  policyName: darksite-tenant-namespace-identity-contract
+  validationActions: ["Deny"]
+  matchResources:
+    namespaceSelector: {}
+    objectSelector: {}

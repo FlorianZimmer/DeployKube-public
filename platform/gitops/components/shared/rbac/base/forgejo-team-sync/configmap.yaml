@@ -1,0 +1,291 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: forgejo-team-sync
+  namespace: rbac-system
+data:
+  sync.sh: |
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    ISTIO_HELPER="/helpers/istio-native-exit.sh"
+    [ -f "$ISTIO_HELPER" ] || { echo "missing istio-native-exit helper" >&2; exit 1; }
+    . "$ISTIO_HELPER"
+    trap 'deploykube_istio_quit_sidecar || true' EXIT INT TERM
+
+    SCRIPT_NAME="forgejo-team-sync"
+    LOG_CM="${STATUS_CONFIGMAP:-forgejo-team-sync-status}"
+    ORG="${FORGEJO_ORG:-platform}"
+    TEAM_PREFIX="${TEAM_PREFIX:-app-}"
+    POD_NS="${POD_NAMESPACE:-${NAMESPACE:-rbac-system}}"
+
+    log() { printf '[%s] %s\n' "${SCRIPT_NAME}" "$*" >&2; }
+
+    CURL_RESOLVE_ARGS=()
+    FORGEJO_CA_ARGS=()
+
+    parse_host_port() {
+      local url="$1"
+      local hostport="${url#*://}"
+      hostport="${hostport%%/*}"
+      local host="${hostport%%:*}"
+      local port="${hostport##*:}"
+      if [[ "${hostport}" == "${host}" ]]; then
+        port="443"
+      fi
+      printf '%s %s\n' "${host}" "${port}"
+    }
+
+    resolve_ip() {
+      local host="$1"
+      python3 -c 'import socket,sys; print(socket.gethostbyname(sys.argv[1]))' "${host}" 2>/dev/null || true
+    }
+
+    add_connect_resolve() {
+      local url="$1"
+      local connect_host="$2"
+      [[ -z "${connect_host}" ]] && return
+      local host port
+      read -r host port < <(parse_host_port "${url}")
+      if [[ -z "${host}" || -z "${port}" ]]; then
+        return
+      fi
+      local gw_ip
+      gw_ip=$(resolve_ip "${connect_host}")
+      if [[ -z "${gw_ip}" ]]; then
+        log "warn: failed to resolve connect host ${connect_host}; using default DNS"
+        return
+      fi
+      CURL_RESOLVE_ARGS+=(--resolve "${host}:${port}:${gw_ip}")
+    }
+
+    curl_retry() {
+      curl -sfSL --retry 12 --retry-delay 5 --retry-all-errors --retry-connrefused --max-time 10 \
+        "${CURL_RESOLVE_ARGS[@]}" "$@"
+    }
+
+    curl_retry_raw() {
+      curl -sSL --retry 12 --retry-delay 5 --retry-all-errors --retry-connrefused --max-time 10 \
+        "${CURL_RESOLVE_ARGS[@]}" "$@"
+    }
+
+    curl_transient_retry_raw() {
+      # Retry connection-level issues, but don't hammer on auth/404 type errors.
+      curl -sSL --retry 6 --retry-delay 5 --retry-connrefused --max-time 10 \
+        "${CURL_RESOLVE_ARGS[@]}" "$@"
+    }
+
+    require_or_skip() {
+      local v="$1"
+      if [[ -z "${!v:-}" ]]; then
+        log "missing required env: ${v}; skipping sync"
+        exit 0
+      fi
+    }
+
+    ensure_ca_bundle() {
+      local ca="${SSL_CERT_FILE:-}"
+      if [[ -n "${ca}" && ! -s "${ca}" ]]; then
+        log "missing Keycloak CA bundle at ${ca}; skipping sync"
+        exit 0
+      fi
+    }
+
+    init_forgejo_ca() {
+      local ca_file="${FORGEJO_CA_FILE:-}"
+      if [[ -n "${ca_file}" && -s "${ca_file}" ]]; then
+        FORGEJO_CA_ARGS+=(--cacert "${ca_file}")
+        return
+      fi
+
+      local ca_ns="${FORGEJO_CA_SECRET_NAMESPACE:-forgejo}"
+      local ca_name="${FORGEJO_CA_SECRET_NAME:-forgejo-repo-tls}"
+      local ca_key="${FORGEJO_CA_SECRET_KEY:-tls.crt}"
+      local encoded
+      encoded="$(kubectl -n "${ca_ns}" get secret "${ca_name}" -o "go-template={{ index .data \"${ca_key}\" }}" 2>/dev/null || true)"
+      if [[ -z "${encoded}" ]]; then
+        log "missing Forgejo CA secret data ${ca_ns}/${ca_name} key ${ca_key}; skipping sync"
+        exit 0
+      fi
+
+      ca_file="/tmp/forgejo-ca.crt"
+      echo "${encoded}" | base64 -d > "${ca_file}"
+      if [[ ! -s "${ca_file}" ]]; then
+        log "decoded Forgejo CA file is empty; skipping sync"
+        exit 0
+      fi
+      FORGEJO_CA_ARGS+=(--cacert "${ca_file}")
+    }
+
+    forgejo_api() {
+      local method="$1"; shift
+      local path="$1"; shift
+      curl_retry -X "${method}" \
+        -H "Authorization: token ${FORGEJO_TOKEN}" \
+        -H "Content-Type: application/json" \
+        "${FORGEJO_CA_ARGS[@]}" \
+        "${FORGEJO_BASE_URL}${path}" "$@"
+    }
+
+    keycloak_token() {
+      local resp token err desc
+      if ! resp=$(curl_retry_raw -X POST "${KEYCLOAK_BASE_URL}/realms/${KEYCLOAK_REALM}/protocol/openid-connect/token" \
+          --data-urlencode "grant_type=client_credentials" \
+          --data-urlencode "client_id=${KEYCLOAK_CLIENT_ID}" \
+          --data-urlencode "client_secret=${KEYCLOAK_CLIENT_SECRET}"); then
+        log "failed to call Keycloak token endpoint"
+        exit 1
+      fi
+
+      token=$(echo "${resp}" | jq -r '.access_token // empty' 2>/dev/null || true)
+      if [[ -z "${token}" ]]; then
+        err=$(echo "${resp}" | jq -r '.error // empty' 2>/dev/null || true)
+        desc=$(echo "${resp}" | jq -r '.error_description // empty' 2>/dev/null || true)
+        log "failed to obtain Keycloak token (error=${err:-unknown}, description=${desc:-unknown})"
+        exit 1
+      fi
+      echo "${token}"
+    }
+
+    keycloak_groups() {
+      local token="$1"
+      curl_retry -H "Authorization: Bearer ${token}" \
+        "${KEYCLOAK_BASE_URL}/admin/realms/${KEYCLOAK_REALM}/groups" \
+        | jq -c '.[] | {id:.id,name:.name}'
+    }
+
+    keycloak_group_members() {
+      local token="$1" group_id="$2"
+      curl_retry -H "Authorization: Bearer ${token}" \
+        "${KEYCLOAK_BASE_URL}/admin/realms/${KEYCLOAK_REALM}/groups/${group_id}/members" \
+        | jq -r '.[].username'
+    }
+
+    resolve_owners_team_id() {
+      local teams owner_id
+      teams=$(forgejo_api GET "/api/v1/orgs/${ORG}/teams")
+      owner_id=$(echo "${teams}" | jq -r '.[] | select(.permission=="owner" or .name=="Owners") | .id' | head -n1 || true)
+      if [[ -z "${owner_id}" || "${owner_id}" == "null" ]]; then
+        log "failed to resolve Owners team id in org ${ORG}"
+        exit 1
+      fi
+      echo "${owner_id}"
+    }
+
+    ensure_team() {
+      local name="$1" permission="$2"
+      local teams team_id
+      teams=$(forgejo_api GET "/api/v1/orgs/${ORG}/teams")
+      team_id=$(echo "${teams}" | jq -r --arg name "${name}" '.[] | select((.name|ascii_downcase)==($name|ascii_downcase)) | .id' | head -n1 || true)
+      if [[ -n "${team_id}" && "${team_id}" != "null" ]]; then
+        echo "${team_id}"
+        return
+      fi
+
+      log "creating missing Forgejo team ${name}"
+      local resp
+      resp=$(forgejo_api POST "/api/v1/orgs/${ORG}/teams" -d "$(jq -n --arg name "${name}" --arg perm "${permission}" '{name:$name,permission:$perm,units:["repo.ext_issues","repo.pulls","repo.projects","repo.code","repo.issues","repo.releases","repo.wiki","repo.ext_wiki","repo.packages","repo.actions"]}')")
+      team_id=$(echo "${resp}" | jq -r '.id // empty')
+      if [[ -z "${team_id}" ]]; then
+        log "failed to resolve team id for ${name}"
+        exit 1
+      fi
+      echo "${team_id}"
+    }
+
+    sync_team_members() {
+      local team_id="$1" members=("${!2}")
+      local current
+      current=$(forgejo_api GET "/api/v1/teams/${team_id}/members" | jq -r '.[].login')
+
+      for user in "${members[@]}"; do
+        [[ -z "${user}" ]] && continue
+        if ! grep -qx "${user}" <<<"${current}"; then
+          log "adding ${user} to team id ${team_id}"
+          local tmp code
+          tmp=$(mktemp)
+          code=$(curl_transient_retry_raw -o "${tmp}" -w "%{http_code}" -X PUT \
+            -H "Authorization: token ${FORGEJO_TOKEN}" \
+            -H "Content-Type: application/json" \
+            "${FORGEJO_CA_ARGS[@]}" \
+            "${FORGEJO_BASE_URL}/api/v1/teams/${team_id}/members/${user}")
+          if [[ "${code}" == "404" ]]; then
+            log "user ${user} not found in Forgejo yet; skipping"
+          elif [[ "${code}" != "204" && "${code}" != "200" ]]; then
+            log "failed to add ${user} to team id ${team_id} (http_code=${code})"
+            cat "${tmp}" >&2 || true
+            rm -f "${tmp}"
+            exit 1
+          fi
+          rm -f "${tmp}"
+        fi
+      done
+    }
+
+    record_status() {
+      local msg="$1"
+      kubectl -n "${POD_NS}" create configmap "${LOG_CM}" --from-literal=message="${msg}" --dry-run=client -o yaml | kubectl apply -f -
+    }
+
+    main() {
+      require_or_skip FORGEJO_BASE_URL
+      require_or_skip FORGEJO_TOKEN
+      require_or_skip KEYCLOAK_BASE_URL
+      require_or_skip KEYCLOAK_CLIENT_ID
+      require_or_skip KEYCLOAK_CLIENT_SECRET
+      ensure_ca_bundle
+
+      add_connect_resolve "${FORGEJO_BASE_URL}" "${FORGEJO_CONNECT_HOST:-}"
+      add_connect_resolve "${KEYCLOAK_BASE_URL}" "${KEYCLOAK_CONNECT_HOST:-}"
+      init_forgejo_ca
+
+      local token groups
+      token=$(keycloak_token)
+      groups=$(keycloak_groups "${token}")
+
+      declare -A team_map=(
+        ["dk-platform-admins"]="Owners"
+        ["dk-platform-operators"]="platform-ops"
+        ["dk-auditors"]="auditors"
+      )
+
+      local owners_team_id
+      owners_team_id=$(resolve_owners_team_id)
+
+      declare -A group_ids=()
+
+      while IFS= read -r entry; do
+        [[ -z "${entry}" ]] && continue
+        name=$(jq -r '.name' <<<"${entry}")
+        gid=$(jq -r '.id' <<<"${entry}")
+        group_ids["${name}"]="${gid}"
+      done <<<"${groups}"
+
+      for kc_group in "${!team_map[@]}"; do
+        team="${team_map[${kc_group}]}"
+        [[ -z "${team}" ]] && continue
+        gid="${group_ids[${kc_group}]:-}"
+        if [[ -z "${gid}" ]]; then
+          log "missing group id for ${kc_group}; skipping"
+          continue
+        fi
+        perm="write"
+        [[ "${kc_group}" == "dk-platform-operators" ]] && perm="admin"
+        [[ "${kc_group}" == "dk-auditors" ]] && perm="read"
+        if [[ "${kc_group}" == "dk-platform-admins" ]]; then
+          team_id="${owners_team_id}"
+        else
+          team_id=$(ensure_team "${team}" "${perm}")
+        fi
+        members=()
+        while IFS= read -r user; do
+          members+=("${user}")
+        done < <(keycloak_group_members "${token}" "${gid}")
+        sync_team_members "${team_id}" members[@]
+      done
+
+      record_status "sync completed at $(date -Is)"
+      log "done"
+    }
+
+    main "$@"

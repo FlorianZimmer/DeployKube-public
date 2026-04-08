@@ -1,0 +1,35 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: mimir
+commonAnnotations:
+  argocd.argoproj.io/sync-wave: "2.5"
+helmGlobals:
+  chartHome: charts
+helmCharts:
+  - name: mimir-distributed
+    version: 6.0.5
+    releaseName: mimir
+    namespace: mimir
+    valuesFile: values.yaml
+resources:
+  - ../../base
+  - vpa-zones.yaml
+patchesStrategicMerge:
+  - patch-resource-limits.yaml
+  - patch-vpa-requests-deployment-mimir-distributor.yaml
+  - patch-vpa-requests-deployment-mimir-gateway.yaml
+  - patch-vpa-requests-deployment-mimir-overrides-exporter.yaml
+  - patch-vpa-requests-deployment-mimir-querier.yaml
+  - patch-vpa-requests-deployment-mimir-query-frontend.yaml
+  - patch-vpa-requests-deployment-mimir-query-scheduler.yaml
+  - patch-vpa-requests-deployment-mimir-ruler.yaml
+  - patch-vpa-requests-statefulset-mimir-alertmanager.yaml
+  - patch-vpa-requests-statefulset-mimir-compactor.yaml
+  - patch-vpa-requests-statefulset-mimir-ingester-zone-a.yaml
+  - patch-vpa-requests-statefulset-mimir-ingester-zone-b.yaml
+  - patch-vpa-requests-statefulset-mimir-ingester-zone-c.yaml
+  - patch-vpa-requests-statefulset-mimir-store-gateway-zone-a.yaml
+  - patch-vpa-requests-statefulset-mimir-store-gateway-zone-b.yaml
+  - patch-vpa-requests-statefulset-mimir-store-gateway-zone-c.yaml
+patches:
+  - path: patch-ha-tier-labels.yaml

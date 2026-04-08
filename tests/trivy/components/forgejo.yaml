@@ -1,0 +1,16 @@
+schemaVersion: v1alpha1
+description: Component-owned Trivy targets for Forgejo.
+watch_paths:
+  - platform/gitops/artifacts/runtime-artifact-index.yaml
+  - platform/gitops/components/platform/forgejo
+  - tests/trivy/components/forgejo.yaml
+image_targets:
+  - id: forgejo-app
+    artifact_catalog: runtime-artifacts
+    artifact_name: forgejo-app
+  - id: forgejo-server
+    artifact_catalog: runtime-artifacts
+    artifact_name: forgejo-server
+config_targets:
+  - id: forgejo-manifests
+    path: platform/gitops/components/platform/forgejo

@@ -1,0 +1,210 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: storage-smoke-s3-latency
+  namespace: garage
+data:
+  storage-smoke-s3-latency.py: |
+    import datetime
+    import hashlib
+    import hmac
+    import json
+    import math
+    import os
+    import sys
+    import time
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+    from typing import List
+
+
+    def require_env(name: str) -> str:
+      value = os.environ.get(name, "").strip()
+      if not value:
+        raise SystemExit(f"missing {name}")
+      return value
+
+
+    def percentile_nearest_rank(samples: List[float], p: float) -> float:
+      if not samples:
+        raise ValueError("no samples")
+      if p <= 0:
+        return min(samples)
+      if p >= 1:
+        return max(samples)
+      s = sorted(samples)
+      k = int(math.ceil(p * len(s))) - 1
+      k = max(0, min(k, len(s) - 1))
+      return s[k]
+
+
+    def summarize(samples: List[float]) -> dict:
+      return {
+        "count": len(samples),
+        "p50": percentile_nearest_rank(samples, 0.50),
+        "p95": percentile_nearest_rank(samples, 0.95),
+        "p99": percentile_nearest_rank(samples, 0.99),
+        "max": max(samples),
+        "min": min(samples),
+      }
+
+
+    def assert_thresholds(name: str, summary: dict, p99_max_s: float, max_max_s: float) -> None:
+      p99 = summary["p99"]
+      m = summary["max"]
+      if p99 >= p99_max_s or m >= max_max_s:
+        raise SystemExit(
+          f"threshold violated for {name}: p99={p99:.3f}s (limit {p99_max_s}s), max={m:.3f}s (limit {max_max_s}s)"
+        )
+
+
+    def _sign(key: bytes, msg: str) -> bytes:
+      return hmac.new(key, msg.encode("utf-8"), hashlib.sha256).digest()
+
+
+    def _get_signature_key(key: str, date_stamp: str, region_name: str, service_name: str) -> bytes:
+      k_date = _sign(("AWS4" + key).encode("utf-8"), date_stamp)
+      k_region = _sign(k_date, region_name)
+      k_service = _sign(k_region, service_name)
+      k_signing = _sign(k_service, "aws4_request")
+      return k_signing
+
+
+    def signed_request(endpoint: str, access_key: str, secret_key: str, region: str, method: str, path: str, query: str = "", body: bytes = b"", timeout_s: int = 15) -> tuple[int, bytes]:
+      base_url = endpoint.rstrip("/") + path
+      canonical_querystring = ""
+      if query:
+        pairs = urllib.parse.parse_qsl(query, keep_blank_values=True)
+        pairs.sort()
+        canonical_querystring = urllib.parse.urlencode(pairs, doseq=True, quote_via=urllib.parse.quote, safe="-_.~")
+        url = base_url + "?" + canonical_querystring
+      else:
+        url = base_url
+      parsed = urllib.parse.urlparse(url)
+      host = parsed.netloc
+      amz_date = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+      date_stamp = amz_date[:8]
+      payload_hash = hashlib.sha256(body).hexdigest()
+
+      canonical_uri = parsed.path or "/"
+      # IMPORTANT: AWS SigV4 requires a normalized, sorted query string.
+      # We precompute it above and also use it for the request URL.
+      canonical_querystring = canonical_querystring
+      canonical_headers = (
+        f"host:{host}\n"
+        f"x-amz-content-sha256:{payload_hash}\n"
+        f"x-amz-date:{amz_date}\n"
+      )
+      signed_headers = "host;x-amz-content-sha256;x-amz-date"
+      canonical_request = (
+        f"{method}\n{canonical_uri}\n{canonical_querystring}\n"
+        f"{canonical_headers}\n{signed_headers}\n{payload_hash}"
+      )
+
+      algorithm = "AWS4-HMAC-SHA256"
+      credential_scope = f"{date_stamp}/{region}/s3/aws4_request"
+      string_to_sign = (
+        f"{algorithm}\n{amz_date}\n{credential_scope}\n"
+        f"{hashlib.sha256(canonical_request.encode('utf-8')).hexdigest()}"
+      )
+      signing_key = _get_signature_key(secret_key, date_stamp, region, "s3")
+      signature = hmac.new(signing_key, string_to_sign.encode("utf-8"), hashlib.sha256).hexdigest()
+      authorization = (
+        f"{algorithm} Credential={access_key}/{credential_scope}, "
+        f"SignedHeaders={signed_headers}, Signature={signature}"
+      )
+
+      headers = {
+        "Host": host,
+        "x-amz-date": amz_date,
+        "x-amz-content-sha256": payload_hash,
+        "Authorization": authorization,
+      }
+      req = urllib.request.Request(url, method=method, data=(body or None), headers=headers)
+      try:
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+          return resp.status, resp.read()
+      except urllib.error.HTTPError as e:
+        return e.code, e.read()
+      except Exception as e:
+        return 0, str(e).encode("utf-8", errors="replace")
+
+
+    def timed(endpoint: str, access_key: str, secret_key: str, region: str, method: str, path: str, query: str = "", body: bytes = b"", timeout_s: int = 15) -> float:
+      start = time.perf_counter()
+      status, data = signed_request(endpoint, access_key, secret_key, region, method, path, query=query, body=body, timeout_s=timeout_s)
+      elapsed = time.perf_counter() - start
+      if status == 0:
+        raise SystemExit(f"request failed: {method} {path} (elapsed={elapsed:.3f}s) err={data[:200]!r}")
+      if status >= 400:
+        raise SystemExit(f"request error: {method} {path} status={status} (elapsed={elapsed:.3f}s) err={data[:200]!r}")
+      return elapsed
+
+
+    def main() -> int:
+      endpoint = require_env("S3_ENDPOINT")
+      access_key = require_env("S3_ACCESS_KEY")
+      secret_key = require_env("S3_SECRET_KEY")
+      region = os.environ.get("S3_REGION", "").strip() or "us-east-1"
+      bucket = require_env("BUCKET_BACKUPS")
+
+      prefix = "smoke/storage-s3-latency"
+      run_id = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+      key = f"{prefix}/{run_id}.bin"
+
+      payload = b"\x00" * (32 * 1024)
+      obj_path = f"/{bucket}/{urllib.parse.quote(key)}"
+
+      # Ensure object exists before HEAD/GET loops.
+      timed(endpoint, access_key, secret_key, region, "PUT", obj_path, body=payload, timeout_s=15)
+
+      results = {}
+      failures: List[str] = []
+
+      def sample(name: str, count: int, method: str, path: str, query: str = "", body: bytes = b"") -> List[float]:
+        out: List[float] = []
+        for _ in range(count):
+          out.append(timed(endpoint, access_key, secret_key, region, method, path, query=query, body=body, timeout_s=15))
+        return out
+
+      head_samples = sample("HEAD", 30, "HEAD", obj_path)
+      get_samples = sample("GET", 30, "GET", obj_path)
+      put_samples = sample("PUT", 30, "PUT", obj_path, body=payload)
+      list_query = urllib.parse.urlencode({"list-type": "2", "prefix": f"{prefix}/", "max-keys": "10"})
+      list_samples = sample("LIST", 10, "GET", f"/{bucket}", query=list_query)
+
+      results["HEAD"] = summarize(head_samples)
+      results["GET"] = summarize(get_samples)
+      results["PUT"] = summarize(put_samples)
+      results["LIST"] = summarize(list_samples)
+
+      # Locked v1 thresholds (docs/design/storage-single-node.md)
+      for name, p99_s, max_s in [
+        ("HEAD", 1.0, 5.0),
+        ("GET", 1.0, 5.0),
+        ("LIST", 2.0, 10.0),
+        ("PUT", 2.0, 10.0),
+      ]:
+        try:
+          assert_thresholds(name, results[name], p99_max_s=p99_s, max_max_s=max_s)
+        except SystemExit as e:
+          failures.append(str(e))
+
+      print(json.dumps({"endpoint": endpoint, "bucket": bucket, "key": key, "results": results}, indent=2, sort_keys=True))
+
+      # Best-effort cleanup.
+      try:
+        signed_request(endpoint, access_key, secret_key, region, "DELETE", obj_path, timeout_s=15)
+      except Exception as e:
+        sys.stderr.write(f"warn: cleanup failed: {e}\n")
+
+      if failures:
+        for f in failures:
+          sys.stderr.write(f"{f}\n")
+        return 2
+      return 0
+
+
+    if __name__ == "__main__":
+      sys.exit(main())

@@ -1,0 +1,22 @@
+apiVersion: data.darksite.cloud/v1alpha1
+kind: PostgresInstance
+metadata:
+  name: postgres
+spec:
+  classRef:
+    name: platform-ha-large
+  databaseName: registry
+  ownerRole: harbor
+  connectionSecretName: harbor-postgres-app
+  superuserSecretName: harbor-postgres-superuser
+  resourceNames:
+    backupConfigMapName: backup-encryption
+    backupServiceAccountName: postgres-backup
+    backupCronJobName: postgres-backup
+    backupPVCName: postgres-backup-v2
+    backupWarmupJobName: postgres-backup-warmup
+    networkPolicyName: harbor-postgres
+  network:
+    accessMode: SameNamespace
+  backup:
+    sourceName: harbor-postgres

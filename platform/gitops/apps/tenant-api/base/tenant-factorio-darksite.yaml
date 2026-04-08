@@ -1,0 +1,36 @@
+# Tenant API v1alpha1 (platform-owned; not tenant-writable).
+#
+# darksite.cloud migration: this mirrors tenant-factorio.yaml under the canonical tenancy API group.
+apiVersion: tenancy.darksite.cloud/v1alpha1
+kind: Tenant
+metadata:
+  name: tenant-factorio
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  orgId: factorio
+  description: Internal canary tenant for Factorio migration testing.
+  tier: S
+  lifecycle:
+    retentionMode: immediate
+    deleteFromBackups: tenant-scoped
+---
+apiVersion: tenancy.darksite.cloud/v1alpha1
+kind: TenantProject
+metadata:
+  name: tenant-factorio-p-factorio
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  tenantRef:
+    name: tenant-factorio
+  projectId: factorio
+  description: Internal canary project for Factorio.
+  environments: [dev, prod]
+  git:
+    forgejoOrg: tenant-factorio
+    repo: apps-factorio
+    seedTemplate: default
+  argo:
+    mode: project-scoped
+

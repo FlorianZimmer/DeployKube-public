@@ -1,0 +1,111 @@
+name: Keycloak IAM Mode E2E
+
+on:
+  pull_request:
+    paths:
+      - "platform/gitops/components/platform/keycloak/iam-sync/**"
+      - "platform/gitops/components/platform/keycloak/upstream-sim/**"
+      - "platform/gitops/components/platform/keycloak/bootstrap-job/**"
+      - "platform/gitops/deployments/**"
+      - "tests/scripts/e2e-iam-modes-matrix.sh"
+      - ".github/workflows/keycloak-iam-mode-e2e.yml"
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: quick runs hybrid sanity only; full runs full mode matrix
+        type: choice
+        options:
+          - quick
+          - full
+        default: full
+      kubeconfig_path:
+        description: Optional absolute path to kubeconfig on runner
+        type: string
+        default: ""
+  schedule:
+    # Nightly full matrix. Intentionally offset from :00.
+    - cron: "37 3 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  # Both cert and IAM E2E mutate the singleton DeploymentConfig; never run in parallel.
+  group: deploykube-runtime-e2e
+  cancel-in-progress: false
+
+jobs:
+  quick-hybrid:
+    if: |
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       vars.DK_IAM_E2E_ENABLED == 'true') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.profile == 'quick')
+    runs-on:
+      - self-hosted
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate script syntax
+        run: bash -n ./tests/scripts/e2e-iam-modes-matrix.sh
+
+      - name: Resolve kubeconfig
+        run: |
+          set -euo pipefail
+          if [[ -n "${{ github.event.inputs.kubeconfig_path }}" ]]; then
+            echo "KUBECONFIG=${{ github.event.inputs.kubeconfig_path }}" >> "${GITHUB_ENV}"
+          elif [[ -n "${{ vars.DK_IAM_E2E_KUBECONFIG }}" ]]; then
+            echo "KUBECONFIG=${{ vars.DK_IAM_E2E_KUBECONFIG }}" >> "${GITHUB_ENV}"
+          fi
+
+      - name: Run quick IAM hybrid E2E
+        env:
+          DK_IAM_E2E_ACK_CONFIG_MUTATION: yes
+          DK_IAM_E2E_OIDC_ISSUER_URL: ${{ vars.DK_IAM_E2E_OIDC_ISSUER_URL }}
+          DK_IAM_E2E_HEALTHCHECK_URL: ${{ vars.DK_IAM_E2E_HEALTHCHECK_URL }}
+        run: |
+          set -euo pipefail
+          ./tests/scripts/e2e-iam-modes-matrix.sh \
+            --profile quick \
+            --timeout 20m \
+            --ack-config-mutation yes
+
+  full-matrix:
+    if: |
+      (github.event_name == 'schedule' && vars.DK_IAM_E2E_ENABLED == 'true') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.profile == 'full')
+    runs-on:
+      - self-hosted
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate script syntax
+        run: bash -n ./tests/scripts/e2e-iam-modes-matrix.sh
+
+      - name: Resolve kubeconfig
+        run: |
+          set -euo pipefail
+          if [[ -n "${{ github.event.inputs.kubeconfig_path }}" ]]; then
+            echo "KUBECONFIG=${{ github.event.inputs.kubeconfig_path }}" >> "${GITHUB_ENV}"
+          elif [[ -n "${{ vars.DK_IAM_E2E_KUBECONFIG }}" ]]; then
+            echo "KUBECONFIG=${{ vars.DK_IAM_E2E_KUBECONFIG }}" >> "${GITHUB_ENV}"
+          fi
+
+      - name: Run full IAM mode matrix E2E
+        env:
+          DK_IAM_E2E_ACK_CONFIG_MUTATION: yes
+          DK_IAM_E2E_OIDC_ISSUER_URL: ${{ vars.DK_IAM_E2E_OIDC_ISSUER_URL }}
+          DK_IAM_E2E_HEALTHCHECK_URL: ${{ vars.DK_IAM_E2E_HEALTHCHECK_URL }}
+          DK_IAM_E2E_FAILOPEN_TEST_URL: ${{ vars.DK_IAM_E2E_FAILOPEN_TEST_URL }}
+          DK_IAM_E2E_LDAP_URL: ${{ vars.DK_IAM_E2E_LDAP_URL }}
+          DK_IAM_E2E_RUN_UPSTREAM_SIM: ${{ vars.DK_IAM_E2E_RUN_UPSTREAM_SIM }}
+        run: |
+          set -euo pipefail
+          ./tests/scripts/e2e-iam-modes-matrix.sh \
+            --profile full \
+            --timeout 25m \
+            --ack-config-mutation yes

@@ -1,0 +1,33 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: powerdns-config
+  namespace: dns-system
+  labels:
+    app: powerdns
+    component: authoritative
+  annotations:
+    # Patched by components/platform/tenant-provisioner (DNS wiring controller).
+    powerdns.dev/domain: example.invalid
+    powerdns.dev/loadbalancer-ip: 0.0.0.0
+    powerdns.dev/postgres-service: powerdns-postgresql.dns-system.svc.cluster.local
+    powerdns.dev/postgres-db: powerdns
+    powerdns.dev/postgres-user: powerdns
+data:
+  pdns.conf.tpl: |
+    api=yes
+    api-key=${PDNS_API_KEY}
+    webserver=yes
+    webserver-address=0.0.0.0
+    webserver-port=8081
+    webserver-allow-from=0.0.0.0/0
+    launch=gpgsql
+    gpgsql-host=${PDNS_DB_HOST}
+    gpgsql-dbname=${PDNS_DB_NAME}
+    gpgsql-user=${PDNS_DB_USER}
+    gpgsql-password=${PDNS_DB_PASSWORD}
+    gpgsql-dnssec=no
+    disable-axfr=yes
+    default-soa-edit=INCEPTION-INCREMENT
+    log-dns-queries=no
+    loglevel=4

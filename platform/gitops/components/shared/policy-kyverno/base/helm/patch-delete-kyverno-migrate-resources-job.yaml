@@ -1,0 +1,6 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kyverno-migrate-resources
+  namespace: policy-system
+$patch: delete

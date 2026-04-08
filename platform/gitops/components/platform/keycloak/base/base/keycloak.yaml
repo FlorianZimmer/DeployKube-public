@@ -1,0 +1,73 @@
+apiVersion: k8s.keycloak.org/v2alpha1
+kind: Keycloak
+metadata:
+  name: keycloak
+  labels:
+    app.kubernetes.io/name: keycloak
+    app.kubernetes.io/component: identity
+spec:
+  instances: 2
+  hostname:
+    hostname: https://keycloak.placeholder.invalid
+    admin: https://keycloak.placeholder.invalid
+    adminUrl: https://keycloak.placeholder.invalid
+    strict: true
+    strictBackchannel: true
+  ingress:
+    enabled: false
+  http:
+    httpEnabled: true
+    httpPort: 8080
+    httpsPort: 8443
+    tlsSecret: keycloak-tls
+  proxy:
+    headers: xforwarded
+  additionalOptions:
+    - name: metrics-enabled
+      value: "true"
+    - name: cache
+      value: ispn
+    - name: hostname-strict-https
+      value: "true"
+    - name: proxy
+      value: edge
+  db:
+    vendor: postgres
+    host: keycloak-postgres-rw.keycloak.svc.cluster.local
+    port: 5432
+    database: keycloak
+    usernameSecret:
+      name: keycloak-db
+      key: username
+    passwordSecret:
+      name: keycloak-db
+      key: password
+  transaction:
+    xaEnabled: false
+  resources:
+    requests:
+      cpu: "250m"
+      memory: 1Gi
+    limits:
+      memory: 2Gi
+  unsupported:
+    podTemplate:
+      metadata:
+        labels:
+          app.kubernetes.io/name: keycloak
+        annotations:
+          sidecar.istio.io/inject: "true"
+          traffic.sidecar.istio.io/excludeOutboundPorts: "5432"
+      spec:
+        affinity:
+          podAntiAffinity:
+            preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                podAffinityTerm:
+                  topologyKey: topology.kubernetes.io/zone
+                  labelSelector:
+                    matchExpressions:
+                      - key: app.kubernetes.io/name
+                        operator: In
+                        values:
+                          - keycloak

@@ -1,0 +1,41 @@
+installCRDs: true
+
+configs:
+  params:
+    server.insecure: "false"
+  cm:
+    url: https://argo-cd-argocd-server.argocd.svc.cluster.local
+    'kustomize.buildOptions': --enable-helm
+    admin.enabled: "false"
+  rbac:
+    policy.default: role:admin
+
+server:
+  service:
+    type: ClusterIP
+  ingress:
+    enabled: false
+
+applicationSet:
+  enabled: false
+
+dex:
+  enabled: false
+
+redis:
+  enabled: true
+  # Use docker.io so our local docker.io cache/mirror can prewarm it.
+  image:
+    repository: docker.io/library/redis
+
+redis-ha:
+  # Explicitly keep redis-ha disabled for this bootstrap profile.
+  enabled: false
+  image:
+    repository: docker.io/library/redis
+
+# Istio-injection is enabled on the argocd namespace, but Helm hook Jobs can hang if a sidecar is injected.
+# Ensure the redis secret-init hook Job does not get an Istio sidecar.
+redisSecretInit:
+  podAnnotations:
+    sidecar.istio.io/inject: "false"

@@ -1,0 +1,23 @@
+fullnameOverride: metrics-server
+
+# Talos requires kubelet-insecure-tls since kubelets use self-signed certs.
+# kind/orbstack can also surface kubelet cert validation issues, so keep this on.
+args:
+  - --kubelet-insecure-tls
+  - --kubelet-preferred-address-types=InternalIP
+
+# Exclude from Istio mesh - metrics-server must talk directly to kubelets.
+podAnnotations:
+  sidecar.istio.io/inject: "false"
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 128Mi
+
+# Deploy to kube-system alongside CoreDNS, kube-proxy, etc.
+# Note: Kustomize will override this, but keeping for clarity.
+replicas: 1
+

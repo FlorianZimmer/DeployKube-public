@@ -1,0 +1,126 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: valkey
+  annotations:
+    argocd.argoproj.io/sync-options: Replace=true
+    darksite.cloud/reconcile-marker: "2026-01-12-remove-cpu-limits"
+  labels:
+    app.kubernetes.io/name: valkey
+    app.kubernetes.io/part-of: valkey
+spec:
+  serviceName: valkey-headless
+  replicas: 3
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: valkey
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: valkey
+        app.kubernetes.io/part-of: valkey
+    spec:
+      serviceAccountName: valkey
+      securityContext:
+        fsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      terminationGracePeriodSeconds: 30
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: valkey
+                topologyKey: kubernetes.io/hostname
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: valkey
+      containers:
+        - name: valkey
+          image: valkey/valkey:9.0.0-alpine
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - /scripts/valkey-entrypoint.sh
+          ports:
+            - containerPort: 6379
+              name: redis
+              protocol: TCP
+          env:
+            - name: VALKEY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: valkey-auth
+                  key: password
+            - name: VALKEY_SERVICE_NAME
+              value: valkey
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - valkey-cli -h 127.0.0.1 -a "$VALKEY_PASSWORD" PING | grep -q PONG
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - valkey-cli -h 127.0.0.1 -a "$VALKEY_PASSWORD" PING | grep -q PONG
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: data
+              mountPath: /valkey
+      volumes:
+        - name: scripts
+          configMap:
+            name: valkey-scripts
+            defaultMode: 0555
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          darksite.cloud/backup: skip
+          darksite.cloud/backup-skip-reason: cache
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 10Gi
+        storageClassName: shared-rwo

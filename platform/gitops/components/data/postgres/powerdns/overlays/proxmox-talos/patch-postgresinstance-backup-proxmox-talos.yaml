@@ -1,0 +1,11 @@
+apiVersion: data.darksite.cloud/v1alpha1
+kind: PostgresInstance
+metadata:
+  name: postgres
+spec:
+  backup:
+    schedule: "20 * * * *"
+    sourceName: postgres-powerdns
+    volume:
+      size: 5Gi
+      volumeName: tier0-postgres-powerdns-proxmox-talos

@@ -1,0 +1,106 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: valkey-sentinel
+  labels:
+    app.kubernetes.io/name: valkey-sentinel
+    app.kubernetes.io/part-of: valkey
+spec:
+  serviceName: valkey-sentinel-headless
+  replicas: 3
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: valkey-sentinel
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: valkey-sentinel
+        app.kubernetes.io/part-of: valkey
+    spec:
+      serviceAccountName: valkey
+      terminationGracePeriodSeconds: 10
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: valkey-sentinel
+                topologyKey: kubernetes.io/hostname
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: valkey-sentinel
+      containers:
+        - name: sentinel
+          image: valkey/valkey:9.0.0-alpine
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - /scripts/sentinel-entrypoint.sh
+          ports:
+            - containerPort: 26379
+              name: sentinel
+              protocol: TCP
+          env:
+            - name: VALKEY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: valkey-auth
+                  key: password
+            - name: VALKEY_PRIMARY_SERVICE
+              value: valkey
+            - name: VALKEY_SENTINEL_CLUSTER
+              value: valkey
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - valkey-cli -p 26379 PING | grep -q PONG
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: runtime
+              mountPath: /valkey-sentinel
+      volumes:
+        - name: scripts
+          configMap:
+            name: valkey-scripts
+            defaultMode: 0555
+        - name: runtime
+          emptyDir: {}

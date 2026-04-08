@@ -1,0 +1,28 @@
+schemaVersion: v1alpha1
+description: Component-owned Trivy targets for cert-manager.
+watch_paths:
+  - platform/gitops/components/certificates/cert-manager
+  - tests/scripts/scan-cert-manager-images.sh
+  - tests/trivy/components/cert-manager.yaml
+image_targets:
+  - id: controller
+    file: platform/gitops/components/certificates/cert-manager/helm/values.yaml
+    expression: '.image.repository + "@" + .image.digest'
+  - id: webhook
+    file: platform/gitops/components/certificates/cert-manager/helm/values.yaml
+    expression: '.webhook.image.repository + "@" + .webhook.image.digest'
+  - id: cainjector
+    file: platform/gitops/components/certificates/cert-manager/helm/values.yaml
+    expression: '.cainjector.image.repository + "@" + .cainjector.image.digest'
+  - id: acmesolver
+    file: platform/gitops/components/certificates/cert-manager/helm/values.yaml
+    expression: '.acmesolver.image.repository + "@" + .acmesolver.image.digest'
+  - id: startupapicheck
+    file: platform/gitops/components/certificates/cert-manager/helm/values.yaml
+    expression: '.startupapicheck.image.repository + "@" + .startupapicheck.image.digest'
+  - id: smoke
+    file: platform/gitops/components/certificates/cert-manager/tests/job-certificate-smoke.yaml
+    expression: '.spec.template.spec.containers[] | select(.name == "smoke") | .image'
+config_targets:
+  - id: cert-manager-manifests
+    path: platform/gitops/components/certificates/cert-manager

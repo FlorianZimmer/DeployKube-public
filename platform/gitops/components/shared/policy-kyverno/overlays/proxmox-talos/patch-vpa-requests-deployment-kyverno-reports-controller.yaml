@@ -1,0 +1,16 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kyverno-reports-controller
+  namespace: policy-system
+spec:
+  template:
+    spec:
+      containers:
+        - name: controller
+          resources:
+            requests:
+              cpu: "25m"
+              memory: "96Mi"
+            limits:
+              memory: "144Mi"

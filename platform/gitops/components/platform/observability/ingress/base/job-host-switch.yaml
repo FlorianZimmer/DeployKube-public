@@ -1,0 +1,115 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: grafana-ingress-host-switch
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "3.15"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: grafana-ingress-host-switch
+  annotations:
+    argocd.argoproj.io/sync-wave: "3.15"
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get"]
+    resourceNames: ["deploykube-deployment-config"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "patch"]
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources: ["httproutes"]
+    verbs: ["get", "patch"]
+  - apiGroups: ["security.istio.io"]
+    resources: ["authorizationpolicies"]
+    verbs: ["get", "patch"]
+  - apiGroups: ["batch"]
+    resources: ["cronjobs"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: grafana-ingress-host-switch
+  annotations:
+    argocd.argoproj.io/sync-wave: "3.15"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: grafana-ingress-host-switch
+subjects:
+  - kind: ServiceAccount
+    name: grafana-ingress-host-switch
+    namespace: argocd
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: grafana-ingress-host-switch-v3
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+    argocd.argoproj.io/sync-wave: "3.25"
+spec:
+  ttlSecondsAfterFinished: 900
+  backoffLimit: 2
+  activeDeadlineSeconds: 240
+  template:
+    metadata:
+      annotations:
+        sidecar.istio.io/inject: "false"
+        sidecar.istio.io/nativeSidecar: "true"
+    spec:
+      serviceAccountName: grafana-ingress-host-switch
+      restartPolicy: Never
+      containers:
+        - name: host-switch
+          image: registry.example.internal/deploykube/bootstrap-tools:1.4
+          imagePullPolicy: IfNotPresent
+          volumeMounts:
+            - name: deployment-config
+              mountPath: /etc/deploykube/deployment-config
+              readOnly: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+          command:
+            - /bin/bash
+            - -lc
+            - |
+              set -euo pipefail
+
+              cfg_file="/etc/deploykube/deployment-config/deployment-config.yaml"
+              host="$(yq -re '.spec.dns.hostnames.grafana' "${cfg_file}")"
+              test -n "${host}"
+
+              echo "[grafana-ingress-host-switch] setting HTTPRoute/grafana hostnames -> ${host}"
+              kubectl -n grafana patch httproute grafana --type=json \
+                -p "[{\"op\":\"replace\",\"path\":\"/spec/hostnames\",\"value\":[\"${host}\"]}]"
+
+              echo "[grafana-ingress-host-switch] setting AuthorizationPolicy/grafana-allow-public-gateway host match -> ${host}"
+              kubectl -n grafana patch authorizationpolicy grafana-allow-public-gateway --type=json \
+                -p "[{\"op\":\"replace\",\"path\":\"/spec/rules/0/when/0/values\",\"value\":[\"${host}\"]}]"
+
+              echo "[grafana-ingress-host-switch] setting Deployment/grafana GF_SERVER_DOMAIN + GF_SERVER_ROOT_URL -> ${host}"
+              kubectl -n grafana set env deployment/grafana --containers=grafana \
+                GF_SERVER_DOMAIN="${host}" \
+                GF_SERVER_ROOT_URL="https://${host}/"
+
+              echo "[grafana-ingress-host-switch] setting CronJob/grafana-external-reachability-smoke GRAFANA_HOST -> ${host}"
+              kubectl -n grafana set env cronjob/grafana-external-reachability-smoke --containers=grafana-external-reachability-smoke \
+                GRAFANA_HOST="${host}"
+      volumes:
+        - name: deployment-config
+          configMap:
+            name: deploykube-deployment-config
+            items:
+              - key: deployment-config.yaml
+                path: deployment-config.yaml

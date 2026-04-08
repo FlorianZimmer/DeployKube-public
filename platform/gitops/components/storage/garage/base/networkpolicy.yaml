@@ -1,0 +1,63 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: garage-ingress
+  namespace: garage
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: garage
+      app.kubernetes.io/component: object-storage
+  policyTypes:
+    - Ingress
+  ingress:
+    # S3 API: allow only from the gateway, observability consumers, backup-system mirror, explicit backup clients, and the garage namespace itself.
+    - from:
+        - podSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: istio-system
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: loki
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: tempo
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: mimir
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: backup-system
+        # Tenant S3 is an explicit, identity-keyed allowlist. Do not allow all tenant namespaces
+        # with darksite.cloud/backup-scope=enabled (backup opt-in is not a bucket access allow).
+        - namespaceSelector:
+            matchLabels:
+              darksite.cloud/rbac-profile: tenant
+              darksite.cloud/tenant-id: smoke
+              darksite.cloud/project-id: demo
+        - namespaceSelector:
+            matchLabels:
+              darksite.cloud/rbac-profile: tenant
+              darksite.cloud/tenant-id: factorio
+              darksite.cloud/project-id: factorio
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: factorio
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: minecraft-monifactory
+      ports:
+        - port: 3900
+          protocol: TCP
+    # RPC + admin APIs: garage-internal only (bootstrap job, admin tooling).
+    - from:
+        - podSelector: {}
+      ports:
+        - port: 3901
+          protocol: TCP
+        - port: 3903
+          protocol: TCP

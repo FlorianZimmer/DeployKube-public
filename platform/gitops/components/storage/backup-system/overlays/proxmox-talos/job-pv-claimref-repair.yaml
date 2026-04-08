@@ -1,0 +1,60 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pv-claimref-repair
+  namespace: backup-system
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+    argocd.argoproj.io/sync-options: Replace=true
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 180
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      annotations:
+        sidecar.istio.io/inject: "false"
+      labels:
+        app.kubernetes.io/name: pv-claimref-repair
+    spec:
+      serviceAccountName: pv-claimref-repair
+      restartPolicy: Never
+      containers:
+        - name: repair
+          image: registry.example.internal/deploykube/bootstrap-tools@sha256:e7be47a69e3a11bc58c857f2d690a71246ada91ac3a60bdfb0a547f091f6485a
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+
+              pvs=(
+                "backup-target-proxmox-talos"
+                "tier0-vault-core-proxmox-talos"
+                "tier0-postgres-keycloak-proxmox-talos"
+                "tier0-postgres-powerdns-proxmox-talos"
+                "tier0-postgres-forgejo-proxmox-talos"
+              )
+
+              repaired=0
+              for pv in "${pvs[@]}"; do
+                if ! kubectl get pv "${pv}" >/dev/null 2>&1; then
+                  echo "[pv-claimref-repair] Skipping missing PV/${pv}"
+                  continue
+                fi
+
+                phase="$(kubectl get pv "${pv}" -o jsonpath='{.status.phase}')"
+                if [ "${phase}" != "Released" ]; then
+                  echo "[pv-claimref-repair] PV/${pv} phase=${phase} (no action)"
+                  continue
+                fi
+
+                echo "[pv-claimref-repair] PV/${pv} is Released; clearing spec.claimRef to allow rebind"
+                kubectl patch pv "${pv}" --type=merge -p '{"spec":{"claimRef":null}}'
+                repaired=1
+              done
+
+              if [ "${repaired}" -eq 0 ]; then
+                echo "[pv-claimref-repair] OK: no Released PVs needed repair"
+              fi

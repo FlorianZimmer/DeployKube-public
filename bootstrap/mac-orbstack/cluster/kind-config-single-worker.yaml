@@ -1,0 +1,92 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: deploykube-dev
+networking:
+  # Allow Cilium to run with kube-proxy replacement
+  disableDefaultCNI: true
+  kubeProxyMode: none
+  podSubnet: 10.42.0.0/16
+  serviceSubnet: 10.43.0.0/16
+containerdConfigPatches:
+  - |-
+    [plugins."io.containerd.grpc.v1.cri".registry.mirrors."docker.io"]
+      endpoint = ["http://deploykube-registry-cache-docker-io:5000"]
+    [plugins."io.containerd.grpc.v1.cri".registry.mirrors."registry-1.docker.io"]
+      endpoint = ["http://deploykube-registry-cache-docker-io:5000"]
+    [plugins."io.containerd.grpc.v1.cri".registry.mirrors."registry.example.internal"]
+      endpoint = ["http://deploykube-registry-cache-darksite-cloud:5000"]
+    [plugins."io.containerd.grpc.v1.cri".registry.mirrors."quay.io"]
+      endpoint = ["http://deploykube-registry-cache-quay-io:5000"]
+    [plugins."io.containerd.grpc.v1.cri".registry.mirrors."registry.k8s.io"]
+      endpoint = ["http://deploykube-registry-cache-registry-k8s-io:5000"]
+    [plugins."io.containerd.grpc.v1.cri".registry.mirrors."cr.smallstep.com"]
+      endpoint = ["http://deploykube-registry-cache-cr-smallstep-com:5000"]
+    [plugins."io.containerd.grpc.v1.cri".registry.mirrors."codeberg.org"]
+      endpoint = ["http://deploykube-registry-cache-codeberg-org:5000"]
+    [plugins."io.containerd.grpc.v1.cri".registry.mirrors."code.forgejo.org"]
+      endpoint = ["http://deploykube-registry-cache-code-forgejo-org:5000"]
+    [plugins."io.containerd.grpc.v1.cri".registry.configs."deploykube-registry-cache-docker-io:5000".tls]
+      insecure_skip_verify = true
+    [plugins."io.containerd.grpc.v1.cri".registry.configs."deploykube-registry-cache-darksite-cloud:5000".tls]
+      insecure_skip_verify = true
+    [plugins."io.containerd.grpc.v1.cri".registry.configs."deploykube-registry-cache-quay-io:5000".tls]
+      insecure_skip_verify = true
+    [plugins."io.containerd.grpc.v1.cri".registry.configs."deploykube-registry-cache-registry-k8s-io:5000".tls]
+      insecure_skip_verify = true
+    [plugins."io.containerd.grpc.v1.cri".registry.configs."deploykube-registry-cache-cr-smallstep-com:5000".tls]
+      insecure_skip_verify = true
+    [plugins."io.containerd.grpc.v1.cri".registry.configs."deploykube-registry-cache-codeberg-org:5000".tls]
+      insecure_skip_verify = true
+    [plugins."io.containerd.grpc.v1.cri".registry.configs."deploykube-registry-cache-code-forgejo-org:5000".tls]
+      insecure_skip_verify = true
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.34.0
+    kubeadmConfigPatches:
+      - |
+        kind: ClusterConfiguration
+        metadata:
+          name: config
+        networking:
+          dnsDomain: cluster.local
+        apiServer:
+          extraArgs:
+            oidc-issuer-url: https://keycloak.dev-single.internal.example.com/realms/deploykube-admin
+            oidc-client-id: kubernetes-api
+            oidc-username-claim: preferred_username
+            oidc-groups-claim: groups
+            oidc-ca-file: /etc/deploykube/pki/deploykube-root-ca.crt
+            enable-admission-plugins: ValidatingAdmissionPolicy
+          extraVolumes:
+            - name: deploykube-oidc-ca
+              hostPath: /etc/deploykube/pki/deploykube-root-ca.crt
+              mountPath: /etc/deploykube/pki/deploykube-root-ca.crt
+              readOnly: true
+              pathType: File
+    extraMounts:
+      - hostPath: shared/certs/deploykube-root-ca.crt
+        containerPath: /etc/deploykube/pki/deploykube-root-ca.crt
+        readOnly: true
+    extraPortMappings:
+      - containerPort: 80
+        hostPort: 18080
+        listenAddress: 0.0.0.0
+        protocol: TCP
+      - containerPort: 443
+        hostPort: 18443
+        listenAddress: 0.0.0.0
+        protocol: TCP
+      - containerPort: 30000
+        hostPort: 30000
+        listenAddress: 0.0.0.0
+        protocol: TCP
+      - containerPort: 30001
+        hostPort: 30001
+        listenAddress: 0.0.0.0
+        protocol: TCP
+      - containerPort: 30002
+        hostPort: 30002
+        listenAddress: 0.0.0.0
+        protocol: TCP
+  - role: worker
+    image: kindest/node:v1.34.0

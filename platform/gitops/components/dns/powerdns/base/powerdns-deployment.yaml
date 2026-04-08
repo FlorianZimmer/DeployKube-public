@@ -1,0 +1,344 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: powerdns
+  namespace: dns-system
+  labels:
+    app: powerdns
+    component: authoritative
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: powerdns
+      component: authoritative
+  template:
+    metadata:
+      labels:
+        app: powerdns
+        component: authoritative
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: powerdns
+                    component: authoritative
+                topologyKey: kubernetes.io/hostname
+      initContainers:
+        - name: render-config
+          image: powerdns/pdns-auth-46:4.6.4
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              python3 - <<'PY'
+              import os
+              from pathlib import Path
+              template_path = Path('/config-src/pdns.conf.tpl')
+              target_path = Path('/config/pdns.conf')
+              target_path.write_text(os.path.expandvars(template_path.read_text()))
+              PY
+          env:
+            - name: PDNS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: powerdns-api
+                  key: api_key
+            - name: PDNS_DB_HOST
+              value: powerdns-postgresql.dns-system.svc.cluster.local
+            - name: PDNS_DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: powerdns-postgres-app
+                  key: database
+            - name: PDNS_DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: powerdns-postgres-app
+                  key: username
+            - name: PDNS_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: powerdns-postgres-app
+                  key: password
+          volumeMounts:
+            - name: config
+              mountPath: /config
+            - name: config-template
+              mountPath: /config-src
+        - name: db-init
+          image: registry.example.internal/deploykube/bootstrap-tools:1.4
+          imagePullPolicy: IfNotPresent
+          volumeMounts:
+            - name: postgres-ca
+              mountPath: /etc/postgres/ca
+              readOnly: true
+          env:
+            - name: PGHOST
+              value: powerdns-postgresql.dns-system.svc.cluster.local
+            - name: PGPORT
+              value: "5432"
+            - name: PGSSLMODE
+              value: verify-full
+            - name: PGSSLROOTCERT
+              value: /etc/postgres/ca/ca.crt
+            - name: PGDATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: powerdns-postgres-app
+                  key: database
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: powerdns-postgres-app
+                  key: username
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: powerdns-postgres-app
+                  key: password
+            # Wired by components/platform/tenant-provisioner (DNS wiring controller).
+            - name: DNS_DOMAIN
+              valueFrom:
+                configMapKeyRef:
+                  name: deploykube-dns-wiring
+                  key: DNS_DOMAIN
+            - name: LB_IP
+              valueFrom:
+                configMapKeyRef:
+                  name: deploykube-dns-wiring
+                  key: LB_IP
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -euo pipefail
+
+              : "${DNS_DOMAIN:?missing DNS_DOMAIN}"
+              : "${LB_IP:?missing LB_IP}"
+              : "${PGHOST:?missing PGHOST}"
+              : "${PGPORT:?missing PGPORT}"
+              : "${PGDATABASE:?missing PGDATABASE}"
+              : "${PGUSER:?missing PGUSER}"
+              : "${PGPASSWORD:?missing PGPASSWORD}"
+
+              echo "[powerdns-db-init] waiting for Postgres"
+              ready=0
+              for _ in $(seq 1 60); do
+                if pg_isready -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" -t 5 >/dev/null 2>&1; then
+                  ready=1
+                  break
+                fi
+                sleep 5
+              done
+              if [ "${ready}" -ne 1 ]; then
+                echo "[powerdns-db-init] Postgres never became ready" >&2
+                exit 1
+              fi
+
+              domain="${DNS_DOMAIN}"
+              ns_host="ns1.${DNS_DOMAIN}"
+              admin_host="admin.${DNS_DOMAIN}"
+              soa_content="${ns_host} ${admin_host} 1 3600 600 604800 300"
+
+              cat >/tmp/powerdns.sql <<SQL
+              CREATE TABLE IF NOT EXISTS domains (
+                id                    SERIAL PRIMARY KEY,
+                name                  VARCHAR(255) NOT NULL,
+                master                VARCHAR(128) DEFAULT NULL,
+                last_check            INT DEFAULT NULL,
+                type                  TEXT NOT NULL,
+                notified_serial       BIGINT DEFAULT NULL,
+                account               VARCHAR(40) DEFAULT NULL,
+                options               TEXT DEFAULT NULL,
+                catalog               TEXT DEFAULT NULL,
+                CONSTRAINT c_lowercase_name CHECK (((name)::TEXT = LOWER((name)::TEXT))));
+
+              CREATE UNIQUE INDEX IF NOT EXISTS name_index ON domains(name);
+              CREATE INDEX IF NOT EXISTS catalog_idx ON domains(catalog);
+
+              CREATE TABLE IF NOT EXISTS records (
+                id                    BIGSERIAL PRIMARY KEY,
+                domain_id             INT DEFAULT NULL,
+                name                  VARCHAR(255) DEFAULT NULL,
+                type                  VARCHAR(10) DEFAULT NULL,
+                content               VARCHAR(65535) DEFAULT NULL,
+                ttl                   INT DEFAULT NULL,
+                change_date           INT DEFAULT NULL,
+                prio                  INT DEFAULT NULL,
+                disabled              BOOL DEFAULT 'f',
+                ordername             VARCHAR(255),
+                auth                  BOOL DEFAULT 't',
+                CONSTRAINT domain_exists
+                  FOREIGN KEY(domain_id) REFERENCES domains(id)
+                  ON DELETE CASCADE,
+                CONSTRAINT c_lowercase_name CHECK (((name)::TEXT = LOWER((name)::TEXT))));
+
+              CREATE INDEX IF NOT EXISTS rec_name_index ON records(name);
+              CREATE INDEX IF NOT EXISTS nametype_index ON records(name,type);
+              CREATE INDEX IF NOT EXISTS domain_id ON records(domain_id);
+              CREATE INDEX IF NOT EXISTS recordorder ON records (domain_id, ordername text_pattern_ops);
+
+              CREATE TABLE IF NOT EXISTS supermasters (
+                ip                    INET NOT NULL,
+                nameserver            VARCHAR(255) NOT NULL,
+                account               VARCHAR(40) NOT NULL,
+                PRIMARY KEY(ip, nameserver));
+
+              CREATE TABLE IF NOT EXISTS comments (
+                id                    SERIAL PRIMARY KEY,
+                domain_id             INT NOT NULL,
+                name                  VARCHAR(255) NOT NULL,
+                type                  VARCHAR(10) NOT NULL,
+                modified_at           INT NOT NULL,
+                account               VARCHAR(40) DEFAULT NULL,
+                comment               VARCHAR(65535) NOT NULL,
+                CONSTRAINT domain_exists
+                  FOREIGN KEY(domain_id) REFERENCES domains(id)
+                  ON DELETE CASCADE,
+                CONSTRAINT c_lowercase_name CHECK (((name)::TEXT = LOWER((name)::TEXT))));
+
+              CREATE INDEX IF NOT EXISTS comments_domain_id_idx ON comments (domain_id);
+              CREATE INDEX IF NOT EXISTS comments_name_type_idx ON comments (name, type);
+              CREATE INDEX IF NOT EXISTS comments_order_idx ON comments (domain_id, modified_at);
+
+              CREATE TABLE IF NOT EXISTS domainmetadata (
+                id                    SERIAL PRIMARY KEY,
+                domain_id             INT REFERENCES domains(id) ON DELETE CASCADE,
+                kind                  VARCHAR(32),
+                content               TEXT);
+
+              CREATE INDEX IF NOT EXISTS domainidmetaindex ON domainmetadata(domain_id);
+
+              CREATE TABLE IF NOT EXISTS cryptokeys (
+                id                    SERIAL PRIMARY KEY,
+                domain_id             INT REFERENCES domains(id) ON DELETE CASCADE,
+                flags                 INT NOT NULL,
+                active                BOOL,
+                published             BOOL DEFAULT TRUE,
+                content               TEXT);
+
+              CREATE INDEX IF NOT EXISTS domainidindex ON cryptokeys(domain_id);
+
+              CREATE TABLE IF NOT EXISTS tsigkeys (
+                id                    SERIAL PRIMARY KEY,
+                name                  VARCHAR(255),
+                algorithm             VARCHAR(50),
+                secret                VARCHAR(255),
+                CONSTRAINT c_lowercase_name CHECK (((name)::TEXT = LOWER((name)::TEXT))));
+
+              CREATE UNIQUE INDEX IF NOT EXISTS namealgoindex ON tsigkeys(name, algorithm);
+
+              -- Ensure the zone exists (idempotent; no fixed IDs).
+              INSERT INTO domains (name, type)
+                SELECT '${domain}', 'NATIVE'
+                WHERE NOT EXISTS (SELECT 1 FROM domains WHERE name='${domain}');
+
+              -- Seed minimal zone records (idempotent).
+              INSERT INTO records (domain_id, name, type, content, ttl, prio, change_date)
+                SELECT d.id, '${domain}', 'SOA', '${soa_content}', 3600, 0, FLOOR(EXTRACT(EPOCH FROM NOW()))::INT
+                FROM domains d
+                WHERE d.name='${domain}'
+                  AND NOT EXISTS (SELECT 1 FROM records r WHERE r.domain_id=d.id AND r.name='${domain}' AND r.type='SOA');
+
+              INSERT INTO records (domain_id, name, type, content, ttl, prio, change_date)
+                SELECT d.id, '${domain}', 'NS', '${ns_host}', 3600, 0, FLOOR(EXTRACT(EPOCH FROM NOW()))::INT
+                FROM domains d
+                WHERE d.name='${domain}'
+                  AND NOT EXISTS (SELECT 1 FROM records r WHERE r.domain_id=d.id AND r.name='${domain}' AND r.type='NS' AND r.content='${ns_host}');
+
+              INSERT INTO records (domain_id, name, type, content, ttl, prio, change_date)
+                SELECT d.id, '${ns_host}', 'A', '${LB_IP}', 3600, 0, FLOOR(EXTRACT(EPOCH FROM NOW()))::INT
+                FROM domains d
+                WHERE d.name='${domain}'
+                  AND NOT EXISTS (SELECT 1 FROM records r WHERE r.domain_id=d.id AND r.name='${ns_host}' AND r.type='A' AND r.content='${LB_IP}');
+              SQL
+
+              echo "[powerdns-db-init] applying schema"
+              psql -v ON_ERROR_STOP=1 -f /tmp/powerdns.sql
+              echo "[powerdns-db-init] schema ready"
+      containers:
+        - name: pdns-auth
+          image: powerdns/pdns-auth-46:4.6.4
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+          args:
+            - "--config-dir=/etc/powerdns"
+            - "--daemon=no"
+            - "--guardian=no"
+            - "--disable-syslog"
+            - "--loglevel=4"
+          env:
+            - name: PDNS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: powerdns-api
+                  key: api_key
+            - name: PDNS_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: powerdns-postgres-app
+                  key: password
+            - name: PGSSLMODE
+              value: verify-full
+            - name: PGSSLROOTCERT
+              value: /etc/postgres/ca/ca.crt
+          ports:
+            - name: dns-tcp
+              containerPort: 53
+              protocol: TCP
+            - name: dns-udp
+              containerPort: 53
+              protocol: UDP
+            - name: api
+              containerPort: 8081
+              protocol: TCP
+          volumeMounts:
+            - name: config
+              mountPath: /etc/powerdns
+            - name: postgres-ca
+              mountPath: /etc/postgres/ca
+              readOnly: true
+      volumes:
+        - name: config
+          emptyDir: {}
+        - name: config-template
+          configMap:
+            name: powerdns-config
+        - name: postgres-ca
+          secret:
+            secretName: postgres-ca
+            defaultMode: 0444
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: powerdns
+  namespace: dns-system
+spec:
+  type: LoadBalancer
+  selector:
+    app: powerdns
+    component: authoritative
+  ports:
+    - name: dns-tcp
+      port: 53
+      protocol: TCP
+      targetPort: dns-tcp
+    - name: dns-udp
+      port: 53
+      protocol: UDP
+      targetPort: dns-udp
+    - name: api
+      port: 8081
+      protocol: TCP
+      targetPort: api

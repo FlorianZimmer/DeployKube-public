@@ -1,0 +1,30 @@
+apiVersion: platform.darksite.cloud/v1alpha1
+kind: PlatformApps
+metadata:
+  name: platform-apps
+  namespace: argocd
+spec:
+  overlayMode: prod
+  deploymentId: proxmox-talos
+  enabledApps:
+    - platform-keycloak-upstream-sim
+    - proof-of-concepts-idlab
+    - proof-of-concepts-idlab-tests
+  disabledApps:
+    - networking-egress-proxy
+    - certificates-platform-ingress
+  globalKustomizeImages:
+    - deploykube/bootstrap-tools:1.4=198.51.100.11:5010/deploykube/bootstrap-tools:1.4
+    - registry.example.internal/deploykube/bootstrap-tools:1.4=198.51.100.11:5010/deploykube/bootstrap-tools:1.4
+    - registry.example.internal/deploykube/bootstrap-tools@sha256:e7be47a69e3a11bc58c857f2d690a71246ada91ac3a60bdfb0a547f091f6485a=198.51.100.11:5010/deploykube/bootstrap-tools@sha256:72407960aa586b2220673e125e20a3c6c0723460ec3064b98597bfe6d90c6456
+    - deploykube/validation-tools-core:0.1.0=198.51.100.11:5010/deploykube/validation-tools-core:0.1.0
+    - registry.example.internal/deploykube/validation-tools-core:0.1.0=198.51.100.11:5010/deploykube/validation-tools-core:0.1.0
+    - registry.example.internal/deploykube/validation-tools-core@sha256:babdd8ea44c3f169da4b55458061729329880fdf5c00194906d2dd6cdc655347=198.51.100.11:5010/deploykube/validation-tools-core@sha256:babdd8ea44c3f169da4b55458061729329880fdf5c00194906d2dd6cdc655347
+    - registry.example.internal/deploykube/tenant-provisioner:0.2.14=198.51.100.11:5010/deploykube/tenant-provisioner:0.2.14
+    - registry.example.internal/deploykube/tenant-provisioner:0.2.15=198.51.100.11:5010/deploykube/tenant-provisioner:0.2.15
+    - registry.example.internal/deploykube/tenant-provisioner:0.2.16=198.51.100.11:5010/deploykube/tenant-provisioner:0.2.16
+    - registry.example.internal/deploykube/tenant-provisioner:0.2.20=198.51.100.11:5010/deploykube/tenant-provisioner:0.2.20
+    - registry.example.internal/deploykube/tenant-provisioner:0.2.21=198.51.100.11:5010/deploykube/tenant-provisioner:0.2.21
+    - registry.example.internal/deploykube/tenant-provisioner:0.2.24=198.51.100.11:5010/deploykube/tenant-provisioner:0.2.24
+    - registry.example.internal/deploykube/scim-bridge:0.1.0=198.51.100.11:5010/deploykube/scim-bridge:0.1.0
+    - registry.example.internal/deploykube/idlab-poc:0.1.0=198.51.100.11:5010/deploykube/idlab-poc@sha256:89823556734990632dd73143eb083fef669a42d8fbac1f880b5e708d8b91d81b

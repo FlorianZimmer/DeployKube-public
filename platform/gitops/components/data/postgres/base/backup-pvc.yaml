@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-backup-v2
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
+    # WaitForFirstConsumer StorageClasses keep this PVC Pending until a pod mounts it.
+    # A warmup Job exists to trigger PV binding during bootstrap (see backup-warmup-job.yaml).
+    argocd.argoproj.io/sync-wave: "-1"
+  labels:
+    darksite.cloud/backup: skip
+    darksite.cloud/backup-skip-reason: backup-artifacts
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+  storageClassName: shared-rwo

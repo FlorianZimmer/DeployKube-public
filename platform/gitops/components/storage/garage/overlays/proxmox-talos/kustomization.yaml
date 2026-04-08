@@ -1,0 +1,18 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: garage
+resources:
+  - ../../base
+patches:
+  - path: patch-namespace-pod-security.yaml
+  - path: patch-statefulset-resources.yaml
+  - path: patch-vpa-requests-statefulset-garage.yaml
+  - target:
+      group: external-secrets.io
+      version: v1
+      kind: ExternalSecret
+      name: garage-s3
+    patch: |-
+      - op: remove
+        path: /spec/data/7
+  - path: patch-ha-tier-labels.yaml

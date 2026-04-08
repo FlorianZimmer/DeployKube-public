@@ -1,0 +1,24 @@
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: mimir-port-permissive
+  namespace: mimir
+  annotations:
+    argocd.argoproj.io/sync-wave: "2.5"
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: mimir
+      app.kubernetes.io/name: mimir
+  # Mimir's internal ring/memberlist and gRPC traffic often targets Pod IPs directly.
+  # With mesh-wide STRICT mTLS, Envoy treats Pod-IP traffic as passthrough and does not
+  # automatically originate mTLS, which causes the server-side proxy to reset plaintext
+  # connections. Allow plaintext on these internal ports to avoid that failure mode,
+  # while keeping STRICT mTLS as the default for other ports.
+  mtls:
+    mode: STRICT
+  portLevelMtls:
+    "7946":
+      mode: PERMISSIVE
+    "9095":
+      mode: PERMISSIVE

@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: data-system
+  labels:
+    istio-injection: disabled
+    pod-security.kubernetes.io/enforce: restricted
+    deploykube.gitops/component: platform-data-postgres-controller

@@ -1,0 +1,27 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: tenant-baseline-service-types
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  admission: true
+  validationFailureAction: Enforce
+  background: false
+  emitWarning: false
+  rules:
+    - name: deny-nodeport-and-loadbalancer
+      match:
+        any:
+          - resources:
+              kinds: ["Service"]
+              namespaceSelector:
+                matchLabels:
+                  darksite.cloud/rbac-profile: tenant
+      skipBackgroundRequests: true
+      validate:
+        message: "Tenants may not create Service type NodePort or LoadBalancer (publish externally via platform ingress)."
+        allowExistingViolations: true
+        pattern:
+          spec:
+            =(type): ClusterIP

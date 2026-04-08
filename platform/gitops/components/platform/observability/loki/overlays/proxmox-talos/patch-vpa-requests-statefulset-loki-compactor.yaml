@@ -1,0 +1,16 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: loki-compactor
+  namespace: loki
+spec:
+  template:
+    spec:
+      containers:
+        - name: compactor
+          resources:
+            requests:
+              cpu: "15m"
+              memory: "96Mi"
+            limits:
+              memory: "144Mi"

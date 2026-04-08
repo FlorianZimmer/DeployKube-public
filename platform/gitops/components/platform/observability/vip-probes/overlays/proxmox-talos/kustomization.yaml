@@ -1,0 +1,21 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: observability
+commonAnnotations:
+  argocd.argoproj.io/sync-wave: "1.44"
+
+resources:
+  - networkpolicy-alloy-metrics-allow-vip-probes.yaml
+
+configMapGenerator:
+  - name: vip-probes-config
+    files:
+      - blackbox_modules.yml=blackbox_modules.yml
+      - targets.yml=targets.yml
+      - ca.crt=ca.crt
+    options:
+      disableNameSuffixHash: true
+
+generatorOptions:
+  disableNameSuffixHash: true
+

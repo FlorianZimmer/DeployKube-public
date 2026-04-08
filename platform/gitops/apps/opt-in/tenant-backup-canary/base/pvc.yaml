@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: tenant-backup-canary-data
+  namespace: tenant-smoke-demo
+  labels:
+    darksite.cloud/backup: restic
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi

@@ -1,0 +1,292 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cert-smoke-vault-external-issuance
+  namespace: cert-manager
+  labels:
+    app.kubernetes.io/name: cert-smoke
+    app.kubernetes.io/component: vault-external-issuance
+spec:
+  schedule: "43 * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 900
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: cert-smoke
+            app.kubernetes.io/component: vault-external-issuance
+          annotations:
+            sidecar.istio.io/inject: "false"
+        spec:
+          restartPolicy: Never
+          enableServiceLinks: false
+          serviceAccountName: cert-smoke
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: smoke
+              image: registry.example.internal/deploykube/validation-tools-core@sha256:babdd8ea44c3f169da4b55458061729329880fdf5c00194906d2dd6cdc655347
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: HOME
+                  value: /tmp
+                - name: XDG_CONFIG_HOME
+                  value: /tmp/.config
+              resources:
+                requests:
+                  cpu: 25m
+                  memory: 64Mi
+                limits:
+                  cpu: 250m
+                  memory: 256Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+              command:
+                - /bin/sh
+                - -c
+              args:
+                - |
+                  set -euo pipefail
+
+                  ns="cert-manager"
+                  issuer="vault-external"
+                  cert="cert-smoke-vault-external-test"
+                  secret="cert-smoke-vault-external-test-tls"
+                  root_secret="step-ca-root-ca"
+                  pki_mount="pki-ext"
+                  internal_crl_url="http://vault.vault-system.svc:8200/v1/${pki_mount}/crl/pem"
+                  internal_ocsp_url="http://vault.vault-system.svc:8200/v1/${pki_mount}/ocsp"
+
+                  dep_cfg_json="$(kubectl get deploymentconfigs.platform.darksite.cloud -o json 2>/dev/null || true)"
+                  if [ -z "${dep_cfg_json}" ]; then
+                    echo "FAIL: could not read DeploymentConfig objects" >&2
+                    exit 1
+                  fi
+                  dep_cfg_count="$(echo "${dep_cfg_json}" | jq -r '.items | length')"
+                  if [ "${dep_cfg_count}" -ne 1 ]; then
+                    echo "FAIL: expected exactly one DeploymentConfig, found ${dep_cfg_count}" >&2
+                    exit 1
+                  fi
+
+                  platform_mode="$(echo "${dep_cfg_json}" | jq -r '.items[0].spec.certificates.platformIngress.mode // "subCa"')"
+                  if [ "${platform_mode}" != "vault" ]; then
+                    echo "SKIP: Vault external issuance smoke is not required (platformIngress=${platform_mode})"
+                    exit 0
+                  fi
+
+                  vault_host="$(echo "${dep_cfg_json}" | jq -r '.items[0].spec.dns.hostnames.vault // empty')"
+                  test_dns="$(echo "${dep_cfg_json}" | jq -r '.items[0].spec.dns.hostnames.argocd // empty')"
+                  if [ -z "${vault_host}" ] || [ -z "${test_dns}" ]; then
+                    echo "FAIL: expected DeploymentConfig hostnames for vault and argocd" >&2
+                    exit 1
+                  fi
+
+                  expected_ca_issuers_url="https://${vault_host}/v1/${pki_mount}/ca"
+                  expected_crl_url="https://${vault_host}/v1/${pki_mount}/crl/pem"
+                  expected_ocsp_url="https://${vault_host}/v1/${pki_mount}/ocsp"
+
+                  cleanup() {
+                    kubectl -n "${ns}" delete certificate "${cert}" --ignore-not-found --wait=true --timeout=60s 2>/dev/null || true
+                    kubectl -n "${ns}" delete secret "${secret}" --ignore-not-found 2>/dev/null || true
+                  }
+
+                  debug() {
+                    echo "--- debug: certificate ---"
+                    kubectl -n "${ns}" describe certificate "${cert}" 2>/dev/null || true
+                    echo "--- debug: certificaterequests ---"
+                    kubectl -n "${ns}" get certificaterequests -o wide --sort-by=.metadata.creationTimestamp 2>/dev/null | tail -n 10 || true
+                    echo "--- debug: clusterissuer ---"
+                    kubectl get clusterissuer "${issuer}" -o yaml 2>/dev/null || true
+                    echo "--- debug: events (tail) ---"
+                    kubectl -n "${ns}" get events --sort-by=.metadata.creationTimestamp 2>/dev/null | tail -n 20 || true
+                  }
+
+                  trap cleanup EXIT
+
+                  wait_for_root_ca_secret() {
+                    timeout_s="${1:-600}"
+                    start_s="$(date +%s)"
+                    while true; do
+                      crt_b64="$(kubectl -n "${ns}" get secret "${root_secret}" -o jsonpath='{.data.tls\.crt}' 2>/dev/null || true)"
+                      if [ -n "${crt_b64}" ]; then
+                        return 0
+                      fi
+                      now_s="$(date +%s)"
+                      if [ $((now_s - start_s)) -ge "${timeout_s}" ]; then
+                        return 1
+                      fi
+                      sleep 5
+                    done
+                  }
+
+                  wait_for_clusterissuer_ready() {
+                    timeout_s="${1:-600}"
+                    start_s="$(date +%s)"
+                    while true; do
+                      ready="$(kubectl get clusterissuer "${issuer}" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)"
+                      if [ "${ready}" = "True" ]; then
+                        return 0
+                      fi
+                      now_s="$(date +%s)"
+                      if [ $((now_s - start_s)) -ge "${timeout_s}" ]; then
+                        return 1
+                      fi
+                      sleep 5
+                    done
+                  }
+
+                  echo "=== Vault External Issuance Smoke Test ==="
+                  echo "Testing exact-host issuance via ClusterIssuer/${issuer} for ${test_dns}"
+
+                  if ! wait_for_root_ca_secret 600; then
+                    echo "FAIL: Root CA secret ${ns}/${root_secret} not found or missing tls.crt" >&2
+                    exit 1
+                  fi
+                  kubectl -n "${ns}" get secret "${root_secret}" -o jsonpath='{.data.tls\.crt}' | base64 -d > /tmp/root-ca.crt
+
+                  if ! wait_for_clusterissuer_ready 600; then
+                    echo "FAIL: ClusterIssuer/${issuer} did not become Ready=True" >&2
+                    debug
+                    exit 1
+                  fi
+
+                  cleanup
+
+                  out="$(kubectl -n "${ns}" apply -f - 2>&1 <<EOF
+                  apiVersion: cert-manager.io/v1
+                  kind: Certificate
+                  metadata:
+                    name: ${cert}
+                    labels:
+                      app.kubernetes.io/name: cert-smoke
+                      deploykube.certificates/purpose: smoke-test
+                  spec:
+                    secretName: ${secret}
+                    duration: 24h
+                    renewBefore: 8h
+                    commonName: ${test_dns}
+                    dnsNames:
+                      - ${test_dns}
+                    issuerRef:
+                      name: ${issuer}
+                      kind: ClusterIssuer
+                    privateKey:
+                      algorithm: RSA
+                      size: 2048
+                      rotationPolicy: Never
+                  EOF
+                  )" || {
+                    echo "${out}" >&2
+                    debug
+                    exit 1
+                  }
+                  echo "${out}"
+
+                  if ! kubectl -n "${ns}" wait --for=condition=Ready certificate/"${cert}" --timeout=180s; then
+                    echo "FAIL: Certificate did not reach Ready=True within timeout" >&2
+                    debug
+                    exit 1
+                  fi
+
+                  crt_b64="$(kubectl -n "${ns}" get secret "${secret}" -o jsonpath='{.data.tls\.crt}' 2>/dev/null || true)"
+                  key_b64="$(kubectl -n "${ns}" get secret "${secret}" -o jsonpath='{.data.tls\.key}' 2>/dev/null || true)"
+                  if [ -z "${crt_b64}" ] || [ -z "${key_b64}" ]; then
+                    echo "FAIL: Secret missing tls.crt and/or tls.key" >&2
+                    debug
+                    exit 1
+                  fi
+
+                  echo "${crt_b64}" | base64 -d > /tmp/tls.crt
+                  awk 'BEGIN { n = 0 } /BEGIN CERTIFICATE/ { n++ } { print > ("/tmp/cert-" n ".pem") }' /tmp/tls.crt
+                  mv /tmp/cert-1.pem /tmp/issued.crt
+                  if [ ! -f /tmp/cert-2.pem ]; then
+                    echo "FAIL: issued Secret did not contain the intermediate certificate chain" >&2
+                    exit 1
+                  fi
+                  mv /tmp/cert-2.pem /tmp/issuer.crt
+
+                  if ! openssl verify -CAfile /tmp/root-ca.crt -untrusted /tmp/issuer.crt /tmp/issued.crt; then
+                    echo "FAIL: Certificate chain verification failed" >&2
+                    exit 1
+                  fi
+
+                  openssl x509 -in /tmp/issued.crt -noout -text > /tmp/issued.txt
+
+                  if ! grep -Fq "${expected_ca_issuers_url}" /tmp/issued.txt; then
+                    echo "FAIL: issued certificate missing expected CA Issuers URL ${expected_ca_issuers_url}" >&2
+                    exit 1
+                  fi
+                  if ! grep -Fq "${expected_crl_url}" /tmp/issued.txt; then
+                    echo "FAIL: issued certificate missing expected CRL URL ${expected_crl_url}" >&2
+                    exit 1
+                  fi
+                  if ! grep -Fq "${expected_ocsp_url}" /tmp/issued.txt; then
+                    echo "FAIL: issued certificate missing expected OCSP URL ${expected_ocsp_url}" >&2
+                    exit 1
+                  fi
+
+                  curl --connect-timeout 5 --max-time 30 -fsSL "${internal_crl_url}" > /tmp/crl.pem
+                  if ! grep -Fq "BEGIN X509 CRL" /tmp/crl.pem; then
+                    echo "FAIL: CRL endpoint did not return a PEM CRL" >&2
+                    exit 1
+                  fi
+                  openssl crl -in /tmp/crl.pem -noout -issuer -nextupdate >/tmp/crl.txt
+
+                  if ! openssl ocsp -no_nonce \
+                    -issuer /tmp/issuer.crt \
+                    -cert /tmp/issued.crt \
+                    -reqout /tmp/ocsp.req >/dev/null 2>&1; then
+                    echo "FAIL: could not build OCSP request" >&2
+                    exit 1
+                  fi
+                  if ! curl --connect-timeout 5 --max-time 30 -fsSL \
+                    -H "Content-Type: application/ocsp-request" \
+                    --data-binary @/tmp/ocsp.req \
+                    "${internal_ocsp_url}" >/tmp/ocsp.resp; then
+                    echo "FAIL: OCSP POST failed" >&2
+                    exit 1
+                  fi
+                  if ! openssl ocsp \
+                    -respin /tmp/ocsp.resp \
+                    -issuer /tmp/issuer.crt \
+                    -CAfile /tmp/root-ca.crt \
+                    -cert /tmp/issued.crt \
+                    -resp_text >/tmp/ocsp.txt 2>&1; then
+                    echo "FAIL: OCSP request failed" >&2
+                    cat /tmp/ocsp.txt >&2 || true
+                    exit 1
+                  fi
+                  if ! grep -Eq ': good|Cert Status: good' /tmp/ocsp.txt; then
+                    echo "FAIL: OCSP response did not report certificate status good" >&2
+                    cat /tmp/ocsp.txt >&2 || true
+                    exit 1
+                  fi
+
+                  echo "Issued certificate:"
+                  openssl x509 -in /tmp/issued.crt -noout -subject -issuer -dates | sed 's/^/   /'
+                  echo "CRL summary:"
+                  sed 's/^/   /' /tmp/crl.txt
+                  echo "OCSP summary:"
+                  grep -E 'Response verify OK|: good|Cert Status: good' /tmp/ocsp.txt | sed 's/^/   /'
+                  echo "=== Vault External Issuance Smoke Test PASSED ==="
+          volumes:
+            - name: tmp
+              emptyDir: {}

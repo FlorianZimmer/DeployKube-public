@@ -1,0 +1,215 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mimir-distributor
+  namespace: mimir
+spec:
+  template:
+    spec:
+      containers:
+        - name: distributor
+          resources:
+            limits:
+              memory: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mimir-overrides-exporter
+  namespace: mimir
+spec:
+  template:
+    spec:
+      containers:
+        - name: overrides-exporter
+          resources:
+            limits:
+              memory: 256Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mimir-querier
+  namespace: mimir
+spec:
+  template:
+    spec:
+      containers:
+        - name: querier
+          resources:
+            limits:
+              memory: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mimir-query-scheduler
+  namespace: mimir
+spec:
+  template:
+    spec:
+      containers:
+        - name: query-scheduler
+          resources:
+            limits:
+              memory: 512Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mimir-ruler
+  namespace: mimir
+spec:
+  template:
+    spec:
+      containers:
+        - name: ruler
+          resources:
+            limits:
+              memory: 1Gi
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mimir-alertmanager
+  namespace: mimir
+spec:
+  template:
+    spec:
+      containers:
+        - name: alertmanager
+          resources:
+            limits:
+              memory: 512Mi
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mimir-compactor
+  namespace: mimir
+spec:
+  template:
+    spec:
+      containers:
+        - name: compactor
+          resources:
+            limits:
+              memory: 2Gi
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mimir-ingester-zone-a
+  namespace: mimir
+spec:
+  template:
+    spec:
+      containers:
+        - name: ingester
+          resources:
+            limits:
+              memory: 4Gi
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mimir-ingester-zone-b
+  namespace: mimir
+spec:
+  template:
+    spec:
+      containers:
+        - name: ingester
+          resources:
+            limits:
+              memory: 4Gi
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mimir-ingester-zone-c
+  namespace: mimir
+spec:
+  template:
+    spec:
+      containers:
+        - name: ingester
+          resources:
+            limits:
+              memory: 4Gi
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mimir-store-gateway-zone-a
+  namespace: mimir
+spec:
+  template:
+    spec:
+      containers:
+        - name: store-gateway
+          resources:
+            limits:
+              memory: 2Gi
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mimir-store-gateway-zone-b
+  namespace: mimir
+spec:
+  template:
+    spec:
+      containers:
+        - name: store-gateway
+          resources:
+            limits:
+              memory: 2Gi
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mimir-store-gateway-zone-c
+  namespace: mimir
+spec:
+  template:
+    spec:
+      containers:
+        - name: store-gateway
+          resources:
+            limits:
+              memory: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mimir-gateway
+  namespace: mimir
+spec:
+  template:
+    spec:
+      containers:
+        - name: gateway
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mimir-smoke-test
+  namespace: mimir
+spec:
+  template:
+    spec:
+      containers:
+        - name: smoke-test
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 256Mi

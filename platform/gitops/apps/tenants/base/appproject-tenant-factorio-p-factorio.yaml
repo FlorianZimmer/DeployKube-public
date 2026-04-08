@@ -1,0 +1,90 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: tenant-factorio-p-factorio
+  namespace: argocd
+  labels:
+    darksite.cloud/tenant-id: factorio
+    darksite.cloud/project-id: factorio
+  annotations:
+    argocd.argoproj.io/sync-wave: "-98"
+spec:
+  description: Tenant project factorio/factorio
+
+  # Tenant self-service (no per-tenant growth in global argocd-rbac-cm):
+  # Bind Keycloak groups to Argo roles inside the tenant AppProject.
+  roles:
+    - name: admin
+      description: Tenant project admin (factorio/factorio)
+      policies:
+        - p, proj:tenant-factorio-p-factorio:admin, applications, get, tenant-factorio-p-factorio/*, allow
+        - p, proj:tenant-factorio-p-factorio:admin, applications, sync, tenant-factorio-p-factorio/*, allow
+        - p, proj:tenant-factorio-p-factorio:admin, logs, get, tenant-factorio-p-factorio/*, allow
+        - p, proj:tenant-factorio-p-factorio:admin, projects, get, tenant-factorio-p-factorio, allow
+      groups:
+        - dk-tenant-factorio-project-factorio-admins
+
+    - name: developer
+      description: Tenant project developer (factorio/factorio)
+      policies:
+        - p, proj:tenant-factorio-p-factorio:developer, applications, get, tenant-factorio-p-factorio/*, allow
+        - p, proj:tenant-factorio-p-factorio:developer, applications, sync, tenant-factorio-p-factorio/*, allow
+        - p, proj:tenant-factorio-p-factorio:developer, logs, get, tenant-factorio-p-factorio/*, allow
+        - p, proj:tenant-factorio-p-factorio:developer, projects, get, tenant-factorio-p-factorio, allow
+      groups:
+        - dk-tenant-factorio-project-factorio-developers
+
+    - name: viewer
+      description: Tenant project viewer (factorio/factorio)
+      policies:
+        - p, proj:tenant-factorio-p-factorio:viewer, applications, get, tenant-factorio-p-factorio/*, allow
+        - p, proj:tenant-factorio-p-factorio:viewer, logs, get, tenant-factorio-p-factorio/*, allow
+        - p, proj:tenant-factorio-p-factorio:viewer, projects, get, tenant-factorio-p-factorio, allow
+      groups:
+        - dk-tenant-factorio-project-factorio-viewers
+
+  # Repo-per-project product mode:
+  # - Forgejo org: tenant-factorio
+  # - Repo: apps-factorio.git
+  sourceRepos:
+    - https://forgejo-https.forgejo.svc.cluster.local/tenant-factorio/apps-factorio.git
+
+  # Namespace boundary (project-scoped):
+  destinations:
+    - name: in-cluster
+      namespace: t-factorio-p-factorio-*
+
+  # Tenants must not apply cluster-scoped resources via GitOps.
+  # Keep this list empty by using a non-existent API group/kind.
+  clusterResourceWhitelist:
+    - group: do-not-use
+      kind: DoNotUse
+
+  # Namespaced workload-plane allowlist (tight by default; expand with evidence).
+  namespaceResourceWhitelist:
+    - group: ""
+      kind: ConfigMap
+    - group: ""
+      kind: PersistentVolumeClaim
+    - group: ""
+      kind: Service
+    - group: ""
+      kind: ServiceAccount
+    - group: apps
+      kind: Deployment
+    - group: apps
+      kind: DaemonSet
+    - group: apps
+      kind: StatefulSet
+    - group: autoscaling
+      kind: HorizontalPodAutoscaler
+    - group: batch
+      kind: Job
+    - group: batch
+      kind: CronJob
+    - group: networking.k8s.io
+      kind: NetworkPolicy
+    - group: policy
+      kind: PodDisruptionBudget
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute

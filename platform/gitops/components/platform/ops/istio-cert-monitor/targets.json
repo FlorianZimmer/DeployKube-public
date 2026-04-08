@@ -1,0 +1,26 @@
+[
+  {
+    "namespace": "forgejo",
+    "kind": "deployment",
+    "name": "forgejo",
+    "proxyContainer": "istio-proxy"
+  },
+  {
+    "namespace": "argocd",
+    "kind": "deployment",
+    "name": "argo-cd-argocd-server",
+    "proxyContainer": "istio-proxy"
+  },
+  {
+    "namespace": "argocd",
+    "kind": "deployment",
+    "name": "argo-cd-argocd-repo-server",
+    "proxyContainer": "istio-proxy"
+  },
+  {
+    "namespace": "argocd",
+    "kind": "statefulset",
+    "name": "argo-cd-argocd-application-controller",
+    "proxyContainer": "istio-proxy"
+  }
+]

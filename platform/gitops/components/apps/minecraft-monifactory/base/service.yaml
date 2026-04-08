@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: minecraft
+  namespace: minecraft-monifactory
+spec:
+  type: LoadBalancer
+  ports:
+    - name: minecraft
+      port: 25565
+      protocol: TCP
+      targetPort: minecraft
+  selector:
+    app: minecraft-monifactory
+

@@ -1,0 +1,245 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: storage-smoke-backups-freshness
+  annotations:
+    deploykube.gitops/validation-job: "true"
+spec:
+  # Intentionally offset from :00 to avoid top-of-hour kube-apiserver contention.
+  schedule: "29,59 * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 300
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          annotations:
+            sidecar.istio.io/inject: "false"
+        spec:
+          restartPolicy: Never
+          affinity:
+            nodeAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+                # Prefer non-control-plane nodes when present, but remain schedulable on single-node clusters.
+                - weight: 100
+                  preference:
+                    matchExpressions:
+                      - key: node-role.kubernetes.io/control-plane
+                        operator: DoesNotExist
+                - weight: 50
+                  preference:
+                    matchExpressions:
+                      - key: node-role.kubernetes.io/master
+                        operator: DoesNotExist
+          containers:
+            - name: smoke
+              image: registry.example.internal/deploykube/bootstrap-tools@sha256:e7be47a69e3a11bc58c857f2d690a71246ada91ac3a60bdfb0a547f091f6485a
+              imagePullPolicy: IfNotPresent
+              resources:
+                requests:
+                  cpu: 25m
+                  memory: 128Mi
+                limits:
+                  memory: 256Mi
+              env:
+                - name: DEPLOYMENT_ID
+                  value: proxmox-talos
+                - name: MAX_AGE_TIER0_SECONDS
+                  value: "7200"
+                - name: MAX_AGE_S3_MIRROR_SECONDS
+                  value: "21600"
+                - name: MAX_AGE_PVC_RESTIC_SECONDS
+                  value: "43200"
+                - name: MAX_AGE_BACKUP_SET_SECONDS
+                  value: "21600"
+              volumeMounts:
+                - name: deployment-config
+                  mountPath: /config
+                  readOnly: true
+                - name: backup
+                  mountPath: /backup
+              command:
+                - /bin/bash
+                - -c
+                - |
+                  set -euo pipefail
+                  command -v yq >/dev/null 2>&1 || { echo "missing dependency: yq" >&2; exit 1; }
+
+                  duration_to_seconds() {
+                    local raw="${1:-}"
+                    if [[ ! "${raw}" =~ ^([0-9]+)([smhd])$ ]]; then
+                      return 1
+                    fi
+                    local n="${BASH_REMATCH[1]}"
+                    local unit="${BASH_REMATCH[2]}"
+                    local mult=1
+                    case "${unit}" in
+                      s) mult=1 ;;
+                      m) mult=60 ;;
+                      h) mult=3600 ;;
+                      d) mult=86400 ;;
+                      *) return 1 ;;
+                    esac
+                    printf '%s' "$((n * mult))"
+                  }
+
+                  rpo_to_max_age_seconds() {
+                    local rpo_raw="${1:-}"
+                    local multiplier="${2:-1}"
+                    local fallback="${3:-}"
+                    local seconds=""
+                    if seconds="$(duration_to_seconds "${rpo_raw}")"; then
+                      printf '%s' "$((seconds * multiplier))"
+                      return 0
+                    fi
+                    printf '%s' "${fallback}"
+                  }
+
+                  cfg="/config/deployment-config.yaml"
+                  if [ -f "$cfg" ]; then
+                    dep="$(yq -r '.spec.deploymentId // ""' "$cfg" 2>/dev/null || true)"
+                    if [ -n "$dep" ]; then
+                      DEPLOYMENT_ID="$dep"
+                    fi
+
+                    # Defaults remain backwards-compatible with env values in this manifest,
+                    # but prefer deployment-config RPO when available.
+                    rpo_tier0="$(yq -r '.spec.backup.rpo.tier0 // ""' "$cfg" 2>/dev/null || true)"
+                    rpo_s3="$(yq -r '.spec.backup.rpo.s3Mirror // ""' "$cfg" 2>/dev/null || true)"
+                    rpo_pvc="$(yq -r '.spec.backup.rpo.pvc // ""' "$cfg" 2>/dev/null || true)"
+
+                    MAX_AGE_TIER0_SECONDS="$(rpo_to_max_age_seconds "${rpo_tier0}" 2 "${MAX_AGE_TIER0_SECONDS}")"
+                    MAX_AGE_S3_MIRROR_SECONDS="$(rpo_to_max_age_seconds "${rpo_s3}" 6 "${MAX_AGE_S3_MIRROR_SECONDS}")"
+                    MAX_AGE_PVC_RESTIC_SECONDS="$(rpo_to_max_age_seconds "${rpo_pvc}" 2 "${MAX_AGE_PVC_RESTIC_SECONDS}")"
+
+                    # Backup-set pointer freshness is tied to the strictest tier cadence that can block set advancement.
+                    if [ "${MAX_AGE_TIER0_SECONDS}" -gt "${MAX_AGE_S3_MIRROR_SECONDS}" ]; then
+                      MAX_AGE_BACKUP_SET_SECONDS="${MAX_AGE_TIER0_SECONDS}"
+                    else
+                      MAX_AGE_BACKUP_SET_SECONDS="${MAX_AGE_S3_MIRROR_SECONDS}"
+                    fi
+                  fi
+
+                  export DEPLOYMENT_ID
+                  export MAX_AGE_TIER0_SECONDS MAX_AGE_S3_MIRROR_SECONDS MAX_AGE_PVC_RESTIC_SECONDS MAX_AGE_BACKUP_SET_SECONDS
+
+                  python3 - <<'PY'
+                  import datetime
+                  import json
+                  import os
+                  import sys
+
+                  deployment_id = os.environ.get("DEPLOYMENT_ID", "").strip()
+                  if not deployment_id:
+                    print("missing DEPLOYMENT_ID env", file=sys.stderr)
+                    sys.exit(1)
+
+                  def env_int(name: str) -> int:
+                    v = os.environ.get(name, "").strip()
+                    if not v:
+                      raise ValueError(f"missing {name} env")
+                    return int(v)
+
+                  max_age_tier0 = env_int("MAX_AGE_TIER0_SECONDS")
+                  max_age_s3 = env_int("MAX_AGE_S3_MIRROR_SECONDS")
+                  max_age_pvc = env_int("MAX_AGE_PVC_RESTIC_SECONDS")
+                  max_age_backup_set = env_int("MAX_AGE_BACKUP_SET_SECONDS")
+
+                  base = f"/backup/{deployment_id}"
+                  now = datetime.datetime.now(datetime.timezone.utc)
+
+                  checks = [
+                    ("tier0/vault-core/LATEST.json", max_age_tier0, "vault-core"),
+                    ("tier0/postgres/keycloak/LATEST.json", max_age_tier0, "postgres-keycloak"),
+                    ("tier0/postgres/powerdns/LATEST.json", max_age_tier0, "postgres-powerdns"),
+                    ("tier0/postgres/forgejo/LATEST.json", max_age_tier0, "postgres-forgejo"),
+                    ("s3-mirror/LATEST.json", max_age_s3, "s3-mirror"),
+                    ("pvc-restic/LATEST.json", max_age_pvc, "pvc-restic"),
+                    ("LATEST.json", max_age_backup_set, "backup-set-latest"),
+                  ]
+
+                  def parse_rfc3339(ts: str) -> datetime.datetime:
+                    ts = ts.strip()
+                    if ts.endswith("Z"):
+                      ts = ts[:-1] + "+00:00"
+                    return datetime.datetime.fromisoformat(ts)
+
+                  failures = 0
+                  for rel, max_age, label in checks:
+                    path = os.path.join(base, rel)
+                    if not os.path.isfile(path):
+                      print(f"missing marker: {label} ({path})", file=sys.stderr)
+                      failures += 1
+                      continue
+
+                    try:
+                      with open(path, "r", encoding="utf-8") as f:
+                        doc = json.load(f)
+                    except Exception as e:
+                      print(f"failed to parse marker: {label} ({path}): {e}", file=sys.stderr)
+                      failures += 1
+                      continue
+
+                    status = doc.get("status")
+                    if status != "ok":
+                      print(f"bad status: {label} status={status!r} ({path})", file=sys.stderr)
+                      failures += 1
+                      continue
+
+                    ts = doc.get("timestamp", "")
+                    if not isinstance(ts, str) or not ts.strip():
+                      print(f"malformed marker (missing .timestamp): {label} ({path})", file=sys.stderr)
+                      failures += 1
+                      continue
+
+                    try:
+                      dt = parse_rfc3339(ts)
+                      if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=datetime.timezone.utc)
+                      age = int((now - dt).total_seconds())
+                    except Exception as e:
+                      print(f"malformed timestamp: {label} ({ts}): {e}", file=sys.stderr)
+                      failures += 1
+                      continue
+
+                    if age > max_age:
+                      print(f"stale: {label} age={age}s max={max_age}s ts={ts}", file=sys.stderr)
+                      failures += 1
+                      continue
+
+                    if label.startswith(("vault-", "postgres-")):
+                      artifacts = doc.get("artifacts")
+                      if not isinstance(artifacts, list) or not artifacts:
+                        print(f"malformed marker (missing .artifacts): {label} ({path})", file=sys.stderr)
+                        failures += 1
+                        continue
+                      for a in artifacts:
+                        if not isinstance(a, str) or not a.strip():
+                          print(f"malformed artifact entry: {label} ({path})", file=sys.stderr)
+                          failures += 1
+                          continue
+                        ap = os.path.join(os.path.dirname(path), a)
+                        if not os.path.isfile(ap):
+                          print(f"missing artifact: {label} ({ap})", file=sys.stderr)
+                          failures += 1
+                          continue
+
+                    print(f"ok: {label} ts={ts} age={age}s")
+
+                  if failures:
+                    print(f"backup freshness smoke FAILED ({failures} issue(s))", file=sys.stderr)
+                    sys.exit(1)
+                  PY
+          volumes:
+            - name: deployment-config
+              configMap:
+                name: deploykube-deployment-config
+                defaultMode: 0444
+            - name: backup
+              persistentVolumeClaim:
+                claimName: backup-target

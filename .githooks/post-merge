@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Best-effort: never fail the merge because of cleanup logic.
+repo_root="$(git rev-parse --show-toplevel)"
+
+if [[ -x "${repo_root}/scripts/dev/task-prune.sh" ]]; then
+  "${repo_root}/scripts/dev/task-prune.sh" || true
+fi
+

@@ -1,0 +1,58 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: shared-rwo-reader
+  namespace: default
+  labels:
+    app.kubernetes.io/name: shared-rwo-smoke
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 120
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: shared-rwo-smoke
+    spec:
+      restartPolicy: Never
+      initContainers:
+        - name: wait-for-writer
+          image: registry.example.internal/deploykube/bootstrap-tools:1.4
+          command:
+            - /bin/sh
+            - -c
+          args:
+            - |
+              set -euo pipefail
+              i=0
+              while [ "${i}" -lt 120 ]; do
+                if [ -f /data/probe.txt ]; then
+                  exit 0
+                fi
+                echo "waiting for writer..."
+                sleep 2
+                i=$((i + 1))
+              done
+              echo "probe file never appeared" >&2
+              exit 1
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      containers:
+        - name: reader
+          image: registry.example.internal/deploykube/bootstrap-tools:1.4
+          command:
+            - /bin/sh
+            - -c
+          args:
+            - |
+              set -euo pipefail
+              echo "reader pod=${HOSTNAME}"
+              cat /data/probe.txt
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: shared-rwo-smoke

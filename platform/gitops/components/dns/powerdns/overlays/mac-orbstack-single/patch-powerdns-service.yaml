@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: powerdns
+  namespace: dns-system
+  annotations:
+    metallb.universe.tf/address-pool: powerdns-pool

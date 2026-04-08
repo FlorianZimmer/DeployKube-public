@@ -1,0 +1,32 @@
+name: Validation Jobs
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  lint-validation-jobs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: v1.34.2
+
+      - name: Install ripgrep (rg)
+        run: |
+          if command -v rg >/dev/null 2>&1; then
+            rg --version
+            exit 0
+          fi
+          sudo apt-get update
+          sudo apt-get install -y ripgrep
+          rg --version
+
+      - name: Run validation suite
+        run: ./tests/scripts/ci.sh validation-jobs

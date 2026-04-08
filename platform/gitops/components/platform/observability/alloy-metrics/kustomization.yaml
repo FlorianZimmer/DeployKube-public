@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: observability
+commonAnnotations:
+  argocd.argoproj.io/sync-wave: "1.45"
+resources:
+  - configmap-vip-probes-default.yaml
+helmGlobals:
+  chartHome: charts
+helmCharts:
+  - name: alloy
+    version: 1.4.0
+    releaseName: alloy-metrics
+    namespace: observability
+    valuesFile: values.yaml
+patches:
+  - path: patch-vpa-requests-deployment-alloy-metrics.yaml
+  - path: patch-vpa-requests-deployment-alloy-metrics.yaml
+  - path: patch-vpa-requests-deployment-alloy-metrics.yaml
+  - path: patch-ha-tier-labels.yaml

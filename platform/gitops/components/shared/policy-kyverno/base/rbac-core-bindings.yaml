@@ -1,0 +1,64 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kyverno-admission-controller-core
+  annotations:
+    # Must exist before controllers start (avoids startup sanity-check failures in clusters where ClusterRole aggregation is delayed/disabled).
+    argocd.argoproj.io/sync-wave: "-5"
+subjects:
+  - kind: ServiceAccount
+    name: kyverno-admission-controller
+    namespace: policy-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kyverno:admission-controller:core
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kyverno-background-controller-core
+  annotations:
+    argocd.argoproj.io/sync-wave: "-5"
+subjects:
+  - kind: ServiceAccount
+    name: kyverno-background-controller
+    namespace: policy-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kyverno:background-controller:core
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kyverno-cleanup-controller-core
+  annotations:
+    argocd.argoproj.io/sync-wave: "-5"
+subjects:
+  - kind: ServiceAccount
+    name: kyverno-cleanup-controller
+    namespace: policy-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kyverno:cleanup-controller:core
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kyverno-reports-controller-core
+  annotations:
+    argocd.argoproj.io/sync-wave: "-5"
+subjects:
+  - kind: ServiceAccount
+    name: kyverno-reports-controller
+    namespace: policy-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kyverno:reports-controller:core
+

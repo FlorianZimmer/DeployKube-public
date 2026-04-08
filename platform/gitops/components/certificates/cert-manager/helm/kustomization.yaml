@@ -1,0 +1,11 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: cert-manager
+resources:
+  - rendered-chart.yaml
+  - networkpolicies.yaml
+patches:
+  - path: patch-vpa-requests-deployment-cert-manager.yaml
+  - path: patch-vpa-requests-deployment-cert-manager-cainjector.yaml
+  - path: patch-vpa-requests-deployment-cert-manager-webhook.yaml
+  - path: patch-ha-tier-labels.yaml

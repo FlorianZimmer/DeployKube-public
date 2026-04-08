@@ -1,0 +1,72 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: forgejo-db-switch
+  namespace: forgejo
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: forgejo-db-switch
+  namespace: forgejo
+rules:
+- apiGroups: [""]
+  resources: ["secrets", "configmaps", "deployments"]
+  verbs: ["get", "patch", "create"]
+- apiGroups: [""]
+  resources: ["services"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list", "watch", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: forgejo-db-switch
+  namespace: forgejo
+subjects:
+- kind: ServiceAccount
+  name: forgejo-db-switch
+  namespace: forgejo
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: forgejo-db-switch
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: forgejo-db-switch
+  namespace: forgejo
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: HookSucceeded,BeforeHookCreation
+spec:
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      serviceAccountName: forgejo-db-switch
+      restartPolicy: OnFailure
+      containers:
+      - name: db-switch
+        image: registry.example.internal/deploykube/bootstrap-tools:1.4
+        command:
+        - /bin/sh
+        - -c
+        - |
+          cp /scripts/db-switch.sh /usr/local/bin/db-switch && chmod +x /usr/local/bin/db-switch && /usr/local/bin/db-switch
+        volumeMounts:
+        - name: script
+          mountPath: /scripts
+          readOnly: true
+      volumes:
+      - name: script
+        configMap:
+          name: forgejo-db-job-scripts
+          defaultMode: 0755
+    metadata:
+      annotations:
+        sidecar.istio.io/inject: "false"
+        sidecar.istio.io/nativeSidecar: 'true'

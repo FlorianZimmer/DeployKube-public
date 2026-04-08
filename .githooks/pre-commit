@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# DeployKube guardrail: never commit directly on main by accident.
+# Use task branches + worktrees; merge via scripts/dev/task-merge.sh.
+
+repo_root="$(git rev-parse --show-toplevel)"
+branch="$(git -C "${repo_root}" branch --show-current 2>/dev/null || true)"
+
+if [[ "${branch}" == "main" && "${DK_ALLOW_MAIN_COMMIT:-}" != "1" ]]; then
+  cat >&2 <<'EOF'
+ERROR: Direct commits on branch 'main' are blocked in DeployKube.
+
+This repo requires: one task/conversation = one branch + one worktree.
+
+Do this instead:
+  ./scripts/dev/task-new.sh <slug> origin/main
+  # ...work...
+  ./scripts/dev/task-checkpoint.sh -m "<msg>"
+  ./scripts/dev/task-merge.sh task/<slug> main --delete-remote
+
+If you *really* need an emergency commit on main, bypass explicitly:
+  DK_ALLOW_MAIN_COMMIT=1 git commit ...
+EOF
+  exit 1
+fi
+
+# Best-effort convenience: if a DeploymentConfig is staged, run the relevant renderers and stage
+# any derived overlay changes so the commit remains self-contained.
+#
+# This does not replace CI drift checks; it just reduces footguns during local iteration.
+staged_files="$(git -C "${repo_root}" diff --cached --name-only || true)"
+if [[ -n "${staged_files}" && -x "${repo_root}/scripts/deployments/render-from-deployment-config.sh" ]]; then
+  deployment_ids=()
+  while IFS= read -r f; do
+    [[ -n "${f}" ]] || continue
+    case "${f}" in
+      platform/gitops/deployments/examples/*) continue ;;
+      platform/gitops/deployments/*/config.yaml)
+        deployment_ids+=("$(basename "$(dirname "${f}")")")
+        ;;
+    esac
+  done <<< "${staged_files}"
+
+  if [[ "${#deployment_ids[@]}" -gt 0 ]]; then
+    # De-duplicate while keeping it POSIX-ish.
+    unique_ids="$(printf '%s\n' "${deployment_ids[@]}" | LC_ALL=C sort -u)"
+    while IFS= read -r dep_id; do
+      [[ -n "${dep_id}" ]] || continue
+      "${repo_root}/scripts/deployments/render-from-deployment-config.sh" --deployment-id "${dep_id}"
+
+      # Stage known derived paths (renderer may touch additional files in the future; those will
+      # remain unstaged and be caught by CI if forgotten).
+      git -C "${repo_root}" add "platform/gitops/components/platform/observability/loki/overlays/${dep_id}/values.yaml" 2>/dev/null || true
+      if [[ "${dep_id}" == "mac-orbstack" ]]; then
+        git -C "${repo_root}" add "platform/gitops/components/platform/observability/loki/overlays/mac-orbstack-single/values.yaml" 2>/dev/null || true
+      fi
+    done <<< "${unique_ids}"
+  fi
+fi

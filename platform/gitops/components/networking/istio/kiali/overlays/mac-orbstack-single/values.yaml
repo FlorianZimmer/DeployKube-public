@@ -1,0 +1,40 @@
+auth:
+  strategy: openid
+  openid:
+    client_id: kiali
+    issuer_uri: https://keycloak.dev-single.internal.example.com/realms/deploykube-admin
+    disable_rbac: true
+    # Keycloak uses Step CA; until we ship a CA bundle into the Kiali container trust store,
+    # skip TLS verification for OIDC discovery/JWKS.
+    insecure_skip_verify_tls: true
+    username_claim: email
+    scopes:
+      - openid
+      - profile
+      - email
+      - groups
+
+deployment:
+  ingress:
+    enabled: false
+  pod_annotations:
+    sidecar.istio.io/inject: "true"
+  replicas: 2
+  view_only_mode: true
+  service_type: ClusterIP
+
+external_services:
+  istio:
+    component_status:
+      enabled: true
+  prometheus:
+    url: http://prometheus.istio-system:9090
+  tracing:
+    enabled: false
+  grafana:
+    enabled: false
+
+server:
+  web_fqdn: kiali.dev-single.internal.example.com
+  web_port: 443
+  web_schema: https

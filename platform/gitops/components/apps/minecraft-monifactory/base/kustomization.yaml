@@ -1,0 +1,100 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: minecraft-monifactory
+resources:
+  - namespace.yaml
+  - pvc.yaml
+  - externalsecret.yaml
+  - externalsecret-access.yaml
+  - externalsecret-backup.yaml
+  - service.yaml
+  - service-rcon.yaml
+  - deployment.yaml
+
+configMapGenerator:
+  - name: minecraft-monifactory-config
+    literals:
+      - EULA=TRUE
+      - TYPE=AUTO_CURSEFORGE
+      - CF_SLUG=monifactory
+      # Monifactory Beta 0.13.0 **server** pack (CurseForge file id).
+      - CF_FILE_ID=7328733
+      - ONLINE_MODE=TRUE
+      - ENABLE_WHITELIST=TRUE
+      - ENFORCE_WHITELIST=TRUE
+      # Monifactory hard mode expects forced peaceful (see Monifactory README).
+      - DIFFICULTY=peaceful
+      - MODE=survival
+      - MAX_PLAYERS=10
+      - VIEW_DISTANCE=12
+      - SIMULATION_DISTANCE=8
+      - SPAWN_PROTECTION=0
+      # Disable the vanilla watchdog. Modded chunkgen spikes can exceed 60s and would otherwise crash the server.
+      - MAX_TICK_TIME=-1
+      - ENABLE_RCON=TRUE
+      - RCON_PORT=25575
+      - MEMORY=10G
+      # Work around rare KubeJS/Rhino deadlocks during heavy recipe processing by limiting ForkJoin parallelism.
+      - JVM_OPTS=-Djava.util.concurrent.ForkJoinPool.common.parallelism=1
+      - USE_AIKAR_FLAGS=TRUE
+      - MODRINTH_PROJECTS=spark
+      - MODRINTH_ALLOWED_VERSION_TYPE=release
+      # Additional pinned mods (NOT part of the Monifactory server pack zip).
+      # These are downloaded on boot via itzg's MODS mechanism (direct URLs).
+      - MODS=https://edge.forgecdn.net/files/5234/697/FluxNetworks-1.20.1-7.2.1.15.jar,https://edge.forgecdn.net/files/5056/687/modular-routers-12.1.1%2bmc1.20.1.jar,https://edge.forgecdn.net/files/5754/631/oreexcavation-1.13.174.jar,https://edge.forgecdn.net/files/5712/546/xnet-1.20-6.1.6.jar,https://edge.forgecdn.net/files/6586/28/mcjtylib-1.20-8.0.7.jar,https://edge.forgecdn.net/files/6195/123/rftoolsbase-1.20-5.0.6.jar,https://edge.forgecdn.net/files/6000/230/compactmachines-forge-6.0.3.jar,https://cdn.modrinth.com/data/gKNwt7xu/versions/tfbtBBGB/tempad-forge-1.20.1-2.3.4.jar,https://edge.forgecdn.net/files/5060/610/Architects-Palette-1.20.1-1.3.6.1.jar,https://edge.forgecdn.net/files/4889/101/EpheroLib-1.20.1-FORGE-1.2.0.jar,https://edge.forgecdn.net/files/4997/459/Croptopia-1.20.1-FORGE-3.0.4.jar,https://cdn.modrinth.com/data/LNytGWDc/versions/8amzvn9x/create-1.20.1-6.0.8.jar,https://cdn.modrinth.com/data/ZzjhlDgM/versions/ubktvkSZ/Steam_Rails-1.6.14-beta%2Bforge-mc1.20.1.jar,https://cdn.modrinth.com/data/NGEcCZ3C/versions/9AGa9067/peaceful_hunger-forge-1.20.1-2.2.0.jar,https://cursemaven.com/curse/maven/chippedextras-1330199/6999371/chippedextras-1330199-6999371.jar,https://edge.forgecdn.net/files/5195/490/moreslabsstairsandwalls-4.0.0.jar
+      # Optional: override EMI with a custom build (downloaded + installed by the emi-override initContainer).
+      # Leave empty to keep the modpack-provided EMI jar.
+      - DEPLOYKUBE_EMI_OVERRIDE_URL=
+      - DEPLOYKUBE_EMI_OVERRIDE_SHA256=
+      # One-time world reset guard (initContainer). Bump to rotate to a new world again.
+      # Safety: must be explicitly armed, otherwise the initContainer is a no-op.
+      - DEPLOYKUBE_WORLD_RESET_ARMED=true
+      - DEPLOYKUBE_WORLD_RESET_ID=20260103-hardmode-seed-1691256543523180978-v3
+      # Ensure `LEVEL_SEED` and other properties are (re)applied to server.properties on startup.
+      - OVERRIDE_SERVER_PROPERTIES=TRUE
+      - LEVEL_SEED=1691256543523180978
+      # Monifactory pack mode (N/H/E). Dedicated server instruction: run monilabs jar with this arg.
+      - DEPLOYKUBE_MONIFACTORY_MODE=H
+      # Bump to force a clean resync from the server pack zip (kubejs/, quest definitions, config-overrides, packmode).
+      # Useful after previous hotfixes touched files on the persistent PVC.
+      - DEPLOYKUBE_KUBEJS_SYNC_REV=3
+      # Bump to re-apply Thermal config enforcement (worldgen disables for GTCEu-first unification).
+      - DEPLOYKUBE_THERMAL_CONFIG_REV=2
+      # Bump to re-apply NuclearCraft ore generation disablement (avoid mining useless nuked ores).
+      - DEPLOYKUBE_NUCLEARCRAFT_OREGEN_REV=3
+      # Bump to re-apply the nuked-item drop filter (LootJS) + other source clamps.
+      - DEPLOYKUBE_NUKED_ITEMS_BAN_REV=1
+      # Patchers: DeployKube initContainers that mutate on-PVC files to work around pack/server mismatches.
+      # Keep these enabled by default; disable only for controlled experiments with evidence.
+      - ENABLE_DEPLOYKUBE_QUARK_DISABLE_COLOR_RUNES=false
+      - ENABLE_DEPLOYKUBE_LASERIO_ENABLE_ENERGY_OVERCLOCKER_TIERS=false
+      - ENABLE_DEPLOYKUBE_THERMAL_DISABLE_ORE_WORLDGEN=false
+      - ENABLE_DEPLOYKUBE_NUCLEARCRAFT_DISABLE_ORE_WORLDGEN=false
+      # DeployKube custom KubeJS patches (server divergence).
+      - ENABLE_DEPLOYKUBE_MV_MACERATION_TOWER=false
+      - DEPLOYKUBE_MV_MACERATION_TOWER_REV=2
+      # Bump to re-apply pack-authored configs that are persisted under /data/config and /data/defaultconfigs.
+      # This extracts the files from the pinned Monifactory server pack zip (CF_FILE_ID) and overwrites the PVC,
+      # archiving any replaced files under /data/.deploykube/archive/.
+      - DEPLOYKUBE_PACK_CONFIG_SYNC_REV=15
+      # Custom divergence: disable Lost Cities dimension/teleport on this server.
+      - DEPLOYKUBE_DISABLE_LOSTCITIES=true
+      # One-time purge: delete already-obtained nuked items from the world save (player inventories + storage).
+      # Bump/change the ID to run again. Leave empty to disable.
+      - DEPLOYKUBE_PURGE_NUKED_ITEMS_ID=20260105-nuked-items-purge-v1
+      # One-time world trim: keep only specific chunks and regenerate everything else (Overworld + other dimensions).
+      # Safety: this is destructive (but archived under /data/.deploykube/archive/). Change the ID to re-run.
+      - DEPLOYKUBE_WORLD_TRIM_ID=20260105-keep-3-chunks
+      # Keep-list (Overworld) as chunkX,chunkZ pairs (the middle Y value in F3's "Chunk:" line is ignored).
+      - DEPLOYKUBE_WORLD_TRIM_KEEP_CHUNKS=756,94;755,94;755,93
+  - name: minecraft-monifactory-nuked-items-ban-scripts
+    files:
+      - scripts/ban_nuked_items_loot.js
+      - scripts/patch_nuclearcraft_ore_generation.py
+      - scripts/patch_hostilenetworks_thermal_elemental.py
+      - scripts/purge_nuked_items_world.py
+      - scripts/trim_world_keep_chunks.py
+  - name: minecraft-monifactory-deploykube-kubejs-scripts
+    files:
+      - scripts/deploykube_mv_maceration_tower_startup.js
+      - scripts/deploykube_mv_maceration_tower_server.js

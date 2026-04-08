@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: backup-system
+  labels:
+    darksite.cloud/restore-validation-scope: enabled
+    istio-injection: disabled

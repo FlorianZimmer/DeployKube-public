@@ -1,0 +1,52 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: darksite-tenant-namespace-label-contract
+  annotations:
+    argocd.argoproj.io/sync-wave: "-4"
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["namespaces"]
+  validations:
+    - expression: |
+        !has(object.metadata.labels) ||
+        !("darksite.cloud/rbac-profile" in object.metadata.labels) ||
+        object.metadata.labels["darksite.cloud/rbac-profile"] != "tenant" ||
+        (
+          "darksite.cloud/tenant-id" in object.metadata.labels &&
+          "observability.grafana.com/tenant" in object.metadata.labels &&
+          object.metadata.labels["darksite.cloud/tenant-id"] == object.metadata.labels["observability.grafana.com/tenant"]
+        )
+      message: "Tenant namespaces (darksite.cloud/rbac-profile=tenant) must set darksite.cloud/tenant-id and observability.grafana.com/tenant with equal values."
+    - expression: |
+        !has(object.metadata.labels) ||
+        !("darksite.cloud/backup-scope" in object.metadata.labels) ||
+        object.metadata.labels["darksite.cloud/backup-scope"] == "enabled"
+      message: "Namespace label darksite.cloud/backup-scope must be 'enabled' when set."
+    - expression: |
+        !has(object.metadata.labels) ||
+        !("darksite.cloud/backup-scope" in object.metadata.labels) ||
+        (
+          "darksite.cloud/rbac-profile" in object.metadata.labels &&
+          object.metadata.labels["darksite.cloud/rbac-profile"] == "tenant"
+        )
+      message: "Namespace label darksite.cloud/backup-scope is only allowed on tenant namespaces (darksite.cloud/rbac-profile=tenant)."
+
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: darksite-tenant-namespace-label-contract
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3.9"
+spec:
+  policyName: darksite-tenant-namespace-label-contract
+  validationActions: ["Deny"]
+  matchResources:
+    namespaceSelector: {}
+    objectSelector: {}

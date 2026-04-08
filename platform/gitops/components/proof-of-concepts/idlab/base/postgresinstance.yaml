@@ -1,0 +1,14 @@
+apiVersion: data.darksite.cloud/v1alpha1
+kind: PostgresInstance
+metadata:
+  name: idlab-postgres
+  namespace: idlab
+spec:
+  classRef:
+    name: platform-poc-disposable
+  databaseName: idlab
+  ownerRole: idlab
+  connectionSecretName: idlab-postgres-app
+  superuserSecretName: idlab-postgres-superuser
+  network:
+    accessMode: SameNamespace

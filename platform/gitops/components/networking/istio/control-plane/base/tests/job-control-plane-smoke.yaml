@@ -1,0 +1,58 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: istio-control-plane-smoke
+  namespace: istio-system
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: HookSucceeded,BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 300
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      restartPolicy: Never
+      serviceAccountName: istio-control-plane-smoke
+      containers:
+        - name: smoke
+          image: registry.example.internal/deploykube/bootstrap-tools:1.4
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - -lc
+            - |
+              set -euo pipefail
+
+              dump_on_error() {
+                echo "[istio-control-plane-smoke] diagnostics (best-effort)" >&2
+                kubectl -n istio-system get deploy istiod istio-ingressgateway -o wide >&2 || true
+                kubectl -n istio-system get pods -l istio -o wide >&2 || true
+                kubectl -n istio-system get svc istio-ingressgateway -o wide >&2 || true
+                kubectl -n istio-system get endpoints istio-ingressgateway -o yaml >&2 || true
+                kubectl -n istio-system get events --sort-by=.lastTimestamp >&2 || true
+              }
+              trap dump_on_error ERR
+
+              echo "[istio-control-plane-smoke] rollout status: istiod"
+              kubectl -n istio-system rollout status deploy/istiod --timeout=120s
+
+              echo "[istio-control-plane-smoke] rollout status: istio-ingressgateway"
+              kubectl -n istio-system rollout status deploy/istio-ingressgateway --timeout=120s
+
+              echo "[istio-control-plane-smoke] ingress service exists"
+              kubectl -n istio-system get svc istio-ingressgateway >/dev/null
+
+              echo "[istio-control-plane-smoke] ingress service has ready backends"
+              ready_endpoints="$(kubectl -n istio-system get endpoints istio-ingressgateway -o json | jq '[.subsets[]?.addresses[]?] | length')"
+              if [[ "${ready_endpoints}" -lt 1 ]]; then
+                echo "[istio-control-plane-smoke] svc/istio-ingressgateway has no ready endpoints" >&2
+                exit 1
+              fi
+              echo "[istio-control-plane-smoke] ready endpoints: ${ready_endpoints}"
+
+              echo "[istio-control-plane-smoke] ok"

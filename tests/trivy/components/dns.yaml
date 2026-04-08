@@ -1,0 +1,25 @@
+schemaVersion: v1alpha1
+description: Component-owned Trivy targets for the DNS control plane.
+watch_paths:
+  - platform/gitops/artifacts/runtime-artifact-index.yaml
+  - platform/gitops/components/dns/external-sync
+  - platform/gitops/components/dns/powerdns
+  - platform/gitops/components/networking/coredns
+  - tests/trivy/components/dns.yaml
+image_targets:
+  - id: powerdns-authoritative
+    artifact_catalog: runtime-artifacts
+    artifact_name: powerdns-authoritative
+  - id: external-dns
+    artifact_catalog: runtime-artifacts
+    artifact_name: external-dns
+  - id: coredns-busybox
+    artifact_catalog: runtime-artifacts
+    artifact_name: coredns-busybox
+config_targets:
+  - id: powerdns-manifests
+    path: platform/gitops/components/dns/powerdns
+  - id: external-sync-manifests
+    path: platform/gitops/components/dns/external-sync
+  - id: coredns-manifests
+    path: platform/gitops/components/networking/coredns

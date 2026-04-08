@@ -1,0 +1,47 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: policy-system
+commonAnnotations:
+  argocd.argoproj.io/sync-wave: "-5"
+
+helmGlobals:
+  # Vendored chart to avoid runtime outbound fetches from Argo repo-server.
+  chartHome: charts
+
+helmCharts:
+  - name: kyverno
+    version: 3.6.1
+    releaseName: kyverno
+    namespace: policy-system
+    valuesFile: values.yaml
+
+# Kyverno Helm chart includes a post-upgrade "migrate-resources" Helm hook which
+# Argo CD will try to run (and then garbage-collect) during sync. In our GitOps
+# posture this hook is not required, and we observed it failing (RBAC) + causing
+# sync flaps. We drop the hook resources from the rendered output to keep sync
+# deterministic.
+patches:
+  - target:
+      kind: CustomResourceDefinition
+      name: clusterpolicies.kyverno.io
+    path: patch-crd-clusterpolicies-replace.yaml
+  - target:
+      kind: CustomResourceDefinition
+      name: policies.kyverno.io
+    path: patch-crd-policies-replace.yaml
+  - target:
+      kind: ClusterRole
+      name: kyverno:migrate-resources
+    path: patch-delete-kyverno-migrate-resources-clusterrole.yaml
+  - target:
+      kind: ClusterRoleBinding
+      name: kyverno:migrate-resources
+    path: patch-delete-kyverno-migrate-resources-clusterrolebinding.yaml
+  - target:
+      kind: ServiceAccount
+      name: kyverno-migrate-resources
+    path: patch-delete-kyverno-migrate-resources-serviceaccount.yaml
+  - target:
+      kind: Job
+      name: kyverno-migrate-resources
+    path: patch-delete-kyverno-migrate-resources-job.yaml

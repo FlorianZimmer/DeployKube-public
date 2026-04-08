@@ -1,0 +1,88 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: forgejo-oidc-config
+  namespace: forgejo
+  labels:
+    deploykube.gitops/job: forgejo-oidc-config
+  annotations:
+    argocd.argoproj.io/sync-wave: "12"
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: HookSucceeded,BeforeHookCreation
+    argocd.argoproj.io/sync-options: Replace=true
+spec:
+  backoffLimit: 6
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        deploykube.gitops/job: forgejo-oidc-config
+      annotations:
+        sidecar.istio.io/nativeSidecar: 'true'
+        proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}'
+    spec:
+      serviceAccountName: default
+      restartPolicy: Never
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+      - name: configure
+        image: codeberg.org/forgejo/forgejo:13.0.2-rootless
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - /scripts/oidc-config.sh
+        env:
+        - name: GITEA_APP_INI
+          value: /data/gitea/conf/app.ini
+        - name: OIDC_NAME
+          value: keycloak
+        - name: OIDC_PROVIDER
+          value: openidConnect
+        - name: OIDC_DISCOVERY_URL
+          value: 
+            https://keycloak.dev.internal.example.com/realms/deploykube-admin/.well-known/openid-configuration
+        - name: OIDC_SCOPES
+          value: "openid profile email"
+        - name: OIDC_GROUP_CLAIM
+          value: realm_access.roles
+        - name: OIDC_SECRET_DIR
+          value: /secrets/oidc
+        - name: SSL_CERT_FILE
+          value: /etc/step-ca/ca.crt
+        volumeMounts:
+        - name: forgejo-data
+          mountPath: /data
+        - name: oidc-client
+          mountPath: /secrets/oidc
+          readOnly: true
+        - name: script
+          mountPath: /scripts/oidc-config.sh
+          subPath: oidc-config.sh
+          readOnly: true
+        - name: oidc-ca
+          mountPath: /etc/step-ca
+          readOnly: true
+        - name: istio-native-exit
+          mountPath: /helpers
+          readOnly: true
+      volumes:
+      - name: forgejo-data
+        persistentVolumeClaim:
+          claimName: gitea-shared-storage
+      - name: oidc-client
+        secret:
+          secretName: forgejo-oidc-client
+      - name: oidc-ca
+        secret:
+          secretName: forgejo-oidc-ca
+      - name: script
+        configMap:
+          name: forgejo-oidc-config-script
+          defaultMode: 0755
+      - name: istio-native-exit
+        configMap:
+          name: istio-native-exit-script
+          defaultMode: 0444

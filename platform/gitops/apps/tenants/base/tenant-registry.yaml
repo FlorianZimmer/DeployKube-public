@@ -1,0 +1,30 @@
+# Tenant registry v1 (platform-owned)
+#
+# This file is a DeployKube-internal input (not a Kubernetes object).
+# It is rendered into ConfigMaps so platform controllers/bootstrap jobs can converge:
+# - Keycloak tenant groups (human auth inputs)
+# - Vault tenant policies + group-alias mapping (human authz)
+# - Per-project scoped ESO stores (service authz)
+# It is also consumed by platform renderers to converge platform-managed tenant ingress attach points:
+# - per-org tenant Gateways (`tenant-<orgId>-gateway`) in `istio-system`
+#
+# Reserved fixtures:
+# - orgId=smoke / projectId=demo is reserved for smoke validation only.
+apiVersion: tenancy.darksite.cloud/v1alpha1
+kind: TenantRegistry
+tenants:
+  - orgId: smoke
+    description: Reserved for smoke validation only. Do not onboard real users.
+    projects:
+      - projectId: demo
+        description: Reserved for smoke validation only.
+  - orgId: factorio
+    description: Internal canary tenant for Factorio migration testing.
+    projects:
+      - projectId: factorio
+        description: Internal canary project for Factorio.
+  - orgId: other
+    description: Reserved for negative validation only (non-allowlisted tenant). Do not onboard real users.
+    projects:
+      - projectId: demo
+        description: Reserved for negative validation only.

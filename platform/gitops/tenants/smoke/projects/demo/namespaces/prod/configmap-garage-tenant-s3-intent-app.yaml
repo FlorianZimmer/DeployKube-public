@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tenant-s3-intent-smoke-app
+  namespace: garage
+  labels:
+    darksite.cloud/tenant-s3-intent: "true"
+    darksite.cloud/tenant-id: smoke
+data:
+  intent.json: |
+    {"orgId":"smoke","bucketName":"app"}

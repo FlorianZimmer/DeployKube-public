@@ -1,0 +1,65 @@
+name: Idlab IdP PoC E2E
+
+on:
+  pull_request:
+    paths:
+      - "platform/gitops/components/proof-of-concepts/idlab/**"
+      - "platform/gitops/apps/opt-in/idlab-poc/**"
+      - "tools/idlab-poc/**"
+      - "tests/scripts/e2e-idlab-poc.sh"
+      - ".github/workflows/idlab-idp-poc-e2e.yml"
+  workflow_dispatch:
+    inputs:
+      kubeconfig_path:
+        description: Optional absolute path to kubeconfig on runner
+        type: string
+        default: ""
+      cleanup:
+        description: Delete the PoC app/namespace after the run
+        type: choice
+        options:
+          - yes
+          - no
+        default: yes
+  schedule:
+    - cron: "19 4 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploykube-idlab-poc-e2e
+  cancel-in-progress: false
+
+jobs:
+  e2e:
+    if: |
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       vars.DK_IDLAB_E2E_ENABLED == 'true') ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'schedule' && vars.DK_IDLAB_E2E_ENABLED == 'true')
+    runs-on:
+      - self-hosted
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate script syntax
+        run: bash -n ./tests/scripts/e2e-idlab-poc.sh
+
+      - name: Resolve kubeconfig
+        run: |
+          set -euo pipefail
+          if [[ -n "${{ github.event.inputs.kubeconfig_path }}" ]]; then
+            echo "KUBECONFIG=${{ github.event.inputs.kubeconfig_path }}" >> "${GITHUB_ENV}"
+          elif [[ -n "${{ vars.DK_IDLAB_E2E_KUBECONFIG }}" ]]; then
+            echo "KUBECONFIG=${{ vars.DK_IDLAB_E2E_KUBECONFIG }}" >> "${GITHUB_ENV}"
+          fi
+
+      - name: Run idlab IdP PoC E2E
+        run: |
+          set -euo pipefail
+          ./tests/scripts/e2e-idlab-poc.sh \
+            --cleanup "${{ github.event.inputs.cleanup || 'yes' }}"

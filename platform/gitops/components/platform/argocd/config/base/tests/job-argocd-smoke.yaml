@@ -1,0 +1,143 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: argocd-smoke
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: HookSucceeded,BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 300
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      serviceAccountName: argocd-smoke
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: smoke
+          image: registry.example.internal/deploykube/bootstrap-tools@sha256:e7be47a69e3a11bc58c857f2d690a71246ada91ac3a60bdfb0a547f091f6485a
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: HOME
+              value: /tmp
+            - name: XDG_CONFIG_HOME
+              value: /tmp/.config
+            - name: ARGOCD_HOST
+              value: __ARGOCD_HOST__
+            - name: DEPLOYMENT_CONFIG_FILE
+              value: /etc/deploykube/deployment-config/deployment-config.yaml
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: ca-cert
+              mountPath: /etc/step-ca
+              readOnly: true
+            - name: deployment-config
+              mountPath: /etc/deploykube/deployment-config
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          command:
+            - /bin/bash
+            - -lc
+            - |
+              set -euo pipefail
+
+              ca="/etc/step-ca/ca.crt"
+              cfg="${DEPLOYMENT_CONFIG_FILE:-/etc/deploykube/deployment-config/deployment-config.yaml}"
+
+              if [ -z "${ARGOCD_HOST:-}" ] || [ "${ARGOCD_HOST}" = "__ARGOCD_HOST__" ]; then
+                command -v yq >/dev/null 2>&1 || { echo "missing dependency: yq" >&2; exit 1; }
+                test -f "${cfg}" || { echo "missing deployment config at ${cfg}" >&2; exit 1; }
+                ARGOCD_HOST="$(yq -r '.spec.dns.hostnames.argocd // ""' "${cfg}")"
+              fi
+
+              echo "[argocd-smoke] wait for server deployment"
+              attempt=0
+              while (( attempt < 24 )); do
+                desired="$(kubectl -n argocd get deploy/argo-cd-argocd-server -o jsonpath='{.spec.replicas}' 2>/dev/null || echo 1)"
+                available="$(kubectl -n argocd get deploy/argo-cd-argocd-server -o jsonpath='{.status.availableReplicas}' 2>/dev/null || true)"
+                desired="${desired:-1}"
+                if [[ "${available:-0}" == "${desired}" ]]; then
+                  break
+                fi
+                attempt=$((attempt + 1))
+                echo "[argocd-smoke] waiting for deployment availability (${attempt}/24) desired=${desired} available=${available:-0}"
+                sleep 5
+              done
+              test "${available:-0}" = "${desired}"
+
+              echo "[argocd-smoke] gateway /healthz"
+              echo "[argocd-smoke] ARGOCD_HOST=${ARGOCD_HOST:-<empty>}"
+              test -n "${ARGOCD_HOST}"
+              test -s "${ca}"
+              health_code="$(
+              curl --cacert "${ca}" -sS -o /tmp/argocd-healthz.out -w '%{http_code}' \
+                --retry 10 \
+                --retry-delay 1 \
+                --retry-all-errors \
+                --retry-connrefused \
+                --connect-to "${ARGOCD_HOST}:443:public-gateway-istio.istio-system.svc.cluster.local:443" \
+                "https://${ARGOCD_HOST}/healthz"
+              )"
+              echo "[argocd-smoke] /healthz http_code=${health_code}"
+              case "${health_code}" in
+                2??|3??) ;;
+                *)
+                  echo "[argocd-smoke] unexpected /healthz response"
+                  cat /tmp/argocd-healthz.out || true
+                  exit 1
+                  ;;
+              esac
+
+              echo "[argocd-smoke] oidc.config present"
+              kubectl -n argocd get configmap argocd-cm -o jsonpath='{.data.oidc\.config}' | grep -q "issuer"
+
+              echo "[argocd-smoke] repo secret present"
+              kubectl -n argocd get secret repo-forgejo-platform >/dev/null
+
+              echo "[argocd-smoke] platform-apps is Synced/Healthy"
+              sync_status="$(kubectl -n argocd get application platform-apps -o jsonpath='{.status.sync.status}')"
+              health_status="$(kubectl -n argocd get application platform-apps -o jsonpath='{.status.health.status}')"
+              echo "[argocd-smoke] platform-apps: ${sync_status} ${health_status}"
+              test "${sync_status}" = "Synced"
+              test "${health_status}" = "Healthy"
+
+              echo "[argocd-smoke] ok"
+      volumes:
+        - name: ca-cert
+          secret:
+            secretName: argocd-oidc-ca
+            items:
+              - key: ca.crt
+                path: ca.crt
+        - name: deployment-config
+          configMap:
+            name: deploykube-deployment-config
+            items:
+              - key: deployment-config.yaml
+                path: deployment-config.yaml
+        - name: tmp
+          emptyDir: {}

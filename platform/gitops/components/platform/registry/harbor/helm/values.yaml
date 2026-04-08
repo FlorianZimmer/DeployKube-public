@@ -1,0 +1,56 @@
+expose:
+  type: clusterIP
+  tls:
+    enabled: false
+
+# Patched at runtime by the tenant-provisioner ingress-adjacent controller.
+externalURL: https://harbor.placeholder.invalid
+caBundleSecretName: harbor-oidc-ca
+
+trivy:
+  enabled: false
+
+# Admin password is sourced from Vault via ExternalSecrets into Secret/harbor/harbor-admin-password.
+existingSecretAdminPassword: harbor-admin-password
+existingSecretAdminPasswordKey: HARBOR_ADMIN_PASSWORD
+
+# Secret key used by Harbor for crypto (Vault → Secret/harbor/harbor-secret-key).
+existingSecretSecretKey: harbor-secret-key
+
+core:
+  # Core shared secret (Vault → Secret/harbor/harbor-core-secret).
+  existingSecret: harbor-core-secret
+  # CSRF/XSRF key (Vault → Secret/harbor/harbor-core-xsrf).
+  existingXsrfSecret: harbor-core-xsrf
+  existingXsrfSecretKey: CSRF_KEY
+  # Token service private key/cert used for token encryption/decryption.
+  # (Vault → Secret/harbor/harbor-token-cert, type kubernetes.io/tls).
+  secretName: harbor-token-cert
+
+jobservice:
+  existingSecret: harbor-jobservice
+  existingSecretKey: JOBSERVICE_SECRET
+
+registry:
+  existingSecret: harbor-registry
+  existingSecretKey: REGISTRY_HTTP_SECRET
+  credentials:
+    existingSecret: harbor-registry-credentials
+
+database:
+  type: external
+  external:
+    host: postgres-rw.harbor.svc.cluster.local
+    port: "5432"
+    username: harbor
+    coreDatabase: registry
+    existingSecret: harbor-db
+    sslmode: disable
+
+persistence:
+  persistentVolumeClaim:
+    registry:
+      size: 50Gi
+    jobservice:
+      jobLog:
+        size: 5Gi

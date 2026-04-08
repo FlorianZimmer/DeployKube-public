@@ -1,0 +1,15 @@
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: keycloak-permissive
+  namespace: keycloak
+  annotations:
+    # Keep Keycloak bootstrap hooks reachable even when created before sidecar
+    # injection admission is fully available during early bootstrap.
+    argocd.argoproj.io/sync-wave: "4.4"
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: keycloak
+  mtls:
+    mode: PERMISSIVE

@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: istio-system
+  labels:
+    deploykube.gitops/owner: platform
+    deploykube.gitops/public-gateway: allowed
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kube-system
+  labels:
+    deploykube.gitops/owner: platform
+    deploykube.gitops/public-gateway: allowed

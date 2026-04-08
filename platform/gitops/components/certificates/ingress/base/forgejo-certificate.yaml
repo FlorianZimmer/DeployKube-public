@@ -1,0 +1,14 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: forgejo-tls
+spec:
+  secretName: forgejo-tls
+  dnsNames:
+    - forgejo.placeholder.invalid
+  issuerRef:
+    name: step-ca
+    kind: ClusterIssuer
+  privateKey:
+    algorithm: RSA
+    size: 2048

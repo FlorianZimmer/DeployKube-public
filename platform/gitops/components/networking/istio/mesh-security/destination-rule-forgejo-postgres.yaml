@@ -1,0 +1,12 @@
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: forgejo-postgres
+  namespace: istio-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "4.55"
+spec:
+  host: postgres-rw.forgejo.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: DISABLE

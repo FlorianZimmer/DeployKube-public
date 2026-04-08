@@ -1,0 +1,27 @@
+modules:
+  dns_powerdns_vip:
+    prober: dns
+    timeout: 3s
+    dns:
+      transport_protocol: udp
+      preferred_ip_protocol: ip4
+      query_name: garage.dev-single.internal.example.com
+      query_type: A
+      valid_rcodes:
+        - NOERROR
+
+  http_public_gateway_service_argocd:
+    prober: http
+    timeout: 5s
+    http:
+      method: GET
+      preferred_ip_protocol: ip4
+      fail_if_not_ssl: true
+      tls_config:
+        ca_file: /etc/alloy/vip-probes/ca.crt
+        server_name: argocd.dev-single.internal.example.com
+      headers:
+        Host: argocd.dev-single.internal.example.com
+      valid_status_codes:
+        - 200
+

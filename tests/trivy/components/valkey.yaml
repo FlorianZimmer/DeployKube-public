@@ -1,0 +1,13 @@
+schemaVersion: v1alpha1
+description: Component-owned Trivy targets for Valkey.
+watch_paths:
+  - platform/gitops/artifacts/runtime-artifact-index.yaml
+  - platform/gitops/components/data/valkey
+  - tests/trivy/components/valkey.yaml
+image_targets:
+  - id: valkey
+    artifact_catalog: runtime-artifacts
+    artifact_name: valkey
+config_targets:
+  - id: valkey-manifests
+    path: platform/gitops/components/data/valkey

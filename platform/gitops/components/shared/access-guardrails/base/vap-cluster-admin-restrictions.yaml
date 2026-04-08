@@ -1,0 +1,27 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: deploykube-cluster-admin-binding-restrictions
+  annotations:
+    argocd.argoproj.io/sync-wave: "-10"
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["rbac.authorization.k8s.io"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["clusterrolebindings", "rolebindings"]
+  validations:
+    - expression: |
+        !(has(object.roleRef) &&
+          object.roleRef.kind == "ClusterRole" &&
+          object.roleRef.name == "cluster-admin") ||
+        request.userInfo.groups.exists(g, g == "kubeadm:cluster-admins") ||
+        request.userInfo.groups.exists(g, g == "system:masters") ||
+        (request.userInfo.groups.exists(g, g == "system:serviceaccounts:argocd") &&
+          has(object.metadata) &&
+          has(object.metadata.labels) &&
+          object.metadata.labels["deploykube.gitops/allow-cluster-admin"] == "true" &&
+          object.metadata.name == "platform-admins-cluster-admin")
+      message: "cluster-admin bindings are restricted (breakglass or explicitly allow-listed GitOps bindings only)."

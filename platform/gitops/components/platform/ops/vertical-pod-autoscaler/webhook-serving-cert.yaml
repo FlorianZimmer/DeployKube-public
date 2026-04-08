@@ -1,0 +1,18 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: vpa-webhook
+  namespace: kube-system
+spec:
+  secretName: vpa-tls-certs
+  dnsNames:
+    - vpa-webhook
+    - vpa-webhook.kube-system
+    - vpa-webhook.kube-system.svc
+  privateKey:
+    algorithm: RSA
+    size: 2048
+  issuerRef:
+    kind: ClusterIssuer
+    name: step-ca
+

@@ -1,0 +1,25 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: platform-platform-apps-controller
+  namespace: argocd
+  annotations:
+    # After core bootstrap APIs/controllers; before most platform app waves.
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: platform
+  destination:
+    name: in-cluster
+    namespace: argocd
+  source:
+    repoURL: https://forgejo-https.forgejo.svc.cluster.local/platform/cluster-config.git
+    targetRevision: main
+    path: components/platform/platform-apps-controller/overlays/mac-orbstack-single
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+      - PrunePropagationPolicy=foreground
+      - ServerSideApply=true

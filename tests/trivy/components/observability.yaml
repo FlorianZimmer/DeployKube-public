@@ -1,0 +1,34 @@
+schemaVersion: v1alpha1
+description: Component-owned Trivy config targets for platform observability.
+watch_paths:
+  - platform/gitops/artifacts/runtime-artifact-index.yaml
+  - platform/gitops/components/platform/observability
+  - tests/trivy/components/observability.yaml
+image_targets:
+  - id: observability-grafana
+    artifact_catalog: runtime-artifacts
+    artifact_name: observability-grafana
+  - id: observability-loki
+    artifact_catalog: runtime-artifacts
+    artifact_name: observability-loki
+  - id: observability-loki-canary
+    artifact_catalog: runtime-artifacts
+    artifact_name: observability-loki-canary
+  - id: observability-mimir
+    artifact_catalog: runtime-artifacts
+    artifact_name: observability-mimir
+  - id: observability-mimir-gateway
+    artifact_catalog: runtime-artifacts
+    artifact_name: observability-mimir-gateway
+  - id: observability-memcached
+    artifact_catalog: runtime-artifacts
+    artifact_name: observability-memcached
+  - id: observability-memcached-exporter
+    artifact_catalog: runtime-artifacts
+    artifact_name: observability-memcached-exporter
+  - id: observability-busybox
+    artifact_catalog: runtime-artifacts
+    artifact_name: observability-busybox
+config_targets:
+  - id: observability-manifests
+    path: platform/gitops/components/platform/observability

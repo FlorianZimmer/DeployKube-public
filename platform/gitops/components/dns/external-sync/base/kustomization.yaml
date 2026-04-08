@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: dns-system
+
+resources:
+  - rbac.yaml
+  - job-dns-sync.yaml
+  - job-dns-verify.yaml
+  - cronjob-dns-sync.yaml
+
+configMapGenerator:
+  - name: dns-sync-script
+    files:
+      - dns-sync.sh=scripts/dns-sync.sh
+
+generatorOptions:
+  disableNameSuffixHash: true

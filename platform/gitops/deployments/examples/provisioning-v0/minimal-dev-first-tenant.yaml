@@ -1,0 +1,80 @@
+apiVersion: platform.darksite.cloud/v1alpha1
+kind: DeploymentConfig
+metadata:
+  name: minimal-dev
+spec:
+  deploymentId: minimal-dev
+  environmentId: dev
+
+  dns:
+    baseDomain: dev.internal.example.com
+    authority:
+      nameServers:
+        - ns1.dev.internal.example.com
+    delegation:
+      mode: manual
+      parentZone: internal.example.com
+    hostnames:
+      argocd: argocd.dev.internal.example.com
+      forgejo: forgejo.dev.internal.example.com
+      keycloak: keycloak.dev.internal.example.com
+      vault: vault.dev.internal.example.com
+      grafana: grafana.dev.internal.example.com
+
+  certificates:
+    platformIngress:
+      mode: subCa
+    tenants:
+      mode: subCa
+
+  iam:
+    mode: standalone
+    primaryRealm: deploykube-admin
+    secondaryRealms:
+      - deploykube-apps
+
+  trustRoots:
+    stepCaRootCertPath: shared/certs/deploykube-root-ca.crt
+
+  secrets:
+    rootOfTrust:
+      provider: kmsShim
+      mode: inCluster
+      assurance: low
+
+  time:
+    ntp:
+      upstreamServers:
+        - time.cloudflare.com
+
+  network:
+    handoffMode: l2
+    metallb:
+      pools:
+        public:
+          - 192.0.2.10-192.0.2.20
+
+  backup:
+    enabled: false
+---
+apiVersion: tenancy.darksite.cloud/v1alpha1
+kind: Tenant
+metadata:
+  name: smoke
+spec:
+  orgId: smoke
+  tier: S
+---
+apiVersion: tenancy.darksite.cloud/v1alpha1
+kind: TenantProject
+metadata:
+  name: demo
+spec:
+  tenantRef:
+    name: smoke
+  projectId: demo
+  environments:
+    - dev
+  git:
+    forgejoOrg: smoke
+    repo: demo

@@ -1,0 +1,113 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: deploykube-access-guardrails-self-protection
+  annotations:
+    argocd.argoproj.io/sync-wave: "-10"
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["admissionregistration.k8s.io"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources:
+          - "validatingadmissionpolicies"
+          - "validatingadmissionpolicybindings"
+          - "mutatingwebhookconfigurations"
+          - "validatingwebhookconfigurations"
+      - apiGroups: ["apiextensions.k8s.io"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources:
+          - "customresourcedefinitions"
+  validations:
+    - expression: |
+        request.userInfo.groups.exists(g, g == "system:serviceaccounts:argocd") ||
+        request.userInfo.groups.exists(g, g == "kubeadm:cluster-admins") ||
+        request.userInfo.groups.exists(g, g == "system:masters") ||
+        (
+          request.userInfo.groups.exists(g, g == "system:serviceaccounts:policy-system") &&
+          (
+            request.resource.resource == "mutatingwebhookconfigurations" ||
+            request.resource.resource == "validatingwebhookconfigurations"
+          ) &&
+          (
+            (has(request.name) && request.name.startsWith("kyverno-")) ||
+            (has(object.metadata) && has(object.metadata.name) && object.metadata.name.startsWith("kyverno-")) ||
+            (has(oldObject.metadata) && has(oldObject.metadata.name) && oldObject.metadata.name.startsWith("kyverno-"))
+          )
+        ) ||
+        (
+          request.userInfo.username == "system:serviceaccount:external-secrets:external-secrets-cert-controller" &&
+          request.operation == "UPDATE" &&
+          request.resource.resource == "validatingwebhookconfigurations" &&
+          (
+            object.metadata.name == "externalsecret-validate" ||
+            object.metadata.name == "secretstore-validate"
+          )
+        ) ||
+        (
+          request.userInfo.username == "system:serviceaccount:cnpg-system:cnpg-operator-cloudnative-pg" &&
+          request.operation == "UPDATE" &&
+          (
+            request.resource.resource == "mutatingwebhookconfigurations" ||
+            request.resource.resource == "validatingwebhookconfigurations"
+          ) &&
+          object.metadata.name.startsWith("cnpg-")
+        ) ||
+        (
+          request.userInfo.username == "system:serviceaccount:metallb-system:metallb-controller" &&
+          request.operation == "UPDATE" &&
+          (
+            (request.resource.resource == "customresourcedefinitions" && object.metadata.name.endsWith(".metallb.io")) ||
+            (
+              (
+                request.resource.resource == "mutatingwebhookconfigurations" ||
+                request.resource.resource == "validatingwebhookconfigurations"
+              ) &&
+              object.metadata.name == "metallb-webhook-configuration"
+            )
+          )
+        ) ||
+        (
+          request.userInfo.username == "system:serviceaccount:istio-operator:istio-operator" &&
+          (request.operation == "CREATE" || request.operation == "UPDATE") &&
+          (
+            (request.resource.resource == "customresourcedefinitions" && object.metadata.name.endsWith(".istio.io")) ||
+            (
+              (
+                request.resource.resource == "mutatingwebhookconfigurations" ||
+                request.resource.resource == "validatingwebhookconfigurations"
+              ) &&
+              (
+                object.metadata.name.startsWith("istio-") ||
+                object.metadata.name.startsWith("istiod-") ||
+                object.metadata.name == "istio-sidecar-injector"
+              )
+            )
+          )
+        ) ||
+        (
+          request.userInfo.username == "system:serviceaccount:istio-system:istiod" &&
+          request.operation == "UPDATE" &&
+          (
+            request.resource.resource == "mutatingwebhookconfigurations" ||
+            request.resource.resource == "validatingwebhookconfigurations"
+          ) &&
+          (
+            object.metadata.name.startsWith("istio-") ||
+            object.metadata.name.startsWith("istiod-") ||
+            object.metadata.name == "istio-sidecar-injector"
+          )
+        ) ||
+        (
+          request.userInfo.username == "system:serviceaccount:cert-manager:cert-manager-cainjector" &&
+          request.operation == "UPDATE" &&
+          (
+            request.resource.resource == "mutatingwebhookconfigurations" ||
+            request.resource.resource == "validatingwebhookconfigurations"
+          ) &&
+          object.metadata.name == "cert-manager-webhook"
+        )
+      message: "Guardrail and access-critical objects are GitOps-only (Argo CD) or breakglass."

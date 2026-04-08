@@ -1,0 +1,17 @@
+- targets:
+  - 198.51.100.65:53
+  labels:
+    name: powerdns-vip-dns
+    module: dns_powerdns_vip
+    probe: dns
+    vip: powerdns
+    vip_ip: 198.51.100.65
+- targets:
+  - https://198.51.100.62/healthz
+  labels:
+    name: public-gateway-https-argocd
+    module: http_public_gateway_vip_argocd
+    probe: http
+    vip: public-gateway
+    vip_ip: 198.51.100.62
+    hostname: argocd.prod.internal.example.com

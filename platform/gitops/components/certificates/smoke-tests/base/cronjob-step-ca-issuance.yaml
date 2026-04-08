@@ -1,0 +1,273 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cert-smoke-step-ca-issuance
+  namespace: cert-manager
+  labels:
+    app.kubernetes.io/name: cert-smoke
+    app.kubernetes.io/component: step-ca-issuance
+spec:
+  # Intentionally offset from :00 to avoid top-of-hour kube-apiserver contention.
+  schedule: "37 * * * *"  # hourly, overridden in overlays
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 900
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: cert-smoke
+            app.kubernetes.io/component: step-ca-issuance
+          annotations:
+            sidecar.istio.io/inject: "false"
+        spec:
+          restartPolicy: Never
+          enableServiceLinks: false
+          serviceAccountName: cert-smoke
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: smoke
+              image: registry.example.internal/deploykube/validation-tools-core@sha256:babdd8ea44c3f169da4b55458061729329880fdf5c00194906d2dd6cdc655347
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: HOME
+                  value: /tmp
+                - name: XDG_CONFIG_HOME
+                  value: /tmp/.config
+              resources:
+                requests:
+                  cpu: 25m
+                  memory: 64Mi
+                limits:
+                  cpu: 250m
+                  memory: 256Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+              command:
+                - /bin/sh
+                - -c
+              args:
+                - |
+                  set -euo pipefail
+
+                  ns="cert-manager"
+                  issuer="step-ca"
+                  cert="cert-smoke-step-ca-test"
+                  secret="cert-smoke-step-ca-test-tls"
+                  root_secret="step-ca-root-ca"
+
+                  dep_cfg_json="$(kubectl get deploymentconfigs.platform.darksite.cloud -o json 2>/dev/null || true)"
+                  if [ -z "${dep_cfg_json}" ]; then
+                    echo "FAIL: could not read DeploymentConfig objects (requires platform.darksite.cloud permissions)" >&2
+                    exit 1
+                  fi
+                  dep_cfg_count="$(echo "${dep_cfg_json}" | jq -r '.items | length')"
+                  if [ "${dep_cfg_count}" -ne 1 ]; then
+                    echo "FAIL: expected exactly one DeploymentConfig, found ${dep_cfg_count}" >&2
+                    exit 1
+                  fi
+                  platform_mode="$(echo "${dep_cfg_json}" | jq -r '.items[0].spec.certificates.platformIngress.mode // "subCa"')"
+                  tenant_mode="$(echo "${dep_cfg_json}" | jq -r '.items[0].spec.certificates.tenants.mode // "subCa"')"
+                  if [ "${platform_mode}" != "subCa" ] && [ "${tenant_mode}" != "subCa" ]; then
+                    echo "SKIP: Step CA issuance smoke is not required (platformIngress=${platform_mode}, tenants=${tenant_mode})"
+                    exit 0
+                  fi
+
+                  cleanup() {
+                    echo "cleanup: removing ephemeral certificate..."
+                    kubectl -n "${ns}" delete certificate "${cert}" --ignore-not-found --wait=true --timeout=60s 2>/dev/null || true
+                    kubectl -n "${ns}" delete secret "${secret}" --ignore-not-found 2>/dev/null || true
+                  }
+
+                  debug() {
+                    echo "--- debug: certificate ---"
+                    kubectl -n "${ns}" describe certificate "${cert}" 2>/dev/null || true
+                    echo "--- debug: certificaterequests ---"
+                    kubectl -n "${ns}" get certificaterequests -o wide --sort-by=.metadata.creationTimestamp 2>/dev/null | tail -n 10 || true
+                    echo "--- debug: events (tail) ---"
+                    kubectl -n "${ns}" get events --sort-by=.metadata.creationTimestamp 2>/dev/null | tail -n 20 || true
+                  }
+
+                  trap cleanup EXIT
+
+                  echo "=== Step CA Issuance Smoke Test ==="
+                  echo "Testing certificate issuance via ClusterIssuer/${issuer} with chain verification"
+
+                  wait_for_root_ca_secret() {
+                    timeout_s="${1:-600}"
+                    start_s="$(date +%s)"
+
+                    while true; do
+                      crt_b64="$(kubectl -n "${ns}" get secret "${root_secret}" -o jsonpath='{.data.tls\.crt}' 2>/dev/null || true)"
+                      if [ -n "${crt_b64}" ]; then
+                        return 0
+                      fi
+
+                      now_s="$(date +%s)"
+                      if [ $((now_s - start_s)) -ge "${timeout_s}" ]; then
+                        return 1
+                      fi
+
+                      echo "   Waiting for root CA secret ${ns}/${root_secret} (tls.crt)..."
+                      sleep 5
+                    done
+                  }
+
+                  wait_for_clusterissuer_ready() {
+                    timeout_s="${1:-600}"
+                    start_s="$(date +%s)"
+
+                    while true; do
+                      ready="$(kubectl get clusterissuer "${issuer}" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)"
+                      if [ "${ready}" = "True" ]; then
+                        return 0
+                      fi
+
+                      now_s="$(date +%s)"
+                      if [ $((now_s - start_s)) -ge "${timeout_s}" ]; then
+                        return 1
+                      fi
+
+                      echo "   Waiting for ClusterIssuer/${issuer} Ready=True..."
+                      sleep 5
+                    done
+                  }
+
+                  echo "1. Waiting for root CA secret..."
+                  if ! wait_for_root_ca_secret 600; then
+                    echo "FAIL: Root CA secret ${ns}/${root_secret} not found or missing tls.crt (timeout)" >&2
+                    kubectl -n "${ns}" describe secret "${root_secret}" 2>/dev/null || true
+                    exit 1
+                  fi
+                  echo "   Root CA secret present"
+
+                  echo "2. Waiting for ClusterIssuer/${issuer} to be Ready..."
+                  if ! wait_for_clusterissuer_ready 600; then
+                    echo "FAIL: ClusterIssuer/${issuer} did not become Ready=True (timeout)" >&2
+                    kubectl get clusterissuer "${issuer}" -o yaml 2>/dev/null || true
+                    exit 1
+                  fi
+                  echo "   ClusterIssuer is Ready"
+
+                  # Extract root CA for chain verification
+                  echo "3. Extracting root CA for chain verification..."
+                  kubectl -n "${ns}" get secret "${root_secret}" -o jsonpath='{.data.tls\.crt}' | base64 -d > /tmp/root-ca.crt
+                  if [ ! -s /tmp/root-ca.crt ]; then
+                    echo "FAIL: Could not extract root CA certificate" >&2
+                    exit 1
+                  fi
+                  echo "   Root CA extracted ($(wc -c < /tmp/root-ca.crt) bytes)"
+
+                  # Cleanup any previous test artifacts
+                  cleanup
+
+                  # Create test certificate
+                  echo "4. Creating test certificate via ClusterIssuer/${issuer}..."
+                  attempt=1
+                  max_attempts=5
+                  while true; do
+                    out="$(kubectl -n "${ns}" apply -f - 2>&1 <<EOF
+                  apiVersion: cert-manager.io/v1
+                  kind: Certificate
+                  metadata:
+                    name: ${cert}
+                    labels:
+                      app.kubernetes.io/name: cert-smoke
+                      deploykube.certificates/purpose: smoke-test
+                  spec:
+                    secretName: ${secret}
+                    duration: 1h
+                    renewBefore: 30m
+                    commonName: cert-smoke-test.${ns}.svc.cluster.local
+                    dnsNames:
+                      - cert-smoke-test.${ns}.svc.cluster.local
+                    issuerRef:
+                      name: ${issuer}
+                      kind: ClusterIssuer
+                    privateKey:
+                      algorithm: RSA
+                      size: 2048
+                      rotationPolicy: Never
+                  EOF
+                    )" && { echo "${out}"; break; }
+
+                    echo "${out}" >&2
+                    if echo "${out}" | grep -Eq 'failed calling webhook|context deadline exceeded|Client.Timeout exceeded'; then
+                      if [ "${attempt}" -ge "${max_attempts}" ]; then
+                        echo "FAIL: Certificate apply failed after ${max_attempts} attempts" >&2
+                        debug
+                        exit 1
+                      fi
+                      sleep_s="$((attempt * 3))"
+                      echo "   Transient failure, retrying in ${sleep_s}s (${attempt}/${max_attempts})..."
+                      sleep "${sleep_s}"
+                      attempt="$((attempt+1))"
+                      continue
+                    fi
+
+                    echo "FAIL: Certificate apply failed with non-retryable error" >&2
+                    debug
+                    exit 1
+                  done
+
+                  # Wait for Ready
+                  echo "5. Waiting for Certificate/Ready..."
+                  if ! kubectl -n "${ns}" wait --for=condition=Ready certificate/"${cert}" --timeout=180s; then
+                    echo "FAIL: Certificate did not reach Ready=True within timeout" >&2
+                    debug
+                    exit 1
+                  fi
+                  echo "   Certificate is Ready"
+
+                  # Verify Secret exists with expected keys
+                  echo "6. Verifying issued Secret contains tls.crt and tls.key..."
+                  crt_b64="$(kubectl -n "${ns}" get secret "${secret}" -o jsonpath='{.data.tls\.crt}' 2>/dev/null || true)"
+                  key_b64="$(kubectl -n "${ns}" get secret "${secret}" -o jsonpath='{.data.tls\.key}' 2>/dev/null || true)"
+                  if [ -z "${crt_b64}" ] || [ -z "${key_b64}" ]; then
+                    echo "FAIL: Secret missing tls.crt and/or tls.key" >&2
+                    debug
+                    exit 1
+                  fi
+                  echo "   Secret contains required keys"
+
+                  # Chain verification against root CA
+                  echo "7. Verifying certificate chain against Step CA root..."
+                  echo "${crt_b64}" | base64 -d > /tmp/issued.crt
+                  
+                  # openssl verify with explicit CAfile
+                  if ! openssl verify -CAfile /tmp/root-ca.crt /tmp/issued.crt; then
+                    echo "FAIL: Certificate chain verification failed" >&2
+                    echo "--- Root CA ---"
+                    openssl x509 -in /tmp/root-ca.crt -noout -subject -issuer || true
+                    echo "--- Issued cert ---"
+                    openssl x509 -in /tmp/issued.crt -noout -subject -issuer || true
+                    exit 1
+                  fi
+                  echo "   Chain verification: OK"
+
+                  # Display cert details for logging
+                  echo "8. Issued certificate details:"
+                  openssl x509 -in /tmp/issued.crt -noout -subject -issuer -dates | sed 's/^/   /'
+
+                  echo ""
+                  echo "=== Step CA Issuance Smoke Test PASSED ==="
+          volumes:
+            - name: tmp
+              emptyDir: {}

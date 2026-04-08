@@ -1,0 +1,145 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ingress-smoke-substrate
+  namespace: istio-system
+  labels:
+    app.kubernetes.io/name: ingress-smoke
+spec:
+  # Intentionally offset from :00 to avoid top-of-hour kube-apiserver contention.
+  schedule: "3 * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 600
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          annotations:
+            sidecar.istio.io/inject: "false"
+        spec:
+          restartPolicy: Never
+          serviceAccountName: ingress-smoke
+          containers:
+            - name: smoke
+              image: registry.example.internal/deploykube/bootstrap-tools:1.4
+              imagePullPolicy: IfNotPresent
+              command:
+                - /bin/bash
+                - -lc
+                - |
+                  set -euo pipefail
+
+                  dump_on_error() {
+                    echo "[ingress-smoke] diagnostics (best-effort)" >&2
+                    kubectl -n istio-system get svc public-gateway-istio -o wide >&2 || true
+                    kubectl -n istio-system get svc istio-ingressgateway -o wide >&2 || true
+                    kubectl -n istio-system get gateway public-gateway -o yaml >&2 || true
+                    kubectl get httproute -A -o wide >&2 || true
+                    kubectl -n istio-system get events --sort-by=.lastTimestamp >&2 || true
+                  }
+                  trap dump_on_error ERR
+
+                  vip=""
+                  for candidate in public-gateway-istio istio-ingressgateway; do
+                    maybe="$(kubectl -n istio-system get svc "${candidate}" -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)"
+                    if [[ -n "${maybe}" ]]; then
+                      vip="${maybe}"
+                      break
+                    fi
+                  done
+                  if [[ -z "${vip}" ]]; then
+                    echo "[ingress-smoke] missing LoadBalancer IP on istio ingress (expected one of: public-gateway-istio, istio-ingressgateway)" >&2
+                    exit 1
+                  fi
+                  echo "[ingress-smoke] ingress VIP: ${vip}"
+
+                  echo "[ingress-smoke] gather HTTPRoutes attached to Gateway/public-gateway"
+                  routes_json="$(kubectl get httproute -A -o json)"
+
+                  mapfile -t routes < <(echo "${routes_json}" | jq -r '
+                    .items[]
+                    | select(any(.spec.parentRefs[]?; .name=="public-gateway" and .namespace=="istio-system"))
+                    | [.metadata.namespace, .metadata.name] | @tsv
+                  ' | sort -u)
+
+                  if [[ "${#routes[@]}" -eq 0 ]]; then
+                    echo "[ingress-smoke] no HTTPRoutes found with parentRef public-gateway/istio-system" >&2
+                    exit 1
+                  fi
+
+                  echo "[ingress-smoke] validate HTTPRoute statuses (Accepted=True, ResolvedRefs=True)"
+                  bad="$(echo "${routes_json}" | jq -r '
+                    def parent_ok:
+                      any(.spec.parentRefs[]?; .name=="public-gateway" and .namespace=="istio-system");
+                    def cond_status($t):
+                      (
+                          [
+                            .status.parents[]?
+                            | select(.parentRef.name=="public-gateway" and (.parentRef.namespace? // "")=="istio-system")
+                            | .conditions[]?
+                            | select(.type==$t)
+                            | .status
+                          ] | first
+                      ) // "Missing";
+                    .items[]
+                    | select(parent_ok)
+                    | . as $r
+                    | ($r | cond_status("Accepted")) as $accepted
+                    | ($r | cond_status("ResolvedRefs")) as $resolved
+                    | select($accepted != "True" or $resolved != "True")
+                    | "\($r.metadata.namespace)/\($r.metadata.name) Accepted=\($accepted) ResolvedRefs=\($resolved)"
+                  ')"
+
+                  if [[ -n "${bad}" ]]; then
+                    echo "[ingress-smoke] failing routes:" >&2
+                    echo "${bad}" >&2
+                    exit 1
+                  fi
+
+                  echo "[ingress-smoke] collect hostnames from attached HTTPRoutes"
+                  mapfile -t hosts < <(echo "${routes_json}" | jq -r '
+                    .items[]
+                    | select(any(.spec.parentRefs[]?; .name=="public-gateway" and .namespace=="istio-system"))
+                    | .spec.hostnames[]? // empty
+                  ' | sort -u)
+
+                  if [[ "${#hosts[@]}" -eq 0 ]]; then
+                    echo "[ingress-smoke] no hostnames found on attached HTTPRoutes" >&2
+                    exit 1
+                  fi
+
+                  echo "[ingress-smoke] VIP :443 accepts connections (SNI=${hosts[0]})"
+                  timeout 10 openssl s_client -connect "${vip}:443" -servername "${hosts[0]}" -brief </dev/null >/dev/null
+
+                  echo "[ingress-smoke] basic HTTPS request via VIP (TLS verify skipped; plumbing-only)"
+                  failures=0
+                  for host in "${hosts[@]}"; do
+                    code="$(curl -sk -o /dev/null -w '%{http_code}' \
+                      --connect-timeout 3 \
+                      --max-time 15 \
+                      --resolve "${host}:443:${vip}" \
+                      "https://${host}/" || true)"
+                    if [[ "${code}" = "000" ]]; then
+                      echo "[ingress-smoke] FAIL ${host}: no HTTP response (code=000)" >&2
+                      failures=$((failures + 1))
+                      continue
+                    fi
+                    if [[ "${code}" -ge 500 ]]; then
+                      echo "[ingress-smoke] WARN ${host}: HTTP ${code} (treating as failure for ingress reliability)" >&2
+                      failures=$((failures + 1))
+                      continue
+                    fi
+                    echo "[ingress-smoke] OK ${host}: HTTP ${code}"
+                  done
+
+                  if [[ "${failures}" -ne 0 ]]; then
+                    echo "[ingress-smoke] failures: ${failures}" >&2
+                    exit 1
+                  fi
+
+                  echo "[ingress-smoke] ok"

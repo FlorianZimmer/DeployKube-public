@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hubble-auth-proxy
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: hubble-auth-proxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hubble-auth-proxy
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hubble-auth-proxy
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      containers:
+        - name: oauth2-proxy
+          image: quay.io/oauth2-proxy/oauth2-proxy:v7.6.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - --http-address=0.0.0.0:4180
+            - --reverse-proxy=true
+            - --skip-provider-button=true
+            - --provider=oidc
+            - --oidc-issuer-url=https://keycloak.dev-single.internal.example.com/realms/deploykube-admin
+            - --redirect-url=https://hubble.dev-single.internal.example.com/oauth2/callback
+            - --upstream=http://hubble-ui.kube-system.svc.cluster.local:80/
+            - --email-domain=*
+            - --scope=openid profile email groups
+            - --oidc-groups-claim=groups
+            - --allowed-group=dk-platform-admins
+            - --allowed-group=dk-platform-operators
+            - --allowed-group=dk-security-ops
+            - --code-challenge-method=S256
+            - --cookie-secure=true
+            - --cookie-samesite=lax
+            - --provider-ca-file=/etc/oidc/ca.crt
+          env:
+            - name: OAUTH2_PROXY_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: hubble-oauth2-proxy
+                  key: clientID
+            - name: OAUTH2_PROXY_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: hubble-oauth2-proxy
+                  key: clientSecret
+            - name: OAUTH2_PROXY_COOKIE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: hubble-oauth2-proxy
+                  key: cookieSecret
+          ports:
+            - name: http
+              containerPort: 4180
+          volumeMounts:
+            - name: oidc-ca
+              mountPath: /etc/oidc
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+      volumes:
+        - name: oidc-ca
+          secret:
+            secretName: hubble-oauth2-proxy
+            items:
+              - key: ca.crt
+                path: ca.crt

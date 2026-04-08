@@ -1,0 +1,88 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: storage-smoke-backup-target-write
+  annotations:
+    deploykube.gitops/validation-job: "true"
+spec:
+  # Intentionally offset from :00 to avoid top-of-hour kube-apiserver contention.
+  schedule: "11 * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 300
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          annotations:
+            sidecar.istio.io/inject: "false"
+        spec:
+          restartPolicy: Never
+          affinity:
+            nodeAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+                # Prefer non-control-plane nodes when present, but remain schedulable on single-node clusters.
+                - weight: 100
+                  preference:
+                    matchExpressions:
+                      - key: node-role.kubernetes.io/control-plane
+                        operator: DoesNotExist
+                - weight: 50
+                  preference:
+                    matchExpressions:
+                      - key: node-role.kubernetes.io/master
+                        operator: DoesNotExist
+          containers:
+            - name: smoke
+              image: registry.example.internal/deploykube/bootstrap-tools@sha256:e7be47a69e3a11bc58c857f2d690a71246ada91ac3a60bdfb0a547f091f6485a
+              imagePullPolicy: IfNotPresent
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 64Mi
+                limits:
+                  memory: 128Mi
+              env:
+                - name: DEPLOYMENT_ID
+                  value: proxmox-talos
+              volumeMounts:
+                - name: deployment-config
+                  mountPath: /config
+                  readOnly: true
+                - name: backup
+                  mountPath: /backup
+              command:
+                - /bin/bash
+                - -c
+                - |
+                  set -euo pipefail
+                  command -v yq >/dev/null 2>&1 || { echo "missing dependency: yq" >&2; exit 1; }
+                  command -v timeout >/dev/null 2>&1 || { echo "missing dependency: timeout" >&2; exit 1; }
+
+                  cfg="/config/deployment-config.yaml"
+                  if [ -f "$cfg" ]; then
+                    dep="$(yq -r '.spec.deploymentId // \"\"' "$cfg" 2>/dev/null || true)"
+                    if [ -n "$dep" ]; then
+                      DEPLOYMENT_ID="$dep"
+                      export DEPLOYMENT_ID
+                    fi
+                  fi
+
+                  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+                  dir="/backup/${DEPLOYMENT_ID}/smoke/backup-target-write"
+                  mkdir -p "$dir"
+                  file="${dir}/${ts}.txt"
+                  echo "ok ${ts}" | timeout 10s tee "$file" >/dev/null
+                  timeout 10s test -s "$file"
+          volumes:
+            - name: deployment-config
+              configMap:
+                name: deploykube-deployment-config
+                defaultMode: 0444
+            - name: backup
+              persistentVolumeClaim:
+                claimName: backup-target

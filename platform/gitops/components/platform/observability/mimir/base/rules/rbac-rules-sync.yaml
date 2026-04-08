@@ -1,0 +1,34 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mimir-rules-sync
+  namespace: mimir
+  labels:
+    app.kubernetes.io/component: ruler
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mimir-rules-sync
+  namespace: mimir
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mimir-rules-sync
+  namespace: mimir
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: mimir-rules-sync
+subjects:
+  - kind: ServiceAccount
+    name: mimir-rules-sync
+    namespace: mimir
+

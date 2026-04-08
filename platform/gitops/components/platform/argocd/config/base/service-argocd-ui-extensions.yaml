@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: argocd-ui-extensions
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: argocd-ui-extensions
+    app.kubernetes.io/part-of: argocd
+spec:
+  selector:
+    app.kubernetes.io/name: argocd-ui-extensions
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+

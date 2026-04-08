@@ -1,0 +1,34 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: backup-system
+
+resources:
+  - namespace.yaml
+  - pvc-backup-target.yaml
+  - pvc-restore-canary-data.yaml
+  - configmap-backup-recovery-encryption.yaml
+  - serviceaccount-backup-set-writer.yaml
+  - serviceaccount-backup-pvc-restic-runner.yaml
+  - serviceaccount-backup-restore-validation-reader.yaml
+  - rbac-backup-set-writer.yaml
+  - clusterrolebinding-backup-set-writer-forgejo-repo-tls-reader.yaml
+  - rbac-backup-pvc-restic-runner.yaml
+  - rbac-backup-restore-validation-reader.yaml
+  - externalsecret-garage-s3.yaml
+  - externalsecret-s3-replication-target.yaml
+  - externalsecret-s3-mirror-crypt.yaml
+  - externalsecret-recovery-forgejo-repo.yaml
+  - externalsecret-recovery-material.yaml
+  - externalsecret-pvc-restic.yaml
+  - cronjob-smoke-backup-target-write.yaml
+  - cronjob-restore-canary-write.yaml
+  - cronjob-restore-canary.yaml
+  - cronjob-pvc-restic-backup.yaml
+  - cronjob-smoke-pvc-restic-credentials.yaml
+  - cronjob-smoke-restore-validation-contract.yaml
+  - cronjob-smoke-backups-freshness.yaml
+  - cronjob-smoke-full-restore-staleness.yaml
+  - cronjob-backup-set-assemble.yaml
+  - cronjob-s3-mirror.yaml
+  - cronjob-prune-tier0.yaml
+  - cronjob-prune-sets.yaml

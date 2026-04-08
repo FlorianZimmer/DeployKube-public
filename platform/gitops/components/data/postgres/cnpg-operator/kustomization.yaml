@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - manifest.yaml
+  - networkpolicies.yaml
+  - poddisruptionbudget-cnpg-operator-cloudnative-pg.yaml
+images:
+  - name: registry.example.internal/cloudnative-pg/cloudnative-pg
+    digest: sha256:cfa380de51377fa61122d43c1214d43d3268c3c17da57612ee8fea1d46b61856
+patchesStrategicMerge:
+  - crd-patches.yaml
+  - patch-ha-deployment-cnpg-operator-cloudnative-pg.yaml
+  - patch-operator-image-env-deployment-cnpg-operator-cloudnative-pg.yaml
+  - patch-vpa-requests-deployment-cnpg-operator-cloudnative-pg.yaml
+patches:
+  - path: patch-ha-tier-labels.yaml

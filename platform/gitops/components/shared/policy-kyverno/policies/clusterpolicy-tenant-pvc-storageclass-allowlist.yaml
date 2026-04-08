@@ -1,0 +1,28 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: tenant-pvc-storageclass-allowlist
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  admission: true
+  validationFailureAction: Enforce
+  background: false
+  emitWarning: false
+  rules:
+    - name: allow-shared-rwo-only
+      match:
+        any:
+          - resources:
+              kinds: ["PersistentVolumeClaim"]
+              namespaceSelector:
+                matchLabels:
+                  darksite.cloud/rbac-profile: tenant
+      skipBackgroundRequests: true
+      validate:
+        message: "Tenant PVCs must use storageClassName=shared-rwo (backend selection is platform-owned)."
+        allowExistingViolations: true
+        pattern:
+          spec:
+            storageClassName: shared-rwo
+

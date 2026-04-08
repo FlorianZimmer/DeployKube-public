@@ -1,0 +1,49 @@
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: mimir-ingester
+  namespace: mimir
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: mimir-ingester
+  updatePolicy:
+    updateMode: Off
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        maxAllowed:
+          cpu: "4"
+          memory: 4Gi
+        minAllowed:
+          cpu: 100m
+          memory: 512Mi
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: mimir-store-gateway
+  namespace: mimir
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: mimir-store-gateway
+  updatePolicy:
+    updateMode: Off
+  resourcePolicy:
+    containerPolicies:
+      - containerName: istio-proxy
+        mode: "Off"
+      - containerName: "*"
+        controlledValues: RequestsOnly
+        maxAllowed:
+          cpu: "4"
+          memory: 2Gi
+        minAllowed:
+          cpu: 50m
+          memory: 256Mi

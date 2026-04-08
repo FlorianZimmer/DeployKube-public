@@ -1,0 +1,31 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+commonAnnotations:
+  argocd.argoproj.io/sync-wave: "1.4"
+resources:
+  - peerauthentication-kube-state-metrics.yaml
+  - peerauthentication-node-exporter.yaml
+helmGlobals:
+  chartHome: charts
+helmCharts:
+  - name: kube-state-metrics
+    version: 7.0.0
+    releaseName: kube-state-metrics
+    namespace: observability
+    valuesFile: values-kube-state-metrics.yaml
+  - name: prometheus-node-exporter
+    version: 4.49.2
+    releaseName: prometheus-node-exporter
+    namespace: observability
+    valuesFile: values-node-exporter.yaml
+  - name: metrics-server
+    version: 3.12.2
+    releaseName: metrics-server
+    namespace: kube-system
+    valuesFile: values-metrics-server.yaml
+patches:
+  - path: patch-vpa-requests-deployment-kube-state-metrics.yaml
+  - path: patch-vpa-requests-deployment-metrics-server.yaml
+  - path: patch-vpa-requests-daemonset-prometheus-node-exporter.yaml
+  - path: patch-vpa-requests-deployment-kube-state-metrics.yaml
+  - path: patch-ha-tier-labels.yaml

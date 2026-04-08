@@ -1,0 +1,85 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  # Template: replace <orgId> and <projectId>
+  name: tenant-<orgId>-p-<projectId>
+  namespace: argocd
+spec:
+  description: Tenant project <orgId>/<projectId>
+
+  # Tenant self-service (no per-tenant growth in global argocd-rbac-cm):
+  # Bind Keycloak groups to Argo roles inside the tenant AppProject.
+  roles:
+    - name: admin
+      description: Tenant project admin (<orgId>/<projectId>)
+      policies:
+        - p, proj:tenant-<orgId>-p-<projectId>:admin, applications, get, tenant-<orgId>-p-<projectId>/*, allow
+        - p, proj:tenant-<orgId>-p-<projectId>:admin, applications, sync, tenant-<orgId>-p-<projectId>/*, allow
+        - p, proj:tenant-<orgId>-p-<projectId>:admin, logs, get, tenant-<orgId>-p-<projectId>/*, allow
+        - p, proj:tenant-<orgId>-p-<projectId>:admin, projects, get, tenant-<orgId>-p-<projectId>, allow
+      groups:
+        - dk-tenant-<orgId>-project-<projectId>-admins
+
+    - name: developer
+      description: Tenant project developer (<orgId>/<projectId>)
+      policies:
+        - p, proj:tenant-<orgId>-p-<projectId>:developer, applications, get, tenant-<orgId>-p-<projectId>/*, allow
+        - p, proj:tenant-<orgId>-p-<projectId>:developer, applications, sync, tenant-<orgId>-p-<projectId>/*, allow
+        - p, proj:tenant-<orgId>-p-<projectId>:developer, logs, get, tenant-<orgId>-p-<projectId>/*, allow
+        - p, proj:tenant-<orgId>-p-<projectId>:developer, projects, get, tenant-<orgId>-p-<projectId>, allow
+      groups:
+        - dk-tenant-<orgId>-project-<projectId>-developers
+
+    - name: viewer
+      description: Tenant project viewer (<orgId>/<projectId>)
+      policies:
+        - p, proj:tenant-<orgId>-p-<projectId>:viewer, applications, get, tenant-<orgId>-p-<projectId>/*, allow
+        - p, proj:tenant-<orgId>-p-<projectId>:viewer, logs, get, tenant-<orgId>-p-<projectId>/*, allow
+        - p, proj:tenant-<orgId>-p-<projectId>:viewer, projects, get, tenant-<orgId>-p-<projectId>, allow
+      groups:
+        - dk-tenant-<orgId>-project-<projectId>-viewers
+
+  # Repo-per-project product mode:
+  # - Forgejo org: tenant-<orgId>
+  # - Repo: apps-<projectId>.git
+  sourceRepos:
+    - https://forgejo-https.forgejo.svc.cluster.local/tenant-<orgId>/apps-<projectId>.git
+
+  # Namespace boundary (project-scoped):
+  destinations:
+    - name: in-cluster
+      namespace: t-<orgId>-p-<projectId>-*
+
+  # Tenants must not apply cluster-scoped resources via GitOps.
+  clusterResourceWhitelist:
+    - group: do-not-use
+      kind: DoNotUse
+
+  # Namespaced workload-plane allowlist (tight by default; expand with evidence).
+  namespaceResourceWhitelist:
+    - group: ""
+      kind: ConfigMap
+    - group: ""
+      kind: PersistentVolumeClaim
+    - group: ""
+      kind: Service
+    - group: ""
+      kind: ServiceAccount
+    - group: apps
+      kind: Deployment
+    - group: apps
+      kind: DaemonSet
+    - group: apps
+      kind: StatefulSet
+    - group: autoscaling
+      kind: HorizontalPodAutoscaler
+    - group: batch
+      kind: Job
+    - group: batch
+      kind: CronJob
+    - group: networking.k8s.io
+      kind: NetworkPolicy
+    - group: policy
+      kind: PodDisruptionBudget
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute

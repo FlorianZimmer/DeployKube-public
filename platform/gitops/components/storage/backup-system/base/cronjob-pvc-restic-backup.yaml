@@ -1,0 +1,505 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: storage-pvc-restic-backup
+  labels:
+    app.kubernetes.io/component: backup-maintenance
+    app.kubernetes.io/part-of: backup-system
+    darksite.cloud/backup-plane-spread: long-running
+spec:
+  # Intentionally offset from :00 to avoid top-of-hour kube-apiserver contention.
+  schedule: "17 */6 * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 21600
+      ttlSecondsAfterFinished: 21600
+      template:
+        metadata:
+          annotations:
+            sidecar.istio.io/inject: "false"
+          labels:
+            app.kubernetes.io/component: backup-maintenance
+            app.kubernetes.io/part-of: backup-system
+            darksite.cloud/backup-plane-spread: long-running
+        spec:
+          serviceAccountName: backup-pvc-restic-runner
+          restartPolicy: Never
+          securityContext:
+            runAsUser: 65532
+            runAsGroup: 65532
+            runAsNonRoot: true
+            fsGroup: 65532
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile:
+              type: RuntimeDefault
+          affinity:
+            nodeAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+                # Prefer non-control-plane nodes when present, but remain schedulable on single-node clusters.
+                - weight: 100
+                  preference:
+                    matchExpressions:
+                      - key: node-role.kubernetes.io/control-plane
+                        operator: DoesNotExist
+                - weight: 50
+                  preference:
+                    matchExpressions:
+                      - key: node-role.kubernetes.io/master
+                        operator: DoesNotExist
+            podAntiAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+                - weight: 100
+                  podAffinityTerm:
+                    topologyKey: kubernetes.io/hostname
+                    labelSelector:
+                      matchLabels:
+                        darksite.cloud/backup-plane-spread: long-running
+          topologySpreadConstraints:
+            - maxSkew: 1
+              topologyKey: kubernetes.io/hostname
+              whenUnsatisfiable: ScheduleAnyway
+              labelSelector:
+                matchLabels:
+                  darksite.cloud/backup-plane-spread: long-running
+          containers:
+            - name: backup
+              image: registry.example.internal/deploykube/bootstrap-tools@sha256:e7be47a69e3a11bc58c857f2d690a71246ada91ac3a60bdfb0a547f091f6485a
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+                readOnlyRootFilesystem: true
+              env:
+                - name: DEPLOYMENT_ID
+                  value: proxmox-talos
+                - name: RESTIC_RETENTION
+                  value: --keep-within 2h --keep-hourly 24 --keep-daily 7 --keep-weekly 8
+                - name: PLATFORM_NAMESPACE_ALLOWLIST
+                  value: step-system,backup-system
+                - name: FAIL_ON_OUT_OF_SCOPE
+                  value: "true"
+                - name: BACKUP_POD_IMAGE
+                  value: docker.io/restic/restic@sha256:39d9072fb5651c80d75c7a811612eb60b4c06b32ffe87c2e9f3c7222e1797e76
+                - name: BACKUP_POD_TIMEOUT_SECONDS
+                  value: "5400"
+                - name: RESTIC_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: backup-system-pvc-restic
+                      key: RESTIC_PASSWORD
+              volumeMounts:
+                - name: deployment-config
+                  mountPath: /config
+                  readOnly: true
+                - name: backup
+                  mountPath: /backup
+              command:
+                - /bin/bash
+                - -c
+                - |
+                  set -euo pipefail
+                  command -v kubectl >/dev/null 2>&1 || { echo "missing dependency: kubectl" >&2; exit 1; }
+                  command -v yq >/dev/null 2>&1 || { echo "missing dependency: yq" >&2; exit 1; }
+                  command -v python3 >/dev/null 2>&1 || { echo "missing dependency: python3" >&2; exit 1; }
+
+                  cfg="/config/deployment-config.yaml"
+                  NFS_SERVER=""
+                  NFS_EXPORT_PATH=""
+                  if [ -f "$cfg" ]; then
+                    dep="$(yq -r '.spec.deploymentId // ""' "$cfg" 2>/dev/null || true)"
+                    [ -n "$dep" ] && DEPLOYMENT_ID="$dep"
+
+                    v="$(yq -r '.spec.backup.target.nfs.server // ""' "$cfg" 2>/dev/null || true)"
+                    [ -n "$v" ] && NFS_SERVER="$v"
+                    v="$(yq -r '.spec.backup.target.nfs.exportPath // ""' "$cfg" 2>/dev/null || true)"
+                    [ -n "$v" ] && NFS_EXPORT_PATH="$v"
+
+                    v="$(yq -r '.spec.backup.retention.restic // ""' "$cfg" 2>/dev/null || true)"
+                    [ -n "$v" ] && RESTIC_RETENTION="$v"
+                  fi
+
+                  [ -n "${NFS_SERVER}" ] || { echo "missing .spec.backup.target.nfs.server in deployment config" >&2; exit 1; }
+                  [ -n "${NFS_EXPORT_PATH}" ] || { echo "missing .spec.backup.target.nfs.exportPath in deployment config" >&2; exit 1; }
+
+                  export DEPLOYMENT_ID NFS_SERVER NFS_EXPORT_PATH RESTIC_RETENTION
+
+                  python3 - <<'PY'
+                  import datetime
+                  import hashlib
+                  import json
+                  import os
+                  import re
+                  import subprocess
+                  import sys
+                  import time
+                  import uuid
+                  from pathlib import Path
+
+                  def run(cmd, *, input_text=None, check=True):
+                      p = subprocess.run(cmd, input=input_text, text=True, capture_output=True)
+                      if check and p.returncode != 0:
+                          raise RuntimeError(
+                              f"command failed rc={p.returncode}: {' '.join(cmd)}\n"
+                              f"stdout:\n{p.stdout}\n"
+                              f"stderr:\n{p.stderr}"
+                          )
+                      return p
+
+                  def env_required(name: str) -> str:
+                      v = os.environ.get(name, "").strip()
+                      if not v:
+                          raise ValueError(f"missing required env: {name}")
+                      return v
+
+                  def env_int(name: str, default: int) -> int:
+                      raw = os.environ.get(name, "").strip()
+                      if not raw:
+                          return default
+                      value = int(raw)
+                      if value <= 0:
+                          raise ValueError(f"{name} must be > 0")
+                      return value
+
+                  def env_bool(name: str, default: bool) -> bool:
+                      raw = os.environ.get(name, "").strip().lower()
+                      if not raw:
+                          return default
+                      if raw in ("1", "true", "yes", "on"):
+                          return True
+                      if raw in ("0", "false", "no", "off"):
+                          return False
+                      raise ValueError(f"invalid bool env {name}={raw!r}")
+
+                  def parse_allowlist(raw: str) -> set[str]:
+                      out: set[str] = set()
+                      for part in raw.replace(",", " ").split():
+                          v = part.strip()
+                          if v:
+                              out.add(v)
+                      return out
+
+                  def sanitize_name(v: str) -> str:
+                      s = re.sub(r"[^a-z0-9-]", "-", v.lower())
+                      s = re.sub(r"-+", "-", s).strip("-")
+                      return s[:35] if len(s) > 35 else s
+
+                  deployment_id = env_required("DEPLOYMENT_ID")
+                  nfs_server = env_required("NFS_SERVER")
+                  nfs_export_path = env_required("NFS_EXPORT_PATH")
+                  restic_password = env_required("RESTIC_PASSWORD")
+                  restic_retention = os.environ.get("RESTIC_RETENTION", "").strip()
+                  backup_pod_image = env_required("BACKUP_POD_IMAGE")
+                  backup_pod_timeout_seconds = env_int("BACKUP_POD_TIMEOUT_SECONDS", 5400)
+                  allowlist = parse_allowlist(os.environ.get("PLATFORM_NAMESPACE_ALLOWLIST", ""))
+                  fail_on_out_of_scope = env_bool("FAIL_ON_OUT_OF_SCOPE", True)
+                  managed_by_label = "storage-pvc-restic-backup"
+                  backup_pod_resources = {
+                      "requests": {
+                          "cpu": "100m",
+                          "memory": "256Mi",
+                      },
+                      "limits": {
+                          "cpu": "1",
+                          "memory": "1Gi",
+                      },
+                  }
+
+                  now = datetime.datetime.now(datetime.timezone.utc)
+                  timestamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+                  marker_dir = Path("/backup") / deployment_id / "pvc-restic"
+                  marker_dir.mkdir(parents=True, exist_ok=True)
+
+                  ns_doc = json.loads(run(["kubectl", "get", "namespace", "-o", "json"]).stdout)
+                  backup_scoped_namespaces: set[str] = set()
+                  for item in ns_doc.get("items", []):
+                      name = item.get("metadata", {}).get("name", "")
+                      labels = item.get("metadata", {}).get("labels", {}) or {}
+                      if labels.get("darksite.cloud/backup-scope") == "enabled":
+                          backup_scoped_namespaces.add(name)
+
+                  pvc_doc = json.loads(
+                      run(["kubectl", "get", "pvc", "-A", "-l", "darksite.cloud/backup=restic", "-o", "json"]).stdout
+                  )
+
+                  discovered = []
+                  eligible = []
+                  out_of_scope = []
+
+                  for item in pvc_doc.get("items", []):
+                      metadata = item.get("metadata", {}) or {}
+                      spec = item.get("spec", {}) or {}
+                      status = item.get("status", {}) or {}
+                      ns = metadata.get("namespace", "")
+                      pvc = metadata.get("name", "")
+                      if not ns or not pvc:
+                          continue
+                      rec = {
+                          "namespace": ns,
+                          "pvc": pvc,
+                          "phase": status.get("phase", ""),
+                          "storageClassName": spec.get("storageClassName", ""),
+                          "volumeName": spec.get("volumeName", ""),
+                      }
+                      discovered.append(rec)
+                      if ns in allowlist or ns in backup_scoped_namespaces:
+                          eligible.append(rec)
+                      else:
+                          out_of_scope.append(rec)
+
+                  failures = []
+                  successes = []
+
+                  for rec in eligible:
+                      ns = rec["namespace"]
+                      pvc = rec["pvc"]
+                      phase = rec.get("phase", "")
+                      if phase != "Bound":
+                          failures.append({
+                              "namespace": ns,
+                              "pvc": pvc,
+                              "reason": f"PVC phase is {phase!r} (expected 'Bound')",
+                          })
+                          continue
+
+                      suffix = uuid.uuid4().hex[:6]
+                      pod_name = (
+                          f"pvc-restic-backup-{sanitize_name(ns)}-{sanitize_name(pvc)}-{suffix}"
+                      )[:63].rstrip("-")
+                      secret_name = (
+                          f"pvc-restic-password-{sanitize_name(ns)}-{sanitize_name(pvc)}-{suffix}"
+                      )[:63].rstrip("-")
+                      repo_path = f"/backup-target/{deployment_id}/pvc-restic/namespaces/{ns}/persistentvolumeclaims/{pvc}/repo"
+
+                      secret = {
+                          "apiVersion": "v1",
+                          "kind": "Secret",
+                          "metadata": {
+                              "name": secret_name,
+                              "namespace": ns,
+                              "labels": {
+                                  "app.kubernetes.io/name": "backup-system",
+                                  "app.kubernetes.io/component": "pvc-restic-backup",
+                                  "backup.darksite.cloud/managed-by": managed_by_label,
+                              },
+                          },
+                          "type": "Opaque",
+                          "immutable": True,
+                          "stringData": {
+                              "RESTIC_PASSWORD": restic_password,
+                          },
+                      }
+
+                      pod = {
+                          "apiVersion": "v1",
+                          "kind": "Pod",
+                          "metadata": {
+                              "name": pod_name,
+                              "namespace": ns,
+                              "annotations": {
+                                  "sidecar.istio.io/inject": "false",
+                              },
+                              "labels": {
+                                  "app.kubernetes.io/name": "backup-system",
+                                  "app.kubernetes.io/component": "pvc-restic-backup",
+                                  "backup.darksite.cloud/managed-by": "storage-pvc-restic-backup",
+                              },
+                          },
+                          "spec": {
+                              "restartPolicy": "Never",
+                              "activeDeadlineSeconds": backup_pod_timeout_seconds + 120,
+                              "automountServiceAccountToken": False,
+                              "securityContext": {
+                                  "runAsUser": 65532,
+                                  "runAsGroup": 65532,
+                                  "runAsNonRoot": True,
+                                  "fsGroup": 65532,
+                                  "fsGroupChangePolicy": "OnRootMismatch",
+                                  "seccompProfile": {"type": "RuntimeDefault"},
+                              },
+                              "containers": [
+                                  {
+                                      "name": "backup",
+                                      "image": backup_pod_image,
+                                      "imagePullPolicy": "IfNotPresent",
+                                      "resources": backup_pod_resources,
+                                      "securityContext": {
+                                          "allowPrivilegeEscalation": False,
+                                          "capabilities": {"drop": ["ALL"]},
+                                          "readOnlyRootFilesystem": True,
+                                      },
+                                      "env": [
+                                          {"name": "DEPLOYMENT_ID", "value": deployment_id},
+                                          {"name": "TARGET_NAMESPACE", "value": ns},
+                                          {"name": "TARGET_PVC", "value": pvc},
+                                          {
+                                              "name": "RESTIC_PASSWORD",
+                                              "valueFrom": {
+                                                  "secretKeyRef": {
+                                                      "name": secret_name,
+                                                      "key": "RESTIC_PASSWORD",
+                                                  }
+                                              },
+                                          },
+                                          {"name": "RESTIC_RETENTION", "value": restic_retention},
+                                          {"name": "TMPDIR", "value": "/tmp"},
+                                          {"name": "RESTIC_CACHE_DIR", "value": "/tmp/restic-cache"},
+                                      ],
+                                      "command": ["/bin/sh", "-c"],
+                                      "args": [
+                                          "\n".join(
+                                              [
+                                                  "set -eu",
+                                                  "repo=\"/backup-target/${DEPLOYMENT_ID}/pvc-restic/namespaces/${TARGET_NAMESPACE}/persistentvolumeclaims/${TARGET_PVC}/repo\"",
+                                                  "mkdir -p \"${repo}\"",
+                                                  "export RESTIC_REPOSITORY=\"${repo}\"",
+                                                  "if ! restic snapshots --latest 1 >/dev/null 2>&1; then",
+                                                  "  restic init",
+                                                  "fi",
+                                                  "restic backup --one-file-system --tag \"namespace=${TARGET_NAMESPACE}\" --tag \"pvc=${TARGET_PVC}\" /source",
+                                                  "if [ -n \"${RESTIC_RETENTION}\" ]; then",
+                                                  "  # shellcheck disable=SC2086",
+                                                  "  restic forget --prune ${RESTIC_RETENTION}",
+                                                  "fi",
+                                              ]
+                                          )
+                                      ],
+                                      "volumeMounts": [
+                                          {"name": "source", "mountPath": "/source", "readOnly": True},
+                                          {"name": "backup-target", "mountPath": "/backup-target"},
+                                          {"name": "tmp", "mountPath": "/tmp"},
+                                      ],
+                                  }
+                              ],
+                              "volumes": [
+                                  {
+                                      "name": "source",
+                                      "persistentVolumeClaim": {"claimName": pvc, "readOnly": True},
+                                  },
+                                  {
+                                      "name": "backup-target",
+                                      "nfs": {
+                                          "server": nfs_server,
+                                          "path": nfs_export_path,
+                                      },
+                                  },
+                                  {
+                                      "name": "tmp",
+                                      "emptyDir": {},
+                                  },
+                              ],
+                          },
+                      }
+
+                      secret_created = False
+                      pod_created = False
+                      try:
+                          run(["kubectl", "-n", ns, "create", "-f", "-"], input_text=json.dumps(secret))
+                          secret_created = True
+                          run(["kubectl", "-n", ns, "create", "-f", "-"], input_text=json.dumps(pod))
+                          pod_created = True
+
+                          deadline = time.time() + backup_pod_timeout_seconds
+                          phase_out = ""
+                          while True:
+                              phase_out = run(
+                                  ["kubectl", "-n", ns, "get", "pod", pod_name, "-o", "jsonpath={.status.phase}"],
+                                  check=False,
+                              ).stdout.strip()
+                              if phase_out in ("Succeeded", "Failed"):
+                                  break
+                              if time.time() >= deadline:
+                                  phase_out = phase_out or "Timeout"
+                                  break
+                              time.sleep(5)
+
+                          if phase_out != "Succeeded":
+                              phase_out = run(
+                                  ["kubectl", "-n", ns, "get", "pod", pod_name, "-o", "jsonpath={.status.phase}"],
+                                  check=False,
+                              ).stdout.strip()
+                              logs_out = run(["kubectl", "-n", ns, "logs", pod_name], check=False).stdout
+                              failures.append({
+                                  "namespace": ns,
+                                  "pvc": pvc,
+                                  "pod": pod_name,
+                                  "secret": secret_name,
+                                  "reason": f"backup pod did not complete successfully (phase={phase_out or 'unknown'})",
+                                  "logsTail": logs_out.splitlines()[-40:],
+                              })
+                          else:
+                              successes.append(
+                                  {
+                                      "namespace": ns,
+                                      "pvc": pvc,
+                                      "pod": pod_name,
+                                      "secret": secret_name,
+                                      "repoPath": repo_path.replace(f"/backup-target/{deployment_id}/", ""),
+                                  }
+                              )
+                      finally:
+                          if pod_created:
+                              run(
+                                  ["kubectl", "-n", ns, "delete", "pod", pod_name, "--ignore-not-found=true", "--wait=false"],
+                                  check=False,
+                              )
+                          if secret_created:
+                              run(
+                                  ["kubectl", "-n", ns, "delete", "secret", secret_name, "--ignore-not-found=true", "--wait=false"],
+                                  check=False,
+                              )
+
+                  marker = {
+                      "timestamp": timestamp,
+                      "status": "ok",
+                      "deploymentId": deployment_id,
+                      "nfs": {
+                          "server": nfs_server,
+                          "exportPath": nfs_export_path,
+                      },
+                      "resticRetention": restic_retention,
+                      "discoveredCount": len(discovered),
+                      "eligibleCount": len(eligible),
+                      "backedUpCount": len(successes),
+                      "targets": successes,
+                  }
+                  if out_of_scope:
+                      marker["outOfScopeTargets"] = out_of_scope
+                  if failures:
+                      marker["failedTargets"] = failures
+
+                  should_fail = bool(failures) or (fail_on_out_of_scope and bool(out_of_scope))
+                  if should_fail:
+                      marker["status"] = "error"
+
+                  marker_tmp = marker_dir / "LATEST.json.tmp"
+                  marker_path = marker_dir / "LATEST.json"
+                  marker_tmp.write_text(json.dumps(marker, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+                  marker_sha = hashlib.sha256(marker_tmp.read_bytes()).hexdigest()
+                  marker["markerSha256"] = marker_sha
+                  marker_tmp.write_text(json.dumps(marker, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+                  marker_tmp.replace(marker_path)
+
+                  print(
+                      f"[pvc-restic] discovered={len(discovered)} eligible={len(eligible)} "
+                      f"backed_up={len(successes)} failures={len(failures)} out_of_scope={len(out_of_scope)}"
+                  )
+
+                  if should_fail:
+                      print("[pvc-restic] backup run FAILED", file=sys.stderr)
+                      sys.exit(1)
+                  PY
+          volumes:
+            - name: deployment-config
+              configMap:
+                name: deploykube-deployment-config
+                defaultMode: 0444
+            - name: backup
+              persistentVolumeClaim:
+                claimName: backup-target

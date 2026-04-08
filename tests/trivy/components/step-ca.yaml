@@ -1,0 +1,13 @@
+schemaVersion: v1alpha1
+description: Component-owned Trivy targets for Step CA.
+watch_paths:
+  - platform/gitops/artifacts/runtime-artifact-index.yaml
+  - platform/gitops/components/certificates/step-ca
+  - tests/trivy/components/step-ca.yaml
+image_targets:
+  - id: step-ca-server
+    artifact_catalog: runtime-artifacts
+    artifact_name: step-ca-server
+config_targets:
+  - id: step-ca-manifests
+    path: platform/gitops/components/certificates/step-ca

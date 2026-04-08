@@ -1,0 +1,102 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: forgejo-valkey-smoke
+  namespace: forgejo
+  labels:
+    app.kubernetes.io/name: forgejo-valkey-smoke
+spec:
+  schedule: "*/10 * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 300
+      ttlSecondsAfterFinished: 900
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: forgejo-valkey-smoke
+          annotations:
+            sidecar.istio.io/nativeSidecar: "true"
+            proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}'
+        spec:
+          serviceAccountName: forgejo-valkey-smoke
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: smoke
+              image: valkey/valkey:9.0.0-alpine
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              env:
+                - name: VALKEY_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: valkey-auth
+                      key: password
+                - name: VALKEY_HOST
+                  value: forgejo-valkey
+                - name: VALKEY_PORT
+                  value: "6379"
+                - name: SENTINEL_HOST
+                  value: forgejo-valkey-sentinel
+                - name: SENTINEL_PORT
+                  value: "26379"
+                - name: SENTINEL_CLUSTER
+                  value: forgejo-valkey
+              volumeMounts:
+                - name: istio-native-exit
+                  mountPath: /helpers
+                  readOnly: true
+              command:
+                - /bin/sh
+                - -c
+              args:
+                - |
+                  set -euo pipefail
+                  ISTIO_HELPER="/helpers/istio-native-exit.sh"
+                  [ -f "${ISTIO_HELPER}" ] || { echo "missing istio-native-exit helper" >&2; exit 1; }
+                  . "${ISTIO_HELPER}"
+                  trap deploykube_istio_quit_sidecar EXIT INT TERM
+
+                  : "${VALKEY_PASSWORD:?missing VALKEY_PASSWORD}"
+                  : "${VALKEY_HOST:?missing VALKEY_HOST}"
+                  : "${VALKEY_PORT:?missing VALKEY_PORT}"
+                  : "${SENTINEL_HOST:?missing SENTINEL_HOST}"
+                  : "${SENTINEL_PORT:?missing SENTINEL_PORT}"
+                  : "${SENTINEL_CLUSTER:?missing SENTINEL_CLUSTER}"
+
+                  echo "[smoke] sentinel master discovery"
+                  master_host="$(valkey-cli -h "${SENTINEL_HOST}" -p "${SENTINEL_PORT}" SENTINEL get-master-addr-by-name "${SENTINEL_CLUSTER}" | sed -n '1p' | sed -E 's/^[[:space:]]*[0-9]+\\) *\"?//; s/\"?[[:space:]]*$//')"
+                  master_port="$(valkey-cli -h "${SENTINEL_HOST}" -p "${SENTINEL_PORT}" SENTINEL get-master-addr-by-name "${SENTINEL_CLUSTER}" | sed -n '2p' | sed -E 's/^[[:space:]]*[0-9]+\\) *\"?//; s/\"?[[:space:]]*$//')"
+                  case "${master_host}" in ""|"nil"|"(nil)") echo "FAIL: sentinel returned empty master host" >&2; exit 1;; esac
+                  case "${master_port}" in ""|"nil"|"(nil)") echo "FAIL: sentinel returned empty master port" >&2; exit 1;; esac
+                  echo "${master_port}" | grep -Eq '^[0-9]+$' || { echo "FAIL: sentinel returned non-numeric master port: ${master_port}" >&2; exit 1; }
+                  echo "[smoke] sentinel master: ${master_host}:${master_port}"
+
+                  echo "[smoke] ping (master)"
+                  valkey-cli -h "${master_host}" -p "${master_port}" -a "${VALKEY_PASSWORD}" PING | grep -q PONG
+
+                  echo "[smoke] set/get (master)"
+                  key="smoke:forgejo:valkey:$(date +%s)"
+                  valkey-cli -h "${master_host}" -p "${master_port}" -a "${VALKEY_PASSWORD}" SET "${key}" ok EX 60 >/dev/null
+                  val="$(valkey-cli -h "${master_host}" -p "${master_port}" -a "${VALKEY_PASSWORD}" GET "${key}")"
+                  [ "${val}" = "ok" ] || { echo "FAIL: unexpected GET value: ${val}" >&2; exit 1; }
+          volumes:
+            - name: istio-native-exit
+              configMap:
+                name: istio-native-exit-script
+                defaultMode: 0444

@@ -1,0 +1,64 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: keycloak-iam-sync
+  namespace: keycloak
+  annotations:
+    argocd.argoproj.io/sync-wave: "3.2"
+  labels:
+    app.kubernetes.io/name: keycloak-iam-sync
+spec:
+  schedule: "*/2 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      ttlSecondsAfterFinished: 1800
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: keycloak-iam-sync
+          annotations:
+            sidecar.istio.io/nativeSidecar: "true"
+            proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}'
+        spec:
+          serviceAccountName: keycloak-iam-sync
+          restartPolicy: Never
+          containers:
+            - name: iam-sync
+              image: registry.example.internal/deploykube/bootstrap-tools:1.4
+              imagePullPolicy: IfNotPresent
+              command:
+                - /scripts/iam-sync.sh
+              env:
+                - name: KEYCLOAK_NAMESPACE
+                  value: keycloak
+                - name: KEYCLOAK_INTERNAL_URL
+                  value: http://keycloak.keycloak.svc.cluster.local:8080
+                - name: DEPLOYKUBE_CONFIG_SNAPSHOT_NAME
+                  value: deploykube-deployment-config
+                - name: DEPLOYKUBE_CONFIG_SNAPSHOT_KEY
+                  value: deployment-config.yaml
+                - name: STATUS_CONFIGMAP
+                  value: keycloak-iam-sync-status
+                - name: KEYCLOAK_IAM_UPSTREAM_ALIAS
+                  value: upstream
+              volumeMounts:
+                - name: iam-sync-script
+                  mountPath: /scripts/iam-sync.sh
+                  subPath: iam-sync.sh
+                  readOnly: true
+                - name: istio-native-exit
+                  mountPath: /helpers
+                  readOnly: true
+          volumes:
+            - name: iam-sync-script
+              configMap:
+                name: keycloak-iam-sync-script
+                defaultMode: 0755
+            - name: istio-native-exit
+              configMap:
+                name: istio-native-exit-script
+                defaultMode: 0444

@@ -1,0 +1,172 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: grafana-datasource-smoke
+  namespace: grafana
+  annotations:
+    argocd.argoproj.io/sync-wave: "3.9"
+spec:
+  schedule: "*/10 * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 300
+      ttlSecondsAfterFinished: 900
+      template:
+        metadata:
+          annotations:
+            sidecar.istio.io/nativeSidecar: "true"
+            proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}'
+        spec:
+          restartPolicy: Never
+          serviceAccountName: grafana-smoke
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          volumes:
+            - name: grafana-admin
+              secret:
+                secretName: grafana-admin
+                items:
+                  - key: admin-user
+                    path: admin-user
+                  - key: admin-password
+                    path: admin-password
+            - name: istio-native-exit
+              configMap:
+                name: istio-native-exit-script
+                defaultMode: 0444
+          containers:
+            - name: grafana-datasource-smoke
+              image: registry.example.internal/deploykube/bootstrap-tools:1.4
+              imagePullPolicy: IfNotPresent
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  memory: 256Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+              volumeMounts:
+                - name: grafana-admin
+                  mountPath: /secrets/grafana-admin
+                  readOnly: true
+                - name: istio-native-exit
+                  mountPath: /helpers
+                  readOnly: true
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -euo pipefail
+
+                  ISTIO_HELPER="/helpers/istio-native-exit.sh"
+                  [ -f "${ISTIO_HELPER}" ] || { echo "missing istio-native-exit helper" >&2; exit 1; }
+                  . "${ISTIO_HELPER}"
+                  trap deploykube_istio_quit_sidecar EXIT INT TERM
+
+                  BASE="http://grafana.grafana.svc.cluster.local:3000"
+                  USER="$(cat /secrets/grafana-admin/admin-user)"
+                  PASS="$(cat /secrets/grafana-admin/admin-password)"
+
+                  echo "[grafana-smoke] waiting for Grafana health..."
+                  i=0
+                  while [ "$i" -lt 30 ]; do
+                    if curl -fsS -u "${USER}:${PASS}" "${BASE}/api/health" >/dev/null 2>&1; then
+                      break
+                    fi
+                    i=$((i + 1))
+                    sleep 2
+                  done
+                  curl -fsS -u "${USER}:${PASS}" "${BASE}/api/health" | jq -e '.database == "ok"' >/dev/null
+
+                  echo "[grafana-smoke] validating datasource provisioning..."
+                  ds="$(curl -fsS -u "${USER}:${PASS}" "${BASE}/api/datasources" | jq -e .)"
+                  echo "${ds}" | jq -e 'any(.[]; .uid == "mimirprometheus")' >/dev/null
+                  echo "${ds}" | jq -e 'any(.[]; .uid == "lokiplatform")' >/dev/null
+                  echo "${ds}" | jq -e 'any(.[]; .uid == "tempoplatform")' >/dev/null
+
+                  echo "[grafana-smoke] validating key dashboards are correctly provisioned..."
+                  # We have seen cases where Grafana looked "Healthy" but dashboards were wrong/misleading
+                  # (e.g., CPU/memory allocatable shown as percent due to dashboard unit/targets drift).
+                  dash_resource_alloc="$(curl -fsS -u "${USER}:${PASS}" "${BASE}/api/dashboards/uid/resource-allocation" | jq -e .)"
+                  echo "${dash_resource_alloc}" | jq -e '
+                    .dashboard.uid == "resource-allocation"
+                    and any(.dashboard.panels[]; .id == 4 and .fieldConfig.defaults.unit == "short")
+                    and any(.dashboard.panels[]; .id == 5 and .fieldConfig.defaults.unit == "bytes")
+                    and any(.dashboard.panels[]; .id == 2 and (.targets | length) == 1 and (.targets[0].expr | test("kube_pod_container_resource_requests.*kube_node_status_allocatable")))
+                    and any(.dashboard.panels[]; .id == 3 and (.targets | length) == 1 and (.targets[0].expr | test("kube_pod_container_resource_requests.*kube_node_status_allocatable")))
+                  ' >/dev/null
+
+                  dash_workload_sizing="$(curl -fsS -u "${USER}:${PASS}" "${BASE}/api/dashboards/uid/workload-sizing" | jq -e .)"
+                  echo "${dash_workload_sizing}" | jq -e '
+                    .dashboard.uid == "workload-sizing"
+                    and any(.dashboard.templating.list[]; .name == "namespace")
+                    and any(.dashboard.templating.list[]; .name == "pod")
+                    and any(.dashboard.panels[]; .id == 2 and .fieldConfig.defaults.unit == "short")
+                    and any(.dashboard.panels[]; .id == 3 and .fieldConfig.defaults.unit == "bytes")
+                    and any(.dashboard.panels[]; .id == 10)
+                    and any(.dashboard.panels[]; .id == 11)
+                    and any(.dashboard.panels[]; .id == 12 and (.targets[0].expr | test("last_terminated_timestamp")) and any(.fieldConfig.overrides[]?; .matcher.options == "OOMKilled At"))
+                  ' >/dev/null
+
+                  dash_cluster_core="$(curl -fsS -u "${USER}:${PASS}" "${BASE}/api/dashboards/uid/cluster-core-metrics" | jq -e .)"
+                  echo "${dash_cluster_core}" | jq -e '
+                    .dashboard.uid == "cluster-core-metrics"
+                    and .dashboard.title == "Cluster Core Metrics"
+                    and any(.dashboard.panels[]; .id == 3 and any(.targets[]; .expr | test("apiserver_request_duration_seconds_bucket")))
+                    and any(.dashboard.panels[]; .id == 19 and any(.targets[]; .expr | test("apiserver_storage_size_bytes")))
+                  ' >/dev/null
+
+                  dash_vip_probes="$(curl -fsS -u "${USER}:${PASS}" "${BASE}/api/dashboards/uid/vip-probes" | jq -e .)"
+                  echo "${dash_vip_probes}" | jq -e '
+                    .dashboard.uid == "vip-probes"
+                    and .dashboard.title == "VIP Probes"
+                    and any(.dashboard.panels[]; .id == 3 and any(.targets[]; .expr | test("probe_duration_seconds")))
+                    and any(.dashboard.panels[]; .id == 6 and any(.targets[]; .expr | test("probe_duration_seconds")))
+                  ' >/dev/null
+
+                  echo "[grafana-smoke] validating Mimir dashboard data (via Grafana proxy)..."
+                  # These are the core series the dashboards depend on; if they go missing,
+                  # Grafana will render "no data" even if the backend is otherwise "Healthy".
+                  q() {
+                    local query="$1"
+                    resp="$(
+                      curl -fsS -u "${USER}:${PASS}" -G \
+                        "${BASE}/api/datasources/proxy/uid/mimirprometheus/api/v1/query" \
+                        --data-urlencode "query=${query}"
+                    )"
+                    echo "${resp}" | jq -e '.status == "success"' >/dev/null
+                    printf '%s\n' "${resp}"
+                  }
+                  q 'count(node_cpu_seconds_total)' | jq -e '.data.result | length > 0' >/dev/null
+                  q 'count(kube_pod_status_ready)' | jq -e '.data.result | length > 0' >/dev/null
+                  q 'count(container_cpu_usage_seconds_total{container!="", container!="POD"})' | jq -e '.data.result | length > 0' >/dev/null
+                  q 'count(container_memory_working_set_bytes{container!="", container!="POD"})' | jq -e '.data.result | length > 0' >/dev/null
+                  q 'count(container_cpu_cfs_throttled_periods_total{container!="", container!="POD"})' | jq -e '.data.result | length > 0' >/dev/null
+                  q 'count(container_cpu_cfs_periods_total{container!="", container!="POD"})' | jq -e '.data.result | length > 0' >/dev/null
+                  # kube-state-metrics metric; may be empty if no container ever OOMKilled, but it must exist.
+                  q 'count(kube_pod_container_status_last_terminated_reason)' | jq -e '.data.result | length > 0' >/dev/null
+
+                  echo "[grafana-smoke] validating Loki reachability (via Grafana proxy)..."
+                  curl -fsS -u "${USER}:${PASS}" \
+                    "${BASE}/api/datasources/proxy/uid/lokiplatform/loki/api/v1/labels" \
+                    | jq -e '.status == "success" and (.data | length > 0)' >/dev/null
+
+                  echo "[grafana-smoke] validating Tempo reachability (via Grafana proxy)..."
+                  curl -fsS -u "${USER}:${PASS}" \
+                    "${BASE}/api/datasources/proxy/uid/tempoplatform/status/version" \
+                    >/dev/null
+
+                  echo "[grafana-smoke] ok"

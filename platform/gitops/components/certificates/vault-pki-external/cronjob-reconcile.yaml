@@ -1,0 +1,47 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: vault-pki-external-config
+  namespace: vault-system
+spec:
+  schedule: "17 */2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 900
+      ttlSecondsAfterFinished: 21600
+      template:
+        metadata:
+          annotations:
+            sidecar.istio.io/inject: "false"
+        spec:
+          serviceAccountName: vault-pki-external-config
+          restartPolicy: OnFailure
+          containers:
+            - name: configure
+              image: registry.example.internal/deploykube/bootstrap-tools:1.4
+              imagePullPolicy: IfNotPresent
+              command:
+                - /bin/sh
+                - /scripts/configure.sh
+              volumeMounts:
+                - name: script
+                  mountPath: /scripts
+                  readOnly: true
+                - name: root-token
+                  mountPath: /vault/userconfig/root
+                  readOnly: true
+          volumes:
+            - name: script
+              configMap:
+                name: vault-pki-external-config-script
+                defaultMode: 0755
+            - name: root-token
+              secret:
+                secretName: vault-init
+                items:
+                  - key: root-token
+                    path: token

@@ -1,0 +1,13 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: keycloak-upstream-sim-tls
+  namespace: keycloak-upstream-sim
+spec:
+  secretName: keycloak-upstream-sim-tls
+  issuerRef:
+    name: step-ca
+    kind: ClusterIssuer
+  dnsNames:
+    - keycloak-upstream-sim.keycloak-upstream-sim.svc
+    - keycloak-upstream-sim.keycloak-upstream-sim.svc.cluster.local

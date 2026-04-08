@@ -1,0 +1,14 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: keycloak-tls
+  namespace: keycloak
+  labels:
+    app.kubernetes.io/name: keycloak
+spec:
+  secretName: keycloak-tls
+  dnsNames:
+    - keycloak.placeholder.invalid
+  issuerRef:
+    name: step-ca
+    kind: ClusterIssuer

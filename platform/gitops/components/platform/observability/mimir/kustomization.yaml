@@ -1,0 +1,8 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: mimir
+commonAnnotations:
+  argocd.argoproj.io/sync-wave: "2.5"
+
+# Note: Argo should consume `overlays/<deploymentId>`; this root kustomization is intentionally empty.
+resources: []

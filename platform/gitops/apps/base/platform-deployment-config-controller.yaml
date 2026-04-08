@@ -1,0 +1,25 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: platform-deployment-config-controller
+  namespace: argocd
+  annotations:
+    # Must land after the per-deployment DeploymentConfig CR and before any Job-based consumers.
+    argocd.argoproj.io/sync-wave: "-9"
+spec:
+  project: platform
+  destination:
+    name: in-cluster
+    namespace: argocd
+  source:
+    repoURL: https://forgejo-https.forgejo.svc.cluster.local/platform/cluster-config.git
+    targetRevision: main
+    path: components/platform/deployment-config-controller
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+      - PrunePropagationPolicy=foreground
+      - ServerSideApply=true

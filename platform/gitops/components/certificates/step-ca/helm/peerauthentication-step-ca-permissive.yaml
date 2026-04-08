@@ -1,0 +1,11 @@
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: step-ca-permissive
+  namespace: step-system
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: step-certificates
+  mtls:
+    mode: PERMISSIVE

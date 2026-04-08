@@ -1,0 +1,65 @@
+# Certificates / cert-manager smoke and trust-anchor health rules
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mimir-rules-certificates-health
+  namespace: mimir
+  labels:
+    mimir.grafana.com/rules: "true"
+    app.kubernetes.io/component: ruler
+data:
+  certificates-health.yaml: |
+    # yaml-language-server: $schema=https://json.schemastore.org/prometheus-rule.json
+    groups:
+      - name: certificates.stepca.health
+        interval: 1m
+        rules:
+          - alert: StepCARootSecretMissing
+            expr: |
+              absent(kube_secret_info{namespace="cert-manager", secret="step-ca-root-ca"})
+            for: 5m
+            labels:
+              severity: critical
+              team: platform
+              service: certificates
+              cluster: deploykube
+              runbook_url: docs/runbooks/certificates-smoke-alerts.md
+            annotations:
+              summary: "cert-manager Step CA root Secret missing"
+              description: "Secret cert-manager/step-ca-root-ca is absent. The step-ca ClusterIssuer cannot issue or renew certificates until the trust secret is restored."
+
+          - alert: CertificateStepCAIssuanceSmokeCronJobStale
+            expr: |
+              (time() - kube_cronjob_status_last_successful_time{
+                namespace="cert-manager",
+                cronjob="cert-smoke-step-ca-issuance"
+              }) > 7200
+            for: 10m
+            labels:
+              severity: warning
+              team: platform
+              service: certificates
+              cluster: deploykube
+              runbook_url: docs/runbooks/certificates-smoke-alerts.md
+            annotations:
+              summary: "Step CA issuance smoke CronJob stale"
+              description: "No successful run of cert-manager/cert-smoke-step-ca-issuance within the expected freshness window."
+
+          - alert: CertificateStepCAIssuanceSmokeJobFailed
+            expr: |
+              max by (namespace, job_name) (
+                kube_job_status_failed{
+                  namespace="cert-manager",
+                  job_name=~"cert-smoke-step-ca-issuance-.*"
+                }
+              ) > 0
+            for: 2m
+            labels:
+              severity: critical
+              team: platform
+              service: certificates
+              cluster: deploykube
+              runbook_url: docs/runbooks/certificates-smoke-alerts.md
+            annotations:
+              summary: "Step CA issuance smoke Job failed ({{ $labels.namespace }}/{{ $labels.job_name }})"
+              description: "The Step CA issuance smoke failed. Check root-secret presence, ClusterIssuer/step-ca readiness, and the most recent smoke Job logs."

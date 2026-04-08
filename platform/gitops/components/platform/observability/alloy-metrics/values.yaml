@@ -1,0 +1,284 @@
+# Grafana Alloy Deployment for cluster metrics collection (single writer).
+fullnameOverride: alloy-metrics
+
+controller:
+  type: deployment
+  replicas: 1
+  minReadySeconds: 5
+  podAnnotations:
+    # Alloy relies on the Kubernetes API for service discovery and apiserver proxy scrapes.
+    # Exclude the API ports from redirection so discovery remains stable under STRICT mTLS.
+    traffic.sidecar.istio.io/excludeOutboundPorts: "443,6443"
+    observability.grafana.com/tenant-source: "namespace"
+  podDisruptionBudget:
+    enabled: true
+    maxUnavailable: 1
+  volumes:
+    extra:
+      - name: vip-probes-config
+        projected:
+          sources:
+            - configMap:
+                name: alloy-metrics-vip-probes-default
+            - configMap:
+                name: vip-probes-config
+                optional: true
+
+alloy:
+  enableReporting: false
+  mounts:
+    extra:
+      - name: vip-probes-config
+        mountPath: /etc/alloy/vip-probes
+        readOnly: true
+  configMap:
+    create: true
+    key: config.alloy
+    content: |
+      logging {
+        level  = "info"
+        format = "logfmt"
+      }
+
+      //
+      // ===== DISCOVERY =====
+      //
+      discovery.kubernetes "pods" {
+        role = "pod"
+      }
+
+      discovery.kubernetes "nodes" {
+        role = "node"
+      }
+
+      //
+      // ===== VIP PROBES (Blackbox exporter embedded in Alloy) =====
+      //
+      // Default probe config is always present via `alloy-metrics-vip-probes-default`.
+      // Environment-specific targets/config from `platform-observability-vip-probes`
+      // override those files when that app is enabled.
+      //
+      discovery.file "vip_probes" {
+        files = ["/etc/alloy/vip-probes/targets.yml"]
+      }
+
+      prometheus.exporter.blackbox "vip_probes" {
+        config_file = "/etc/alloy/vip-probes/blackbox_modules.yml"
+        targets     = discovery.file.vip_probes.targets
+      }
+
+      prometheus.scrape "vip_probes" {
+        job_name        = "vip-probes"
+        targets         = prometheus.exporter.blackbox.vip_probes.targets
+        scrape_interval = "15s"
+        scrape_timeout  = "10s"
+        forward_to      = [prometheus.remote_write.mimir.receiver]
+      }
+
+      //
+      // ===== METRICS COLLECTION (Prometheus scrape -> Mimir) =====
+      //
+      // This instance is intentionally a single-replica Deployment so Mimir sees a single
+      // writer per timeseries and does not reject samples as out-of-order.
+      //
+
+      discovery.relabel "node_exporter" {
+        targets = discovery.kubernetes.pods.targets
+
+        rule {
+          source_labels = ["__meta_kubernetes_namespace"]
+          regex         = "observability"
+          action        = "keep"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_name"]
+          regex         = "prometheus-node-exporter"
+          action        = "keep"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_container_port_number"]
+          regex         = "9100"
+          action        = "keep"
+        }
+      }
+
+      discovery.relabel "kube_state_metrics" {
+        targets = discovery.kubernetes.pods.targets
+
+        rule {
+          source_labels = ["__meta_kubernetes_namespace"]
+          regex         = "observability"
+          action        = "keep"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_name"]
+          regex         = "kube-state-metrics"
+          action        = "keep"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_container_port_number"]
+          regex         = "8080"
+          action        = "keep"
+        }
+      }
+
+      // Kubelet / cAdvisor are required by the standard “Cluster Overview” dashboards
+      // (container CPU/memory, filesystem, etc.). We scrape them via the apiserver proxy so:
+      // - we avoid node IP allowlists under deny-by-default NetworkPolicies
+      // - we reuse in-cluster auth (service account token) and RBAC (nodes/proxy)
+      //
+
+      discovery.relabel "kubelet_metrics" {
+        targets = discovery.kubernetes.nodes.targets
+
+        rule {
+          source_labels = ["__meta_kubernetes_node_name"]
+          target_label  = "instance"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_node_name"]
+          target_label  = "node"
+        }
+
+        rule {
+          action = "labelmap"
+          regex  = "__meta_kubernetes_node_label_(.+)"
+        }
+
+        rule {
+          target_label = "__address__"
+          replacement  = "kubernetes.default.svc:443"
+        }
+
+        rule {
+          source_labels = ["__meta_kubernetes_node_name"]
+          regex         = "(.+)"
+          target_label  = "__metrics_path__"
+          replacement   = "/api/v1/nodes/$1/proxy/metrics"
+        }
+      }
+
+      discovery.relabel "kubelet_cadvisor" {
+        targets = discovery.kubernetes.nodes.targets
+
+        rule {
+          source_labels = ["__meta_kubernetes_node_name"]
+          target_label  = "instance"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_node_name"]
+          target_label  = "node"
+        }
+
+        rule {
+          action = "labelmap"
+          regex  = "__meta_kubernetes_node_label_(.+)"
+        }
+
+        rule {
+          target_label = "__address__"
+          replacement  = "kubernetes.default.svc:443"
+        }
+
+        rule {
+          source_labels = ["__meta_kubernetes_node_name"]
+          regex         = "(.+)"
+          target_label  = "__metrics_path__"
+          replacement   = "/api/v1/nodes/$1/proxy/metrics/cadvisor"
+        }
+      }
+
+      prometheus.scrape "node_exporter" {
+        job_name        = "node-exporter"
+        targets         = discovery.relabel.node_exporter.output
+        scrape_interval = "30s"
+        forward_to      = [prometheus.remote_write.mimir.receiver]
+      }
+
+      prometheus.scrape "kube_state_metrics" {
+        job_name        = "kube-state-metrics"
+        targets         = discovery.relabel.kube_state_metrics.output
+        scrape_interval = "30s"
+        forward_to      = [prometheus.remote_write.mimir.receiver]
+      }
+
+      prometheus.scrape "kubelet" {
+        job_name        = "kubelet"
+        targets         = discovery.relabel.kubelet_metrics.output
+        scrape_interval = "30s"
+        scrape_timeout  = "10s"
+
+        scheme            = "https"
+        bearer_token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+        tls_config {
+          ca_file = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+        }
+
+        forward_to = [prometheus.remote_write.mimir.receiver]
+      }
+
+      prometheus.scrape "cadvisor" {
+        job_name        = "cadvisor"
+        targets         = discovery.relabel.kubelet_cadvisor.output
+        scrape_interval = "30s"
+        scrape_timeout  = "10s"
+
+        scheme            = "https"
+        bearer_token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+        tls_config {
+          ca_file = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+        }
+
+        forward_to = [prometheus.remote_write.mimir.receiver]
+      }
+
+      prometheus.scrape "kube_apiserver" {
+        job_name        = "kube-apiserver"
+        targets         = [{ __address__ = "kubernetes.default.svc:443" }]
+        scrape_interval = "30s"
+        scrape_timeout  = "10s"
+
+        scheme            = "https"
+        bearer_token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+        tls_config {
+          ca_file = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+        }
+
+        forward_to = [prometheus.remote_write.mimir.receiver]
+      }
+
+      prometheus.remote_write "mimir" {
+        endpoint {
+          // Bypass the gateway for remote_write to avoid DNS proxy flaps in nginx.
+          url = "http://mimir-distributor.mimir.svc.cluster.local:8080/api/v1/push"
+          headers = {
+            "X-Scope-OrgID" = "platform",
+          }
+        }
+        external_labels = {
+          cluster = "deploykube",
+          tenant  = "platform",
+        }
+      }
+
+  resources:
+    requests:
+      cpu: 200m
+      memory: 2Gi
+    limits:
+      memory: 2Gi
+
+serviceAccount:
+  create: true
+
+serviceMonitor:
+  enabled: true
+
+# Resource contract Tier 1: chart defaults set requests but no memory limit for the config reloader.
+configReloader:
+  resources:
+    requests:
+      cpu: "10m"
+      memory: "50Mi"
+    limits:
+      memory: "100Mi"

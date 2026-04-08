@@ -1,0 +1,15 @@
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: forgejo-permissive
+  namespace: forgejo
+  annotations:
+    # Ensure Forgejo stays reachable for Argo CD repo-server even with mesh-default STRICT.
+    argocd.argoproj.io/sync-wave: "4.4"
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: forgejo
+  mtls:
+    mode: PERMISSIVE
+

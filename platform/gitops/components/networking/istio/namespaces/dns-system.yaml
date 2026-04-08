@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dns-system
+  labels:
+    deploykube.gitops/component: powerdns
+    deploykube.gitops/owner: networking
+    istio-injection: enabled
+    observability.grafana.com/tenant: platform
+    pod-security.kubernetes.io/enforce: privileged

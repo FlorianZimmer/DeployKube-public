@@ -1,0 +1,151 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+patches:
+  # Example apps are not deployed on mac-orbstack-single by default.
+  - patch: |-
+      apiVersion: autoscaling.k8s.io/v1
+      kind: VerticalPodAutoscaler
+      metadata:
+        name: factorio
+        namespace: factorio
+      $patch: delete
+  - patch: |-
+      apiVersion: autoscaling.k8s.io/v1
+      kind: VerticalPodAutoscaler
+      metadata:
+        name: minecraft
+        namespace: minecraft-monifactory
+      $patch: delete
+
+  # mac-orbstack-single disables the observability stack by default, so remove VPAs
+  # that would otherwise fail to apply due to missing namespaces.
+  - patch: |-
+      apiVersion: autoscaling.k8s.io/v1
+      kind: VerticalPodAutoscaler
+      metadata:
+        name: grafana
+        namespace: grafana
+      $patch: delete
+  - patch: |-
+      apiVersion: autoscaling.k8s.io/v1
+      kind: VerticalPodAutoscaler
+      metadata:
+        name: loki-canary
+        namespace: loki
+      $patch: delete
+  - patch: |-
+      apiVersion: autoscaling.k8s.io/v1
+      kind: VerticalPodAutoscaler
+      metadata:
+        name: loki-distributor
+        namespace: loki
+      $patch: delete
+  - patch: |-
+      apiVersion: autoscaling.k8s.io/v1
+      kind: VerticalPodAutoscaler
+      metadata:
+        name: loki-gateway
+        namespace: loki
+      $patch: delete
+  - patch: |-
+      apiVersion: autoscaling.k8s.io/v1
+      kind: VerticalPodAutoscaler
+      metadata:
+        name: loki-querier
+        namespace: loki
+      $patch: delete
+  - patch: |-
+      apiVersion: autoscaling.k8s.io/v1
+      kind: VerticalPodAutoscaler
+      metadata:
+        name: loki-query-frontend
+        namespace: loki
+      $patch: delete
+  - patch: |-
+      apiVersion: autoscaling.k8s.io/v1
+      kind: VerticalPodAutoscaler
+      metadata:
+        name: loki-query-scheduler
+        namespace: loki
+      $patch: delete
+  - patch: |-
+      apiVersion: autoscaling.k8s.io/v1
+      kind: VerticalPodAutoscaler
+      metadata:
+        name: loki-chunks-cache
+        namespace: loki
+      $patch: delete
+  - patch: |-
+      apiVersion: autoscaling.k8s.io/v1
+      kind: VerticalPodAutoscaler
+      metadata:
+        name: loki-compactor
+        namespace: loki
+      $patch: delete
+  - patch: |-
+      apiVersion: autoscaling.k8s.io/v1
+      kind: VerticalPodAutoscaler
+      metadata:
+        name: loki-index-gateway
+        namespace: loki
+      $patch: delete
+  - patch: |-
+      apiVersion: autoscaling.k8s.io/v1
+      kind: VerticalPodAutoscaler
+      metadata:
+        name: loki-ingester
+        namespace: loki
+      $patch: delete
+  - patch: |-
+      apiVersion: autoscaling.k8s.io/v1
+      kind: VerticalPodAutoscaler
+      metadata:
+        name: loki-results-cache
+        namespace: loki
+      $patch: delete
+  - patch: |-
+      apiVersion: autoscaling.k8s.io/v1
+      kind: VerticalPodAutoscaler
+      metadata:
+        name: loki-ruler
+        namespace: loki
+      $patch: delete
+  - patch: |-
+      apiVersion: autoscaling.k8s.io/v1
+      kind: VerticalPodAutoscaler
+      metadata:
+        name: alloy
+        namespace: observability
+      $patch: delete
+  - patch: |-
+      apiVersion: autoscaling.k8s.io/v1
+      kind: VerticalPodAutoscaler
+      metadata:
+        name: prometheus-node-exporter
+        namespace: observability
+      $patch: delete
+  - patch: |-
+      apiVersion: autoscaling.k8s.io/v1
+      kind: VerticalPodAutoscaler
+      metadata:
+        name: alloy-metrics
+        namespace: observability
+      $patch: delete
+  - patch: |-
+      apiVersion: autoscaling.k8s.io/v1
+      kind: VerticalPodAutoscaler
+      metadata:
+        name: kube-state-metrics
+        namespace: observability
+      $patch: delete
+  - patch: |-
+      apiVersion: autoscaling.k8s.io/v1
+      kind: VerticalPodAutoscaler
+      metadata:
+        name: tempo
+        namespace: tempo
+      $patch: delete

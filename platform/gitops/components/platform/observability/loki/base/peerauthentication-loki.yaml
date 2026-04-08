@@ -1,0 +1,25 @@
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: loki-port-permissive
+  namespace: loki
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: loki
+      app.kubernetes.io/name: loki
+  # Loki uses internal gRPC and memberlist traffic that often targets Pod IPs directly.
+  # With mesh-wide STRICT mTLS, Envoy may not originate mTLS for Pod-IP passthrough traffic,
+  # which causes the server-side proxy to reset plaintext connections. Allow plaintext on
+  # these internal ports to avoid that failure mode while keeping STRICT as the default.
+  mtls:
+    mode: STRICT
+  portLevelMtls:
+    "7946":
+      mode: PERMISSIVE
+    "9095":
+      mode: PERMISSIVE
+    "9096":
+      mode: PERMISSIVE

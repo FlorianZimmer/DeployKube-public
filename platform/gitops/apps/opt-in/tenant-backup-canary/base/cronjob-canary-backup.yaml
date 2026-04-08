@@ -1,0 +1,106 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: tenant-backup-canary-backup
+  namespace: tenant-smoke-demo
+spec:
+  # Suspended by default; run manually via `kubectl create job --from=cronjob/...`.
+  schedule: "23 2 * * *"
+  suspend: true
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 1800
+      ttlSecondsAfterFinished: 21600
+      template:
+        metadata:
+          annotations:
+            sidecar.istio.io/inject: "false"
+        spec:
+          serviceAccountName: tenant-backup-canary
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: backup
+              image: itzg/mc-backup:latest
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+              env:
+                - name: RESTIC_REPOSITORY
+                  valueFrom:
+                    secretKeyRef:
+                      name: tenant-backup-s3
+                      key: RESTIC_REPOSITORY
+                - name: RESTIC_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: tenant-backup-s3
+                      key: RESTIC_PASSWORD
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: tenant-backup-s3
+                      key: S3_ACCESS_KEY
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: tenant-backup-s3
+                      key: S3_SECRET_KEY
+                - name: AWS_DEFAULT_REGION
+                  valueFrom:
+                    secretKeyRef:
+                      name: tenant-backup-s3
+                      key: S3_REGION
+                - name: RESTIC_CACHE_DIR
+                  value: /cache
+                - name: RESTIC_TIMEOUT
+                  value: 20m
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -eu
+                  (set -o pipefail 2>/dev/null) || true
+
+                  if ! timeout "${RESTIC_TIMEOUT}" restic snapshots --latest 1 >/dev/null 2>&1; then
+                    echo "[tenant-backup-canary] restic repo missing; initializing"
+                    timeout "${RESTIC_TIMEOUT}" restic init >/dev/null
+                  fi
+
+                  timeout "${RESTIC_TIMEOUT}" restic backup /data \
+                    --tag tenant-backup-canary \
+                    --host tenant-smoke-demo
+
+                  timeout "${RESTIC_TIMEOUT}" restic snapshots --latest 1 >/dev/null
+                  echo "[tenant-backup-canary] OK: backed up latest payload"
+              volumeMounts:
+                - name: data
+                  mountPath: /data
+                - name: cache
+                  mountPath: /cache
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  memory: 256Mi
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: tenant-backup-canary-data
+            - name: cache
+              emptyDir: {}
+

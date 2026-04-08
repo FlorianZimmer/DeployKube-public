@@ -1,0 +1,82 @@
+# DeployKube Proxmox Talos Configuration
+# Copy this file to config.yaml and customize for your environment
+
+cluster:
+  name: kube-proxmox
+  domain: prod.internal.example.com
+  kubernetes_version: "1.34.2"
+  talos_version: "v1.10.8"
+
+proxmox:
+  host: "198.51.100.10"
+  api_url: "https://198.51.100.10:8006/api2/json"
+  node: "jupiter"                      # Proxmox node name (run 'pvesh get /nodes' to list)
+  storage: "nvme01"             # VM disk storage pool
+  iso_storage: "content-library"             # ISO storage location
+  bridge: "vmbr0"                  # Network bridge for VMs
+  vlan_id: 50                      # VLAN ID for the network
+
+network:
+  gateway: "198.51.100.1"
+  # LAN CIDR used to pin etcd peer advertisement to the LAN subnet.
+  # Without this, etcd can drift to advertising pod-network addresses and wedge
+  # control-plane recovery after reboot.
+  lan_cidr: "198.51.100.0/24"
+  dns:
+    - "198.51.100.3"
+    - "1.1.1.1"
+  control_plane_vip: "198.51.100.30" # Kubernetes API VIP (Talos VIP)
+  metallb_range: "198.51.100.61-198.51.100.100"
+
+nodes:
+  control_plane:
+    count: 3
+    start_ip: "198.51.100.41"
+    cores: 6
+    memory_mb: 6144
+    disk_gb: 20
+  # Explicit worker definitions for heterogeneous node specs
+  workers:
+    # Workers: Regular workers for main workloads
+    - name: worker-1
+      ip: "198.51.100.51"
+      cores: 16
+      memory_mb: 28672
+      disk_gb: 50
+    - name: worker-2
+      ip: "198.51.100.52"
+      cores: 16
+      memory_mb: 28672
+      disk_gb: 50
+    - name: worker-3
+      ip: "198.51.100.53"
+      cores: 16
+      memory_mb: 28672
+      disk_gb: 50
+
+storage:
+  nfs:
+    server: "198.51.100.10"
+    path: "/nvme01/kube"           # ZFS dataset exported via NFS
+
+security:
+  # Enable when Proxmox/VMs support SecureBoot + TPM
+  secure_boot: false
+  tpm_encryption: false
+
+registry:
+  # Local registry cache running on Synology NAS
+  # Deploy with: ansible-playbook roles/registry/tasks/deploy.yaml -i inventory.yaml
+  host: "198.51.100.11"
+  storage_path: "/volume1/docker/registry-cache"
+  # Port for local images (bootstrap-tools, custom images)
+  local_port: 5010
+  # Pull-through cache ports - shifted to 5011+ to avoid Synology's nginx (5000-5001)
+  mirrors:
+    docker.io: 5011
+    registry.example.internal: 5012
+    quay.io: 5013
+    registry.k8s.io: 5014
+    cr.smallstep.com: 5015
+    codeberg.org: 5016
+    code.forgejo.org: 5017

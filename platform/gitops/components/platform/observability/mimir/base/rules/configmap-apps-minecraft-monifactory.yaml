@@ -1,0 +1,51 @@
+# Minecraft (Monifactory) smoke alert rules
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mimir-rules-apps-minecraft-monifactory
+  namespace: mimir
+  labels:
+    mimir.grafana.com/rules: "true"
+    app.kubernetes.io/component: ruler
+data:
+  apps-minecraft-monifactory.yaml: |
+    # yaml-language-server: $schema=https://json.schemastore.org/prometheus-rule.json
+    groups:
+      - name: apps.minecraft.monifactory.smokes
+        interval: 1m
+        rules:
+          - alert: MinecraftMonifactorySmokeJobFailed
+            expr: |
+              max by (namespace, job_name) (
+                kube_job_status_failed{
+                  namespace="minecraft-monifactory",
+                  job_name=~"minecraft-tcp-smoke-.*"
+                }
+              ) > 0
+            for: 2m
+            labels:
+              severity: critical
+              team: platform
+              service: minecraft-monifactory
+              cluster: deploykube
+              runbook_url: docs/runbooks/minecraft-monifactory-smoke-alerts.md
+            annotations:
+              summary: "Minecraft Monifactory smoke Job failed ({{ $labels.namespace }}/{{ $labels.job_name }})"
+              description: "The TCP 25565 reachability smoke failed. Check the smoke Job logs, then inspect Deployment/Service readiness for minecraft-monifactory."
+
+          - alert: MinecraftMonifactorySmokeCronJobStale
+            expr: |
+              (time() - kube_cronjob_status_last_successful_time{
+                namespace="minecraft-monifactory",
+                cronjob="minecraft-tcp-smoke"
+              }) > 3600
+            for: 10m
+            labels:
+              severity: warning
+              team: platform
+              service: minecraft-monifactory
+              cluster: deploykube
+              runbook_url: docs/runbooks/minecraft-monifactory-smoke-alerts.md
+            annotations:
+              summary: "Minecraft Monifactory smoke CronJob stale ({{ $labels.namespace }}/{{ $labels.cronjob }})"
+              description: "No successful minecraft-tcp-smoke run observed within the expected window."

@@ -1,0 +1,110 @@
+global:
+  leaderElection:
+    namespace: cert-manager
+
+installCRDs: true
+
+startupapicheck:
+  enabled: true
+  image:
+    repository: quay.io/jetstack/cert-manager-startupapicheck
+    digest: sha256:8e897895b9e9749447ccb84842176212195f4687e0a3c4ca892d9d410e0fd43e
+  podAnnotations:
+    sidecar.istio.io/inject: "false"
+
+prometheus:
+  enabled: false
+  servicemonitor:
+    enabled: false
+
+replicaCount: 2
+image:
+  repository: quay.io/jetstack/cert-manager-controller
+  digest: sha256:9cad8065bbf57815cbcfa813b903dd8822bcd0271f7443192082b54e96a55585
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/instance: cert-manager
+              app.kubernetes.io/name: cert-manager
+              app.kubernetes.io/component: controller
+          topologyKey: kubernetes.io/hostname
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/instance: cert-manager
+        app.kubernetes.io/name: cert-manager
+        app.kubernetes.io/component: controller
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+cainjector:
+  replicaCount: 2
+  image:
+    repository: quay.io/jetstack/cert-manager-cainjector
+    digest: sha256:5d810724b177746a8aeafd5db111b55b72389861bcec03a6d50f9c6d56ec37c0
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/instance: cert-manager
+                app.kubernetes.io/name: cainjector
+                app.kubernetes.io/component: cainjector
+            topologyKey: kubernetes.io/hostname
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/instance: cert-manager
+          app.kubernetes.io/name: cainjector
+          app.kubernetes.io/component: cainjector
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+
+webhook:
+  replicaCount: 2
+  image:
+    repository: quay.io/jetstack/cert-manager-webhook
+    digest: sha256:f41b4ac798c8ff200c29756cf86e70a00e73fe489fb6ab80d9210d1b5f476852
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/instance: cert-manager
+                app.kubernetes.io/name: webhook
+                app.kubernetes.io/component: webhook
+            topologyKey: kubernetes.io/hostname
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/instance: cert-manager
+          app.kubernetes.io/name: webhook
+          app.kubernetes.io/component: webhook
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+
+acmesolver:
+  image:
+    repository: quay.io/jetstack/cert-manager-acmesolver
+    digest: sha256:7688c3e2d7e5338deb630da911fff3752c72a7bf70f94608c223f96af40c8399

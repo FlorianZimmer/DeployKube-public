@@ -1,0 +1,13 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: forgejo-oidc-config
+  namespace: forgejo
+spec:
+  template:
+    spec:
+      containers:
+        - name: configure
+          env:
+            - name: OIDC_DISCOVERY_URL
+              value: https://keycloak.dev-single.internal.example.com/realms/deploykube-admin/.well-known/openid-configuration

@@ -1,0 +1,23 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: platform-observability-metrics
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1.4"
+spec:
+  project: platform
+  destination:
+    name: in-cluster
+    namespace: observability
+  source:
+    repoURL: https://forgejo-https.forgejo.svc.cluster.local/platform/cluster-config.git
+    targetRevision: main
+    path: components/platform/observability/metrics
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+      - ApplyOutOfSyncOnly=true

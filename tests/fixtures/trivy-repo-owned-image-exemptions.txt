@@ -1,0 +1,3 @@
+# Repo-owned image repositories that are intentionally outside the centralized Trivy CI artifact contract.
+# Keep entries normalized to the canonical repository path without tag/digest.
+registry.example.internal/deploykube/idlab-poc

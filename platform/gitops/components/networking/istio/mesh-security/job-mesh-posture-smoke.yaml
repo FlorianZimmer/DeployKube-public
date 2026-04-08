@@ -1,0 +1,247 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: istio-mesh-posture-smoke
+  namespace: platform-ops
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: HookSucceeded,BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "5"
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 600
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      restartPolicy: Never
+      serviceAccountName: istio-mesh-posture-smoke
+      containers:
+        - name: smoke
+          image: registry.example.internal/deploykube/bootstrap-tools:1.4
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - -lc
+            - |
+              set -euo pipefail
+
+              ns="platform-ops"
+
+              self_ns="$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace 2>/dev/null || echo "${ns}")"
+              self_pod="${HOSTNAME:-}"
+              tools_image="${MESH_SMOKE_TOOLS_IMAGE:-}"
+              if [ -z "${tools_image}" ] && [ -n "${self_pod}" ]; then
+                tools_image="$(
+                  kubectl -n "${self_ns}" get pod "${self_pod}" -o jsonpath='{.spec.containers[?(@.name=="smoke")].image}' 2>/dev/null || true
+                )"
+              fi
+              if [ -z "${tools_image}" ]; then
+                tools_image="registry.example.internal/deploykube/bootstrap-tools:1.4"
+              fi
+              echo "[mesh-posture] using tools image for test workloads: ${tools_image}"
+
+              inmesh_server_pod="mesh-posture-inmesh-server"
+              inmesh_server_svc="mesh-posture-inmesh-server"
+              outmesh_server_pod="mesh-posture-outmesh-server"
+              outmesh_server_svc="mesh-posture-outmesh-server"
+              inmesh_client_pod="mesh-posture-inmesh-client"
+              outmesh_client_pod="mesh-posture-outmesh-client"
+
+              cleanup() {
+                echo "[mesh-posture] cleanup (best-effort)"
+                kubectl -n "${ns}" delete pod "${inmesh_client_pod}" "${outmesh_client_pod}" "${inmesh_server_pod}" "${outmesh_server_pod}" --ignore-not-found --wait=true --timeout=180s || true
+                kubectl -n "${ns}" delete svc "${inmesh_server_svc}" "${outmesh_server_svc}" --ignore-not-found --wait=true --timeout=120s || true
+              }
+              trap cleanup EXIT
+
+              echo "[mesh-posture] creating in-mesh server (injected)"
+              kubectl -n "${ns}" delete pod "${inmesh_server_pod}" --ignore-not-found --wait=true --timeout=120s || true
+              kubectl -n "${ns}" apply -f - <<EOF
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: ${inmesh_server_pod}
+                labels:
+                  app: ${inmesh_server_pod}
+              spec:
+                securityContext:
+                  runAsNonRoot: true
+                  runAsUser: 1000
+                  runAsGroup: 1000
+                  seccompProfile:
+                    type: RuntimeDefault
+                containers:
+                  - name: server
+                    image: ${tools_image}
+                    imagePullPolicy: IfNotPresent
+                    command: ["/bin/bash","-lc","python3 -m http.server 8080 --bind 0.0.0.0"]
+                    ports:
+                      - containerPort: 8080
+                    securityContext:
+                      allowPrivilegeEscalation: false
+                      capabilities:
+                        drop: ["ALL"]
+                    resources:
+                      requests:
+                        cpu: 50m
+                        memory: 64Mi
+                      limits:
+                        memory: 256Mi
+              EOF
+              kubectl -n "${ns}" wait --for=condition=Ready "pod/${inmesh_server_pod}" --timeout=180s
+
+              kubectl -n "${ns}" apply -f - <<EOF
+              apiVersion: v1
+              kind: Service
+              metadata:
+                name: ${inmesh_server_svc}
+              spec:
+                selector:
+                  app: ${inmesh_server_pod}
+                ports:
+                  - name: http
+                    port: 8080
+                    targetPort: 8080
+              EOF
+
+              echo "[mesh-posture] creating out-of-mesh server (no sidecar)"
+              kubectl -n "${ns}" delete pod "${outmesh_server_pod}" --ignore-not-found --wait=true --timeout=120s || true
+              kubectl -n "${ns}" apply -f - <<EOF
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: ${outmesh_server_pod}
+                labels:
+                  app: ${outmesh_server_pod}
+                annotations:
+                  sidecar.istio.io/inject: "false"
+              spec:
+                securityContext:
+                  runAsNonRoot: true
+                  runAsUser: 1000
+                  runAsGroup: 1000
+                  seccompProfile:
+                    type: RuntimeDefault
+                containers:
+                  - name: server
+                    image: ${tools_image}
+                    imagePullPolicy: IfNotPresent
+                    command: ["/bin/bash","-lc","python3 -m http.server 8080 --bind 0.0.0.0"]
+                    ports:
+                      - containerPort: 8080
+                    securityContext:
+                      allowPrivilegeEscalation: false
+                      capabilities:
+                        drop: ["ALL"]
+                    resources:
+                      requests:
+                        cpu: 50m
+                        memory: 64Mi
+                      limits:
+                        memory: 256Mi
+              EOF
+              kubectl -n "${ns}" wait --for=condition=Ready "pod/${outmesh_server_pod}" --timeout=120s
+
+              kubectl -n "${ns}" apply -f - <<EOF
+              apiVersion: v1
+              kind: Service
+              metadata:
+                name: ${outmesh_server_svc}
+              spec:
+                selector:
+                  app: ${outmesh_server_pod}
+                ports:
+                  - name: http
+                    port: 8080
+                    targetPort: 8080
+              EOF
+
+              echo "[mesh-posture] creating clients (in-mesh + out-of-mesh)"
+              kubectl -n "${ns}" delete pod "${inmesh_client_pod}" "${outmesh_client_pod}" --ignore-not-found --wait=true --timeout=120s || true
+
+              kubectl -n "${ns}" apply -f - <<EOF
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: ${inmesh_client_pod}
+                labels:
+                  app: ${inmesh_client_pod}
+              spec:
+                securityContext:
+                  runAsNonRoot: true
+                  runAsUser: 1000
+                  runAsGroup: 1000
+                  seccompProfile:
+                    type: RuntimeDefault
+                containers:
+                  - name: client
+                    image: ${tools_image}
+                    imagePullPolicy: IfNotPresent
+                    command: ["/bin/bash","-lc","sleep 3600"]
+                    securityContext:
+                      allowPrivilegeEscalation: false
+                      capabilities:
+                        drop: ["ALL"]
+                    resources:
+                      requests:
+                        cpu: 50m
+                        memory: 64Mi
+                      limits:
+                        memory: 256Mi
+              EOF
+
+              kubectl -n "${ns}" apply -f - <<EOF
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                name: ${outmesh_client_pod}
+                labels:
+                  app: ${outmesh_client_pod}
+                annotations:
+                  sidecar.istio.io/inject: "false"
+              spec:
+                securityContext:
+                  runAsNonRoot: true
+                  runAsUser: 1000
+                  runAsGroup: 1000
+                  seccompProfile:
+                    type: RuntimeDefault
+                containers:
+                  - name: client
+                    image: ${tools_image}
+                    imagePullPolicy: IfNotPresent
+                    command: ["/bin/bash","-lc","sleep 3600"]
+                    securityContext:
+                      allowPrivilegeEscalation: false
+                      capabilities:
+                        drop: ["ALL"]
+                    resources:
+                      requests:
+                        cpu: 50m
+                        memory: 64Mi
+                      limits:
+                        memory: 256Mi
+              EOF
+
+              kubectl -n "${ns}" wait --for=condition=Ready "pod/${inmesh_client_pod}" --timeout=180s
+              kubectl -n "${ns}" wait --for=condition=Ready "pod/${outmesh_client_pod}" --timeout=120s
+
+              inmesh_fqdn="${inmesh_server_svc}.${ns}.svc.cluster.local"
+              outmesh_fqdn="${outmesh_server_svc}.${ns}.svc.cluster.local"
+
+              echo "[mesh-posture] allow: in-mesh client -> in-mesh server"
+              kubectl -n "${ns}" exec "${inmesh_client_pod}" -- curl -fsS "http://${inmesh_fqdn}:8080/" >/dev/null
+
+              echo "[mesh-posture] deny: out-of-mesh client -> in-mesh server (STRICT mTLS)"
+              if kubectl -n "${ns}" exec "${outmesh_client_pod}" -- curl -m 3 -fsS "http://${inmesh_fqdn}:8080/" >/dev/null 2>&1; then
+                echo "[mesh-posture] FAIL: expected STRICT mTLS denial, but request succeeded" >&2
+                exit 1
+              fi
+
+              echo "[mesh-posture] allow: in-mesh client -> out-of-mesh server (auto-mTLS must not force ISTIO_MUTUAL)"
+              kubectl -n "${ns}" exec "${inmesh_client_pod}" -- curl -fsS "http://${outmesh_fqdn}:8080/" >/dev/null
+
+              echo "[mesh-posture] ok"

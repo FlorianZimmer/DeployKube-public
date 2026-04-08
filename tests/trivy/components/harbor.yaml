@@ -1,0 +1,31 @@
+schemaVersion: v1alpha1
+description: Component-owned Trivy config targets for Harbor.
+watch_paths:
+  - platform/gitops/artifacts/runtime-artifact-index.yaml
+  - platform/gitops/components/platform/registry/harbor
+  - tests/trivy/components/harbor.yaml
+image_targets:
+  - id: harbor-core
+    artifact_catalog: runtime-artifacts
+    artifact_name: harbor-core
+  - id: harbor-jobservice
+    artifact_catalog: runtime-artifacts
+    artifact_name: harbor-jobservice
+  - id: harbor-portal
+    artifact_catalog: runtime-artifacts
+    artifact_name: harbor-portal
+  - id: harbor-registryctl
+    artifact_catalog: runtime-artifacts
+    artifact_name: harbor-registryctl
+  - id: harbor-nginx
+    artifact_catalog: runtime-artifacts
+    artifact_name: harbor-nginx
+  - id: harbor-redis
+    artifact_catalog: runtime-artifacts
+    artifact_name: harbor-redis
+  - id: harbor-registry
+    artifact_catalog: runtime-artifacts
+    artifact_name: harbor-registry
+config_targets:
+  - id: harbor-manifests
+    path: platform/gitops/components/platform/registry/harbor

@@ -1,0 +1,16 @@
+schemaVersion: v1alpha1
+description: Component-owned Trivy config targets for Vault.
+watch_paths:
+  - platform/gitops/artifacts/runtime-artifact-index.yaml
+  - platform/gitops/components/secrets/vault
+  - tests/trivy/components/vault.yaml
+image_targets:
+  - id: openbao-server
+    artifact_catalog: runtime-artifacts
+    artifact_name: openbao-server
+  - id: vault-busybox
+    artifact_catalog: runtime-artifacts
+    artifact_name: vault-busybox
+config_targets:
+  - id: vault-manifests
+    path: platform/gitops/components/secrets/vault

@@ -1,0 +1,16 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: loki-ingester
+  namespace: loki
+spec:
+  template:
+    spec:
+      containers:
+        - name: ingester
+          resources:
+            requests:
+              cpu: "35m"
+              memory: "1536Mi"
+            limits:
+              memory: "4096Mi"

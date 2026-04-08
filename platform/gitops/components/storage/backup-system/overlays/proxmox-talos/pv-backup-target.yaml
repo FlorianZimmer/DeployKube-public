@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: backup-target-proxmox-talos
+spec:
+  capacity:
+    # Note: NFS PV capacity is informational, but it drives kube warnings and planning.
+    # Keep this close to real Synology volume size so we notice pressure early.
+    storage: 400Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  mountOptions:
+    - nfsvers=4.1
+    - tcp
+    - soft
+    - timeo=50
+    - retrans=2
+    - noatime
+  nfs:
+    server: 198.51.100.11
+    path: /volume1/deploykube/backups

@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cert-manager
+  labels:
+    deploykube.gitops/component: cert-manager
+    deploykube.gitops/owner: platform
+    istio-injection: disabled
+    observability.grafana.com/tenant: platform

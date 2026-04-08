@@ -1,0 +1,53 @@
+# Access guardrails smoke alert rules (dev defaults)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mimir-rules-access-guardrails
+  namespace: mimir
+  labels:
+    mimir.grafana.com/rules: "true"
+    app.kubernetes.io/component: ruler
+data:
+  access-guardrails.yaml: |
+    # yaml-language-server: $schema=https://json.schemastore.org/prometheus-rule.json
+    groups:
+      - name: access.guardrails.smoke
+        interval: 1m
+        rules:
+          - alert: AccessGuardrailsSmokeJobFailed
+            expr: |
+              max by (namespace, job_name) (
+                kube_job_status_failed{
+                  namespace=~"rbac-system|access-guardrails-system",
+                  job_name=~"access-guardrails-smoke-(allow|deny)-rbac-mutations-.*"
+                }
+              ) > 0
+            for: 2m
+            labels:
+              severity: critical
+              team: platform
+              service: access-guardrails
+              environment: dev
+              cluster: deploykube
+              runbook_url: docs/runbooks/access-guardrails-smoke-alerts.md
+            annotations:
+              summary: "Access guardrails smoke Job failed ({{ $labels.namespace }}/{{ $labels.job_name }})"
+              description: "A guardrails smoke Job failed. This likely means the GitOps-only RBAC contract is not being enforced (deny path), or the allowlisted RBAC automation identity is blocked (allow path)."
+
+          - alert: AccessGuardrailsSmokeStale
+            expr: |
+              (time() - kube_cronjob_status_last_successful_time{
+                namespace=~"rbac-system|access-guardrails-system",
+                cronjob=~"access-guardrails-smoke-(allow|deny)-rbac-mutations"
+              }) > 3600
+            for: 10m
+            labels:
+              severity: warning
+              team: platform
+              service: access-guardrails
+              environment: dev
+              cluster: deploykube
+              runbook_url: docs/runbooks/access-guardrails-smoke-alerts.md
+            annotations:
+              summary: "Access guardrails smoke CronJob stale ({{ $labels.namespace }}/{{ $labels.cronjob }})"
+              description: "No successful run observed within the expected interval. Confirm the CronJob is scheduled and Jobs are completing."

@@ -1,0 +1,152 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: observability-offenders-snapshot
+  namespace: observability
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  # Intentionally offset from :00 to avoid top-of-hour kube-apiserver contention.
+  schedule: "15,45 * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 300
+      ttlSecondsAfterFinished: 900
+      template:
+        metadata:
+          annotations:
+            sidecar.istio.io/nativeSidecar: "true"
+            proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}'
+        spec:
+          restartPolicy: Never
+          serviceAccountName: observability-offenders-snapshot
+          volumes:
+            - name: istio-native-exit
+              configMap:
+                name: istio-native-exit-script
+                defaultMode: 0444
+          containers:
+            - name: offenders-snapshot
+              image: registry.example.internal/deploykube/bootstrap-tools:1.4
+              imagePullPolicy: IfNotPresent
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  memory: 256Mi
+              volumeMounts:
+                - name: istio-native-exit
+                  mountPath: /helpers
+                  readOnly: true
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -euo pipefail
+                  ISTIO_HELPER="/helpers/istio-native-exit.sh"
+                  [ -f "${ISTIO_HELPER}" ] || { echo "missing istio-native-exit helper" >&2; exit 1; }
+                  . "${ISTIO_HELPER}"
+                  trap deploykube_istio_quit_sidecar EXIT INT TERM
+
+                  qurl="http://mimir-querier.mimir.svc.cluster.local:8080/prometheus/api/v1/query"
+                  hdr_tenant="X-Scope-OrgID: platform"
+
+                  now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+                  query_json() {
+                    q="$1"
+                    curl -fsS -G "${qurl}" -H "${hdr_tenant}" --data-urlencode "query=${q}"
+                  }
+
+                  # OOMKilled "presence" in a window. Values are not perfect counts; they indicate
+                  # whether kube-state-metrics observed an OOMKilled termination in the lookback window.
+                  #
+                  # IMPORTANT: kube-state-metrics can run multiple replicas. We must NOT sum the
+                  # per-replica series (would inflate the value). Use `max by(...)` to collapse
+                  # duplicates so the output remains a simple presence signal (0/1).
+                  q_oom_24h='max by(namespace,pod,container) (max_over_time(kube_pod_container_status_last_terminated_reason{reason="OOMKilled"}[24h]))'
+                  q_oom_7d='max by(namespace,pod,container) (max_over_time(kube_pod_container_status_last_terminated_reason{reason="OOMKilled"}[7d]))'
+
+                  # CPU throttling ratio (only meaningful where CPU limits exist).
+                  #
+                  # We explicitly filter to containers with a CPU limit configured (kube-state-metrics),
+                  # otherwise we can get misleading results on some setups (e.g., cgroup v2 reporting).
+                  q_has_cpu_limit='kube_pod_container_resource_limits{resource="cpu",unit="core"} > 0'
+                  q_throttle_ratio_30m='topk(50, ((sum by(namespace,pod,container) (rate(container_cpu_cfs_throttled_periods_total{container!="",container!="POD"}[30m])) / sum by(namespace,pod,container) (rate(container_cpu_cfs_periods_total{container!="",container!="POD"}[30m]))) * on(namespace,pod,container) group_left() ('"${q_has_cpu_limit}"')))'
+                  q_throttle_ratio_6h='topk(50, ((sum by(namespace,pod,container) (rate(container_cpu_cfs_throttled_periods_total{container!="",container!="POD"}[6h])) / sum by(namespace,pod,container) (rate(container_cpu_cfs_periods_total{container!="",container!="POD"}[6h]))) * on(namespace,pod,container) group_left() ('"${q_has_cpu_limit}"')))'
+
+                  oom24_json="$(query_json "${q_oom_24h}")"
+                  oom7d_json="$(query_json "${q_oom_7d}")"
+                  thr30_json="$(query_json "${q_throttle_ratio_30m}")"
+                  thr6h_json="$(query_json "${q_throttle_ratio_6h}")"
+
+                  fmt_oom() {
+                    echo "$1" | jq -r '
+                      if .status != "success" then
+                        "ERROR: query failed: " + (.error // "unknown")
+                      else
+                        (.data.result
+                          | map(select((.value[1] | tonumber) > 0))
+                          | sort_by(.metric.namespace, .metric.pod, .metric.container)) as $rows
+                        | (["oom_present namespace/pod container value"]
+                           + ($rows | map("oom_present \(.metric.namespace)/\(.metric.pod) \(.metric.container) \(.value[1])")))
+                        | .[]
+                      end
+                    '
+                  }
+
+                  fmt_throttle() {
+                    echo "$1" | jq -r '
+                      if .status != "success" then
+                        "ERROR: query failed: " + (.error // "unknown")
+                      else
+                        (.data.result
+                          | map(select((.value[1] | tonumber) > 0))
+                          | sort_by((.value[1] | tonumber)) | reverse) as $rows
+                        | (["throttle_ratio namespace/pod container ratio"]
+                           + ($rows | map("throttle_ratio \(.metric.namespace)/\(.metric.pod) \(.metric.container) \(.value[1])")))
+                        | .[]
+                      end
+                    '
+                  }
+
+                  report_path="/tmp/report.txt"
+                  {
+                    echo "generated_at_utc ${now_iso}"
+                    echo
+                    echo "== OOMKilled (24h) =="
+                    fmt_oom "${oom24_json}"
+                    echo
+                    echo "== OOMKilled (7d) =="
+                    fmt_oom "${oom7d_json}"
+                    echo
+                    echo "== CPU throttling ratio (30m) =="
+                    fmt_throttle "${thr30_json}"
+                    echo
+                    echo "== CPU throttling ratio (6h) =="
+                    fmt_throttle "${thr6h_json}"
+                    echo
+                  } | tee "${report_path}"
+
+                  cm="observability-offenders-snapshot"
+                  kubectl -n observability apply -f - <<EOF
+                  apiVersion: v1
+                  kind: ConfigMap
+                  metadata:
+                    name: ${cm}
+                    namespace: observability
+                    labels:
+                      app.kubernetes.io/name: observability-offenders-snapshot
+                      darksite.cloud/purpose: troubleshooting
+                    annotations:
+                      darksite.cloud/generated-at: "${now_iso}"
+                  data:
+                    report.txt: |
+                  $(sed 's/^/      /' "${report_path}")
+                  EOF

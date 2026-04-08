@@ -1,0 +1,875 @@
+apiVersion: platform.darksite.cloud/v1alpha1
+kind: PlatformApps
+metadata:
+  name: platform-apps
+  namespace: argocd
+spec:
+  repoURL: https://forgejo-https.forgejo.svc.cluster.local/platform/cluster-config.git
+  targetRevision: main
+  overlayMode: ""
+  deploymentId: ""
+  enabledApps: []
+  disabledApps: []
+  globalKustomizeImages: []
+  apps:
+    # ============================================================================
+    # Networking
+    # ============================================================================
+    - name: networking-istio-gateway
+      path: components/networking/istio/gateway
+      overlay: false
+      destination:
+        namespace: istio-system
+      syncWave: "1"
+    - name: networking-egress-proxy
+      path: components/networking/egress-proxy
+      overlay: false
+      destination:
+        namespace: default
+      syncWave: "6"
+    - name: networking-dns-powerdns
+      path: components/dns/powerdns
+      overlay: true
+      overlayPaths:
+        dev: components/dns/powerdns/overlays/{{ $.Values.deploymentId }}
+        prod: components/dns/powerdns/overlays/{{ $.Values.deploymentId }}
+      destination:
+        namespace: dns-system
+      syncWave: "10"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - PrunePropagationPolicy=foreground
+          - RespectIgnoreDifferences=true
+        retry:
+          limit: 10
+          backoff:
+            duration: 10s
+            factor: 2
+            maxDuration: 5m
+      ignoreDifferences:
+        # VIP/domain wiring is controller-owned (deployment config derived).
+        - kind: Service
+          name: powerdns
+          namespace: dns-system
+          jsonPointers:
+            - /spec/loadBalancerIP
+        - kind: ConfigMap
+          name: powerdns-config
+          namespace: dns-system
+          jsonPointers:
+            - /metadata/annotations/powerdns.dev~1domain
+            - /metadata/annotations/powerdns.dev~1loadbalancer-ip
+        - group: apps
+          kind: Deployment
+          name: powerdns
+          namespace: dns-system
+          jsonPointers:
+            - /spec/template/metadata/annotations/darksite.cloud~1powerdns-config-checksum
+        - group: apps
+          kind: Deployment
+          name: external-dns
+          namespace: dns-system
+          jsonPointers:
+            - /spec/template/spec/containers/0/args
+    - name: networking-coredns
+      path: components/networking/coredns
+      overlay: false
+      destination:
+        namespace: kube-system
+      syncWave: "9"
+      ignoreDifferences:
+        # Stub-domain forwarding is controller-owned (deployment config derived).
+        - kind: ConfigMap
+          name: coredns
+          namespace: kube-system
+          jsonPointers:
+            - /data/Corefile
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=false
+          - RespectIgnoreDifferences=true
+    - name: networking-dns-external-sync
+      path: components/dns/external-sync
+      overlay: false
+      destination:
+        namespace: dns-system
+      syncWave: "12"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - ApplyOutOfSyncOnly=true
+    - name: networking-istio-kiali
+      path: components/networking/istio/kiali
+      overlay: true
+      overlayPaths:
+        dev: components/networking/istio/kiali/overlays/{{ $.Values.deploymentId }}
+        prod: components/networking/istio/kiali/overlays/{{ $.Values.deploymentId }}
+      destination:
+        namespace: istio-system
+      syncWave: "5"
+    - name: networking-hubble-ui
+      path: components/networking/hubble
+      overlay: true
+      overlayPaths:
+        dev: components/networking/hubble/overlays/{{ $.Values.deploymentId }}
+        prod: components/networking/hubble/overlays/{{ $.Values.deploymentId }}
+      destination:
+        namespace: kube-system
+      syncWave: "2"
+    - name: networking-ingress-smoke-tests
+      path: components/networking/ingress/smoke-tests
+      overlay: true
+      overlayPaths:
+        dev: components/networking/ingress/smoke-tests/overlays/{{ $.Values.deploymentId }}
+        prod: components/networking/ingress/smoke-tests/overlays/{{ $.Values.deploymentId }}
+      destination:
+        namespace: istio-system
+      # After ingress + certificates: proves VIP + HTTPRoutes are healthy end-to-end.
+      syncWave: "16"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - PrunePropagationPolicy=foreground
+          - ServerSideApply=true
+    - name: networking-istio-control-plane
+      path: components/networking/istio/control-plane
+      overlay: true
+      overlayPaths:
+        dev: components/networking/istio/control-plane/overlays/{{ $.Values.deploymentId }}
+        prod: components/networking/istio/control-plane/overlays/{{ $.Values.deploymentId }}
+      destination:
+        namespace: istio-system
+      syncWave: "-1"
+    # ============================================================================
+    # Certificates
+    # ============================================================================
+    - name: certificates-platform-ingress
+      path: components/certificates/ingress
+      overlay: true
+      overlayPaths:
+        dev: components/certificates/ingress/overlays/{{ $.Values.deploymentId }}
+        prod: components/certificates/ingress/overlays/{{ $.Values.deploymentId }}
+      destination:
+        namespace: istio-system
+      syncWave: "0"
+    - name: certificates-smoke-tests
+      path: components/certificates/smoke-tests
+      overlay: true
+      overlayPaths:
+        dev: components/certificates/smoke-tests/overlays/{{ $.Values.deploymentId }}
+        prod: components/certificates/smoke-tests/overlays/{{ $.Values.deploymentId }}
+      destination:
+        namespace: cert-manager
+      syncWave: "15"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - PrunePropagationPolicy=foreground
+          - ServerSideApply=true
+    # ============================================================================
+    # Platform - Time
+    # ============================================================================
+    - name: platform-time-ntp
+      path: components/platform/time-ntp
+      overlay: false
+      destination:
+        namespace: time-system
+      syncWave: "10.8"
+    # ============================================================================
+    # Platform - Ops
+    # ============================================================================
+    - name: platform-metrics-server
+      path: components/platform/ops/metrics-server
+      overlay: false
+      enabled: false
+      annotations:
+        argocd.argoproj.io/manifest-generate-options: --enable-helm --helm-command ./tools/kustomize-helm-wrapper.sh
+      destination:
+        namespace: kube-system
+      syncWave: "1.35"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=false
+          - ApplyOutOfSyncOnly=true
+    # ============================================================================
+    # Platform - ArgoCD
+    # ============================================================================
+    - name: platform-argocd-config
+      path: components/platform/argocd/config/overlays/{{ $.Values.deploymentId }}
+      overlay: false
+      destination:
+        namespace: argocd
+      syncWave: "3.5"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=false
+          - ApplyOutOfSyncOnly=true
+    - name: platform-argocd-ingress
+      path: components/platform/argocd/ingress
+      overlay: false
+      destination:
+        namespace: argocd
+      syncWave: "2"
+      ignoreDifferences:
+        # Argo CD ingress hostnames are applied at runtime by the https-switch PostSync Job
+        # (derived from the in-cluster deploykube deployment config), so avoid drift.
+        - group: gateway.networking.k8s.io
+          kind: HTTPRoute
+          name: argocd
+          namespace: argocd
+          jsonPointers:
+            - /spec/hostnames
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=false
+          - ApplyOutOfSyncOnly=true
+    # ============================================================================
+    # Platform - Forgejo
+    # ============================================================================
+    - name: platform-forgejo-ingress
+      path: components/platform/forgejo/ingress
+      overlay: false
+      destination:
+        namespace: forgejo
+      syncWave: "2"
+      ignoreDifferences:
+        # Hostnames are controller-owned (deployment config derived).
+        - group: gateway.networking.k8s.io
+          kind: HTTPRoute
+          name: forgejo
+          namespace: forgejo
+          jsonPointers:
+            - /spec/hostnames
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=false
+          - ApplyOutOfSyncOnly=true
+    - name: platform-forgejo-jobs
+      path: components/platform/forgejo/jobs
+      overlay: true
+      overlayPaths:
+        dev: components/platform/forgejo/jobs/overlays/{{ $.Values.deploymentId }}
+        prod: components/platform/forgejo/jobs/overlays/{{ $.Values.deploymentId }}
+      destination:
+        namespace: forgejo
+      syncWave: "12"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=false
+          - ApplyOutOfSyncOnly=true
+    # Note: platform-forgejo-valkey has no overlays; dev may patch to a non-persistent overlay.
+    - name: platform-forgejo-valkey
+      path: components/platform/forgejo/valkey
+      overlay: true
+      destination:
+        namespace: forgejo
+      syncWave: "10"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=false
+          - ApplyOutOfSyncOnly=true
+      overlayPaths:
+        dev: components/platform/forgejo/overlays/{{ $.Values.deploymentId }}/valkey
+        prod: components/platform/forgejo/overlays/{{ $.Values.deploymentId }}/valkey
+    # ============================================================================
+    # Platform - Registry (Harbor)
+    # ============================================================================
+    - name: platform-registry-harbor-secrets
+      path: components/platform/registry/harbor/secrets
+      overlay: false
+      destination:
+        namespace: harbor
+      syncWave: "1.3"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=false
+          - ApplyOutOfSyncOnly=true
+    - name: platform-registry-harbor-postgres
+      path: components/platform/registry/harbor/postgres
+      overlay: false
+      destination:
+        namespace: harbor
+      syncWave: "1.4"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=false
+          - ApplyOutOfSyncOnly=true
+    - name: platform-registry-harbor
+      path: components/platform/registry/harbor/helm
+      overlay: false
+      annotations:
+        argocd.argoproj.io/manifest-generate-options: --enable-helm --helm-command ./tools/kustomize-helm-wrapper.sh
+      destination:
+        namespace: harbor
+      syncWave: "8"
+      ignoreDifferences:
+        # Harbor externalURL is patched by the ingress-adjacent controller.
+        - kind: ConfigMap
+          name: harbor-core
+          namespace: harbor
+          jsonPointers:
+            - /data/EXT_ENDPOINT
+        - group: apps
+          kind: Deployment
+          name: harbor-core
+          namespace: harbor
+          jsonPointers:
+            - /spec/template/metadata/annotations/darksite.cloud~1ingress-adjacent-ext-endpoint
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=false
+          - ApplyOutOfSyncOnly=true
+          - RespectIgnoreDifferences=true
+    - name: platform-registry-harbor-ingress
+      path: components/platform/registry/harbor/ingress
+      overlay: false
+      destination:
+        namespace: harbor
+      syncWave: "8.5"
+      ignoreDifferences:
+        # Hostnames are controller-owned (deployment config derived).
+        - group: gateway.networking.k8s.io
+          kind: HTTPRoute
+          name: harbor
+          namespace: harbor
+          jsonPointers:
+            - /spec/hostnames
+        - group: gateway.networking.k8s.io
+          kind: HTTPRoute
+          name: registry
+          namespace: harbor
+          jsonPointers:
+            - /spec/hostnames
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=false
+          - ApplyOutOfSyncOnly=true
+          - RespectIgnoreDifferences=true
+    - name: platform-registry-harbor-smoke-tests
+      path: components/platform/registry/harbor/smoke-tests
+      overlay: false
+      destination:
+        namespace: harbor
+      syncWave: "9"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=false
+          - ApplyOutOfSyncOnly=true
+    # ============================================================================
+    # Platform - Keycloak
+    # ============================================================================
+    - name: platform-keycloak-base
+      path: components/platform/keycloak/base
+      overlay: true
+      overlayPaths:
+        dev: components/platform/keycloak/base/overlays/{{ $.Values.deploymentId }}
+        prod: components/platform/keycloak/base/overlays/{{ $.Values.deploymentId }}
+      destination:
+        namespace: keycloak
+      syncWave: "2"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - ApplyOutOfSyncOnly=true
+          - RespectIgnoreDifferences=true
+      ignoreDifferences:
+        - group: k8s.keycloak.org
+          kind: Keycloak
+          name: keycloak
+          namespace: keycloak
+          jsonPointers:
+            - /spec/instances
+    - name: platform-keycloak-ingress
+      path: components/platform/keycloak/ingress
+      overlay: false
+      destination:
+        namespace: keycloak
+      syncWave: "3"
+      ignoreDifferences:
+        # Hostnames are controller-owned (deployment config derived).
+        - group: gateway.networking.k8s.io
+          kind: HTTPRoute
+          name: keycloak
+          namespace: keycloak
+          jsonPointers:
+            - /spec/hostnames
+        - group: cert-manager.io
+          kind: Certificate
+          name: keycloak-tls
+          namespace: keycloak
+          jsonPointers:
+            - /spec/dnsNames
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - ApplyOutOfSyncOnly=true
+    - name: platform-keycloak-bootstrap
+      path: components/platform/keycloak/bootstrap-job
+      overlay: true
+      overlayPaths:
+        dev: components/platform/keycloak/bootstrap-job/overlays/{{ $.Values.deploymentId }}
+        prod: components/platform/keycloak/bootstrap-job/overlays/{{ $.Values.deploymentId }}
+      destination:
+        namespace: keycloak
+      syncWave: "3"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - ApplyOutOfSyncOnly=true
+    - name: platform-keycloak-iam-sync
+      path: components/platform/keycloak/iam-sync
+      overlay: true
+      overlayPaths:
+        dev: components/platform/keycloak/iam-sync/overlays/{{ $.Values.deploymentId }}
+        prod: components/platform/keycloak/iam-sync/overlays/{{ $.Values.deploymentId }}
+      destination:
+        namespace: keycloak
+      syncWave: "3.2"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - ApplyOutOfSyncOnly=true
+    - name: platform-keycloak-upstream-sim
+      path: components/platform/keycloak/upstream-sim
+      overlay: false
+      enabled: false
+      destination:
+        namespace: keycloak-upstream-sim
+      syncWave: "3.3"
+      ignoreDifferences:
+        # Smoke runs intentionally and temporarily scale this deployment from 0 -> 1 -> 0.
+        - group: apps
+          kind: Deployment
+          name: keycloak-upstream-sim
+          namespace: keycloak-upstream-sim
+          jsonPointers:
+            - /spec/replicas
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - ApplyOutOfSyncOnly=true
+    - name: platform-keycloak-scim-bridge
+      path: components/platform/keycloak/scim-bridge
+      overlay: false
+      enabled: false
+      destination:
+        namespace: keycloak
+      syncWave: "3.25"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - ApplyOutOfSyncOnly=true
+    - name: platform-keycloak-realms
+      path: components/platform/keycloak/realms
+      overlay: true
+      overlayPaths:
+        dev: components/platform/keycloak/realms/overlays/{{ $.Values.deploymentId }}
+        prod: components/platform/keycloak/realms/overlays/{{ $.Values.deploymentId }}
+      destination:
+        namespace: keycloak
+      syncWave: "2.5"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - ApplyOutOfSyncOnly=true
+    # ============================================================================
+    # Proof Of Concepts
+    # ============================================================================
+    - name: proof-of-concepts-idlab
+      path: components/proof-of-concepts/idlab
+      overlay: false
+      enabled: false
+      destination:
+        namespace: idlab
+      syncWave: "13"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - ApplyOutOfSyncOnly=true
+    - name: proof-of-concepts-idlab-tests
+      path: components/proof-of-concepts/idlab/tests
+      overlay: false
+      enabled: false
+      destination:
+        namespace: idlab
+      syncWave: "14"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - ApplyOutOfSyncOnly=true
+    # ============================================================================
+    # Platform - Observability
+    # ============================================================================
+    - name: platform-observability-grafana
+      path: components/platform/observability/grafana
+      overlay: true
+      overlayPaths:
+        dev: components/platform/observability/grafana/overlays/{{ $.Values.deploymentId }}
+        prod: components/platform/observability/grafana/overlays/{{ $.Values.deploymentId }}
+      destination:
+        namespace: grafana
+      syncWave: "3"
+      ignoreDifferences:
+        # CronJob env is patched at runtime (derived from deploykube deployment config) to avoid hardcoding hostnames in GitOps.
+        - group: batch
+          kind: CronJob
+          name: grafana-external-reachability-smoke
+          namespace: grafana
+          jqPathExpressions:
+            - '.spec.jobTemplate.spec.template.spec.containers[] | select(.name=="grafana-external-reachability-smoke").env[] | select(.name=="GRAFANA_HOST")'
+        # Grafana server host is patched at runtime (derived from deploykube deployment config) to avoid hardcoding hostnames in GitOps.
+        - group: apps
+          kind: Deployment
+          name: grafana
+          namespace: grafana
+          jqPathExpressions:
+            - '.spec.template.spec.containers[] | select(.name=="grafana").env[] | select(.name=="GF_SERVER_DOMAIN")'
+            - '.spec.template.spec.containers[] | select(.name=="grafana").env[] | select(.name=="GF_SERVER_ROOT_URL")'
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=false
+          - ApplyOutOfSyncOnly=true
+    - name: platform-observability-ingress
+      path: components/platform/observability/ingress
+      overlay: false
+      destination:
+        namespace: grafana
+      syncWave: "3.1"
+      ignoreDifferences:
+        # Grafana ingress hostnames are applied at runtime by the grafana-ingress-host-switch PostSync Job
+        # (derived from the in-cluster deploykube deployment config), so avoid drift.
+        - group: gateway.networking.k8s.io
+          kind: HTTPRoute
+          name: grafana
+          namespace: grafana
+          jsonPointers:
+            - /spec/hostnames
+        - group: security.istio.io
+          kind: AuthorizationPolicy
+          name: grafana-allow-public-gateway
+          namespace: grafana
+          jsonPointers:
+            - /spec/rules/0/when/0/values
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=false
+          - ApplyOutOfSyncOnly=true
+    - name: platform-observability-vip-probes
+      path: components/platform/observability/vip-probes
+      overlay: true
+      overlayPaths:
+        dev: components/platform/observability/vip-probes/overlays/{{ $.Values.deploymentId }}
+        prod: components/platform/observability/vip-probes/overlays/{{ $.Values.deploymentId }}
+      destination:
+        namespace: observability
+      syncWave: "1.44"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=false
+          - ApplyOutOfSyncOnly=true
+    - name: platform-observability-loki
+      path: components/platform/observability/loki
+      overlay: true
+      overlayPaths:
+        dev: components/platform/observability/loki/overlays/{{ $.Values.deploymentId }}
+        prod: components/platform/observability/loki/overlays/{{ $.Values.deploymentId }}
+      destination:
+        namespace: loki
+      syncWave: "2"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=false
+          - ApplyOutOfSyncOnly=true
+          - RespectIgnoreDifferences=true
+      ignoreDifferences:
+        # Loki limits are controller-owned (deployment config derived).
+        - kind: ConfigMap
+          name: loki
+          namespace: loki
+          jsonPointers:
+            - /data/config.yaml
+    - name: platform-observability-mimir
+      path: components/platform/observability/mimir
+      overlay: true
+      overlayPaths:
+        dev: components/platform/observability/mimir/overlays/{{ $.Values.deploymentId }}
+        prod: components/platform/observability/mimir/overlays/{{ $.Values.deploymentId }}
+      destination:
+        namespace: mimir
+      syncWave: "2.5"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=false
+          - ApplyOutOfSyncOnly=true
+    # ============================================================================
+    # Secrets - Vault
+    # ============================================================================
+    - name: secrets-kms-shim
+      enabled: false
+      path: components/secrets/kms-shim
+      overlay: false
+      destination:
+        namespace: vault-seal-system
+      syncWave: "-4"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - PrunePropagationPolicy=foreground
+          - ServerSideApply=true
+    - name: secrets-vault-config
+      path: components/secrets/vault/config
+      overlay: true
+      overlayPaths:
+        dev: components/secrets/vault/overlays/{{ $.Values.deploymentId }}/config
+        prod: components/secrets/vault/overlays/{{ $.Values.deploymentId }}/config
+      destination:
+        namespace: vault-system
+      syncWave: "1.5"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - PrunePropagationPolicy=foreground
+          - ServerSideApply=true
+    - name: secrets-vault-ingress
+      path: components/secrets/vault/ingress
+      overlay: false
+      destination:
+        namespace: vault-system
+      syncWave: "2"
+      ignoreDifferences:
+        # Hostnames are controller-owned (deployment config derived).
+        - group: gateway.networking.k8s.io
+          kind: HTTPRoute
+          name: vault-ui
+          namespace: vault-system
+          jsonPointers:
+            - /spec/hostnames
+    # ============================================================================
+    # Storage
+    # ============================================================================
+    - name: storage-garage
+      path: components/storage/garage
+      overlay: true
+      overlayPaths:
+        dev: components/storage/garage/overlays/{{ $.Values.deploymentId }}
+        prod: components/storage/garage/overlays/{{ $.Values.deploymentId }}
+      destination:
+        namespace: garage
+      syncWave: "2"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - PrunePropagationPolicy=foreground
+          - RespectIgnoreDifferences=true
+      ignoreDifferences:
+        # Hostnames are controller-owned (deployment config derived).
+        - group: gateway.networking.k8s.io
+          kind: HTTPRoute
+          name: garage
+          namespace: garage
+          jsonPointers:
+            - /spec/hostnames
+        - group: apps
+          kind: StatefulSet
+          jsonPointers:
+            - /spec/volumeClaimTemplates/0/apiVersion
+            - /spec/volumeClaimTemplates/0/kind
+            - /spec/volumeClaimTemplates/0/metadata/labels
+            - /spec/volumeClaimTemplates/0/status
+          jqPathExpressions:
+            - .spec.volumeClaimTemplates[].apiVersion
+            - .spec.volumeClaimTemplates[].kind
+            - .spec.volumeClaimTemplates[].metadata.labels
+            - .spec.volumeClaimTemplates[].status
+        - group: external-secrets.io
+          kind: ExternalSecret
+          jqPathExpressions:
+            - .metadata.finalizers
+            - .spec.target.deletionPolicy
+            - .spec.target.template.engineVersion
+            - .spec.target.template.mergePolicy
+        - group: gateway.networking.k8s.io
+          kind: HTTPRoute
+          jqPathExpressions:
+            - .spec.parentRefs[].group
+            - .spec.parentRefs[].kind
+            - .spec.rules[].backendRefs[].group
+            - .spec.rules[].backendRefs[].kind
+    - name: storage-garage-smoke-tests
+      path: components/storage/garage/smoke-tests
+      overlay: true
+      destination:
+        namespace: garage
+      syncWave: "3"
+    # ============================================================================
+    # Shared RBAC
+    # ============================================================================
+    - name: shared-access-guardrails
+      path: components/shared/access-guardrails
+      overlay: true
+      destination:
+        namespace: access-guardrails-system
+      syncWave: "-3"
+    - name: shared-policy-kyverno
+      path: components/shared/policy-kyverno
+      overlay: true
+      destination:
+        namespace: policy-system
+      syncWave: "-2.5"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=false
+          - PrunePropagationPolicy=foreground
+          - ServerSideApply=true
+          - ApplyOutOfSyncOnly=true
+    - name: shared-rbac
+      path: components/shared/rbac
+      overlay: true
+      destination:
+        namespace: rbac-system
+      syncWave: "-2"
+    - name: shared-rbac-secrets
+      path: components/shared/rbac-secrets
+      overlay: true
+      destination:
+        namespace: rbac-system
+      syncWave: "8"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - PrunePropagationPolicy=background
+    # ============================================================================
+    # Applications (end-user workloads)
+    # ============================================================================
+    - name: apps-factorio
+      path: components/apps/factorio
+      enabled: false
+      overlay: true
+      destination:
+        cluster: in-cluster
+      syncWave: "10"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - ApplyOutOfSyncOnly=true
+    - name: apps-minecraft-monifactory
+      path: components/apps/minecraft-monifactory
+      enabled: false
+      overlay: true
+      destination:
+        cluster: in-cluster
+      syncWave: "10"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - ApplyOutOfSyncOnly=true

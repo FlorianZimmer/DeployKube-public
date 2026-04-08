@@ -1,0 +1,125 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: rbac-smoke
+  namespace: rbac-system
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: HookSucceeded,BeforeHookCreation
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 300
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      serviceAccountName: rbac-smoke
+      restartPolicy: Never
+      containers:
+        - name: smoke
+          image: registry.example.internal/deploykube/bootstrap-tools:1.4
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - -lc
+            - |
+              set -euo pipefail
+
+              dump_on_error() {
+                echo "[rbac-smoke] diagnostics (best-effort)" >&2
+                kubectl -n rbac-system get cronjobs -o wide >&2 || true
+                kubectl get clusterrole platform-operator -o yaml >&2 || true
+                kubectl get clusterrolebindings -o wide >&2 || true
+              }
+              trap dump_on_error ERR
+
+              echo "[rbac-smoke] required ClusterRoles"
+              for cr in \
+                platform-operator \
+                app-namespace-admin \
+                app-namespace-edit \
+                app-namespace-view \
+                tenant-support-l1 \
+                tenant-support-l2 \
+                tenant-support-l3 \
+                auditor-readonly \
+                platform-secrets-read \
+                rbac-namespace-sync; do
+                kubectl get clusterrole "${cr}" >/dev/null
+              done
+
+              echo "[rbac-smoke] required ClusterRoleBindings"
+              for crb in \
+                platform-admins-cluster-admin \
+                platform-operators \
+                security-ops-secrets-read; do
+                kubectl get clusterrolebinding "${crb}" >/dev/null
+              done
+
+              echo "[rbac-smoke] tenant workload roles must not grant access-plane APIs"
+              forbidden_api_groups=(
+                rbac.authorization.k8s.io
+                admissionregistration.k8s.io
+                apiextensions.k8s.io
+                argoproj.io
+                external-secrets.io
+              )
+              forbidden_resources=(
+                namespaces
+                clusterroles
+                clusterrolebindings
+                roles
+                rolebindings
+                validatingadmissionpolicies
+                validatingadmissionpolicybindings
+                mutatingwebhookconfigurations
+                validatingwebhookconfigurations
+                customresourcedefinitions
+              )
+              for cr in app-namespace-admin app-namespace-edit app-namespace-view tenant-support-l1 tenant-support-l2 tenant-support-l3; do
+                cr_json="$(kubectl get clusterrole "${cr}" -o json)"
+                for g in "${forbidden_api_groups[@]}"; do
+                  if echo "${cr_json}" | jq -e --arg g "${g}" '[.rules[].apiGroups[]?] | any(. == $g)' >/dev/null; then
+                    echo "[rbac-smoke] FAIL: ClusterRole/${cr} unexpectedly references apiGroup ${g}" >&2
+                    exit 1
+                  fi
+                done
+                for r in "${forbidden_resources[@]}"; do
+                  if echo "${cr_json}" | jq -e --arg r "${r}" '[.rules[].resources[]?] | any(. == $r)' >/dev/null; then
+                    echo "[rbac-smoke] FAIL: ClusterRole/${cr} unexpectedly references resource ${r}" >&2
+                    exit 1
+                  fi
+                done
+              done
+
+              echo "[rbac-smoke] required CronJobs"
+              kubectl -n rbac-system get cronjob rbac-namespace-sync >/dev/null
+              kubectl -n rbac-system get cronjob forgejo-team-sync >/dev/null
+              kubectl -n rbac-system get cronjob forgejo-tenant-pr-gate-enforcer >/dev/null
+
+              echo "[rbac-smoke] tenant RBAC template (rbac-namespace-sync)"
+              sync_script="$(mktemp)"
+              kubectl -n rbac-system get configmap rbac-namespace-sync -o go-template='{{ index .data "sync.sh" }}' >"${sync_script}"
+              # Source the script without executing main().
+              . "${sync_script}"
+
+              rendered="$(apply_tenant_bindings "t-acme-p-payments-dev-app" "acme" "payments")"
+              echo "${rendered}" | grep -q "name: tenant-admins"
+              echo "${rendered}" | grep -q "name: tenant-developers"
+              echo "${rendered}" | grep -q "name: tenant-viewers"
+              echo "${rendered}" | grep -q "name: tenant-auditors"
+
+              echo "${rendered}" | grep -q "dk-tenant-acme-admins"
+              echo "${rendered}" | grep -q "dk-tenant-acme-viewers"
+              echo "${rendered}" | grep -q "dk-tenant-acme-project-payments-admins"
+              echo "${rendered}" | grep -q "dk-tenant-acme-project-payments-developers"
+              echo "${rendered}" | grep -q "dk-tenant-acme-project-payments-viewers"
+              echo "${rendered}" | grep -q "dk-auditors"
+
+              echo "[rbac-smoke] tenant RBAC template is hash-annotated"
+              echo "${rendered}" | grep -q "darksite.cloud/rbac-namespace-sync-managed"
+              echo "${rendered}" | grep -q "darksite.cloud/rbac-namespace-sync-hash"
+
+              echo "[rbac-smoke] ok"

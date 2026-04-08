@@ -1,0 +1,95 @@
+replicaCount: 1
+
+# Forgejo bootstrap mode uses sqlite + LevelDB queues on the shared PVC.
+# A RollingUpdate can briefly run two pods concurrently, which wedges on the LevelDB lock
+# (`/data/queues/*`). Use Recreate to guarantee single-writer semantics during restarts.
+strategy:
+  type: Recreate
+
+image:
+  rootless: true
+  # Pin explicitly so registry prewarm can discover it (the chart defaults may change).
+  # NOTE: the Forgejo chart composes registry + repository; keep repository registry-less.
+  registry: code.forgejo.org
+  repository: forgejo/forgejo
+  tag: 13.0.2-rootless
+
+service:
+  http:
+    type: ClusterIP
+    port: 3000
+  ssh:
+    enabled: false
+
+postgresql:
+  enabled: false
+
+redis-cluster:
+  enabled: false
+
+persistence:
+  enabled: true
+  size: 10Gi
+  accessModes:
+    - ReadWriteOnce
+  storageClass: shared-rwo
+
+gitea:
+  admin:
+    username: forgejo-admin
+    password: ""
+    email: forgejo-admin@example.invalid
+  config:
+    server:
+      DISABLE_SSH: true
+      ROOT_URL: http://forgejo-http.forgejo.svc.cluster.local:3000/
+      LANDING_PAGE: explore
+      LFS_START_SERVER: true
+      PROTOCOL: http
+    database:
+      DB_TYPE: sqlite3
+      PATH: /data/gitea/gitea.db
+    security:
+      COOKIE_SECURE: false
+      MIN_PASSWORD_LENGTH: 12
+
+deployment:
+  env:
+    - name: SSL_CERT_FILE
+      value: /etc/forgejo/custom-ca/ca-certificates.crt
+
+extraVolumes:
+  - name: forgejo-ca-bundle
+    emptyDir: {}
+  - name: forgejo-oidc-ca
+    secret:
+      secretName: forgejo-oidc-ca
+      optional: true
+
+extraContainerVolumeMounts:
+  - name: forgejo-ca-bundle
+    mountPath: /etc/forgejo/custom-ca
+  - name: forgejo-oidc-ca
+    mountPath: /etc/forgejo/oidc-ca
+    readOnly: true
+
+extraInitVolumeMounts:
+  - name: forgejo-ca-bundle
+    mountPath: /etc/forgejo/custom-ca
+  - name: forgejo-oidc-ca
+    mountPath: /etc/forgejo/oidc-ca
+    readOnly: true
+
+initPreScript: |
+  set -euo pipefail
+  mkdir -p /etc/forgejo/custom-ca
+  if [ -f /etc/ssl/certs/ca-certificates.crt ]; then
+    cp /etc/ssl/certs/ca-certificates.crt /etc/forgejo/custom-ca/ca-certificates.crt
+  else
+    touch /etc/forgejo/custom-ca/ca-certificates.crt
+  fi
+  if [ -s /etc/forgejo/oidc-ca/ca.crt ]; then
+    cat /etc/forgejo/oidc-ca/ca.crt >> /etc/forgejo/custom-ca/ca-certificates.crt
+  fi
+  chown 1000:1000 /etc/forgejo/custom-ca/ca-certificates.crt
+  chmod 0444 /etc/forgejo/custom-ca/ca-certificates.crt

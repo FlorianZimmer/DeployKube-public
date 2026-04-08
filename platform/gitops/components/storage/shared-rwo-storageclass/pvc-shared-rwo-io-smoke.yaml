@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: shared-rwo-io-smoke
+  labels:
+    app.kubernetes.io/name: shared-rwo-io-smoke
+    darksite.cloud/backup: skip
+    darksite.cloud/backup-skip-reason: test
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: shared-rwo
+  resources:
+    requests:
+      storage: 1Gi

@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: grafana
+commonAnnotations:
+  argocd.argoproj.io/sync-wave: "3.9"
+resources:
+  - ../../../../../shared/bootstrap-scripts/istio-native-exit
+  - rbac.yaml
+  - cronjob-grafana-datasource-smoke.yaml
+  - cronjob-grafana-external-reachability-smoke.yaml
+
+configMapGenerator:
+  - name: grafana-probe-root-ca
+    files:
+      - ca.crt=ca.crt
+    options:
+      disableNameSuffixHash: true
+
+generatorOptions:
+  disableNameSuffixHash: true

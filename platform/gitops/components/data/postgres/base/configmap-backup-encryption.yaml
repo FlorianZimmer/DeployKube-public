@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backup-encryption
+data:
+  # Public key only (not secret): used to encrypt tier-0 backup artifacts at rest on the backup target.
+  AGE_RECIPIENT: age1publicmirrorplaceholderxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx

@@ -1,0 +1,45 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: idlab-postgres-init
+  namespace: idlab
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 600
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: init
+          image: postgres:16
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PGHOST
+              value: idlab-postgres-rw
+            - name: PGDATABASE
+              value: idlab
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-postgres-app
+                  key: username
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: idlab-postgres-app
+                  key: password
+          command: ["/bin/sh", "-ceu"]
+          args:
+            - |
+              until pg_isready -h "${PGHOST}" -U "${PGUSER}" -d "${PGDATABASE}"; do
+                sleep 2
+              done
+              psql <<'SQL'
+              create schema if not exists ukc;
+              create schema if not exists mkc;
+              create schema if not exists btp;
+              create schema if not exists idlab;
+              SQL

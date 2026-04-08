@@ -1,0 +1,17 @@
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: loki-api-from-gateway
+  namespace: loki
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: loki-gateway
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals:
+              # Adjust if the gateway ServiceAccount name changes.
+              - cluster.local/ns/istio-system/sa/public-gateway-istio
+

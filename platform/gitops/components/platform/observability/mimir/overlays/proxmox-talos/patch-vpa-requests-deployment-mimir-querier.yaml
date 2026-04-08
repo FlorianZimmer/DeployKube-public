@@ -1,0 +1,16 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mimir-querier
+  namespace: mimir
+spec:
+  template:
+    spec:
+      containers:
+        - name: querier
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "256Mi"
+            limits:
+              memory: "384Mi"

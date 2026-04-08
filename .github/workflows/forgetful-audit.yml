@@ -1,0 +1,111 @@
+name: Forgetful Audit
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Output mode from scripts/dev/forgetful-audit.sh
+        type: choice
+        options:
+          - compact
+          - human
+          - verbose
+        default: compact
+      enforce:
+        description: Fail when --check finds structural issues
+        type: boolean
+        default: false
+      strict:
+        description: Add fail-on-missing-tag and fail-on-missing-provenance
+        type: boolean
+        default: false
+      db_path:
+        description: SQLite DB path on the runner
+        type: string
+        default: ~/Library/Application Support/forgetful/forgetful.db
+  schedule:
+    # Daily, intentionally offset from :00 to avoid noisy collisions.
+    - cron: "41 4 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on:
+      - self-hosted
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate script syntax
+        run: |
+          bash -n ./scripts/dev/forgetful-audit.sh
+
+      - name: Resolve runtime configuration
+        id: cfg
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            mode="${{ inputs.mode }}"
+            enforce="${{ inputs.enforce }}"
+            strict="${{ inputs.strict }}"
+            db_input="${{ inputs.db_path }}"
+          else
+            mode="compact"
+            enforce="false"
+            strict="false"
+            db_input="$HOME/Library/Application Support/forgetful/forgetful.db"
+          fi
+
+          db_path="${db_input/#\~/$HOME}"
+          echo "mode=${mode}" >> "${GITHUB_OUTPUT}"
+          echo "enforce=${enforce}" >> "${GITHUB_OUTPUT}"
+          echo "strict=${strict}" >> "${GITHUB_OUTPUT}"
+          echo "db_path=${db_path}" >> "${GITHUB_OUTPUT}"
+
+      - name: Run advisory audit
+        if: ${{ !fromJSON(steps.cfg.outputs.enforce) }}
+        run: |
+          set -euo pipefail
+          db_path="${{ steps.cfg.outputs.db_path }}"
+          if [[ ! -f "${db_path}" ]]; then
+            echo "No Forgetful DB at ${db_path}; skipping advisory audit."
+            exit 0
+          fi
+
+          ./scripts/dev/forgetful-audit.sh \
+            --db "${db_path}" \
+            --mode "${{ steps.cfg.outputs.mode }}" \
+            --write-report forgetful-audit.md
+
+      - name: Run enforced audit
+        if: ${{ fromJSON(steps.cfg.outputs.enforce) }}
+        run: |
+          set -euo pipefail
+          db_path="${{ steps.cfg.outputs.db_path }}"
+          if [[ ! -f "${db_path}" ]]; then
+            echo "error: enforce=true but Forgetful DB is missing at ${db_path}" >&2
+            exit 1
+          fi
+
+          args=(
+            --db "${db_path}"
+            --mode "${{ steps.cfg.outputs.mode }}"
+            --check
+          )
+          if [[ "${{ steps.cfg.outputs.strict }}" == "true" ]]; then
+            args+=(--fail-on-missing-tag --fail-on-missing-provenance)
+          fi
+
+          ./scripts/dev/forgetful-audit.sh "${args[@]}" --write-report forgetful-audit.md
+
+      - name: Upload report artifact
+        if: ${{ hashFiles('forgetful-audit.md') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: forgetful-audit-report
+          path: forgetful-audit.md
+          if-no-files-found: ignore

@@ -1,0 +1,1776 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: policy-kyverno-smoke-baseline
+  namespace: policy-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+  labels:
+    sidecar.istio.io/inject: "false"
+spec:
+  # Patched per-environment.
+  schedule: "0 */6 * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      ttlSecondsAfterFinished: 3600
+      backoffLimit: 0
+      activeDeadlineSeconds: 900
+      template:
+        metadata:
+          annotations:
+            sidecar.istio.io/inject: "false"
+        spec:
+          serviceAccountName: policy-kyverno-smoke
+          restartPolicy: Never
+          containers:
+            - name: smoke
+              image: registry.example.internal/deploykube/bootstrap-tools:1.4
+              imagePullPolicy: IfNotPresent
+              command:
+                - /bin/bash
+                - -lc
+                - |
+                  set -euo pipefail
+
+                  now_epoch="$(date -u +%s)"
+                  run_id="$(date -u +%s)-${RANDOM:-0}"
+                  run_id="${run_id//[^a-zA-Z0-9-]/-}"
+                  run_id="$(printf '%s' "${run_id}" | tr '[:upper:]' '[:lower:]' | cut -c1-30)"
+                  run_id="$(printf '%s' "${run_id}" | sed -E 's/^-+//; s/-+$//')"
+                  if [ -z "${run_id}" ]; then
+                    run_id="smoke"
+                  fi
+
+                  ns_a="policy-smoke-a-${run_id}"
+                  ns_b="policy-smoke-b-${run_id}"
+                  bad_ns="policy-smoke-bad-${run_id}"
+                  bad_project_ns="policy-smoke-badproj-${run_id}"
+                  bad_project_value_ns="policy-smoke-badprojval-${run_id}"
+                  ns_backup="policy-smoke-backup-${run_id}"
+
+                  self_ns="$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace 2>/dev/null || echo policy-system)"
+                  self_pod="${HOSTNAME:-}"
+                  tools_image="${SMOKE_TOOLS_IMAGE:-}"
+                  if [ -z "${tools_image}" ] && [ -n "${self_pod}" ]; then
+                    tools_image="$(
+                      kubectl -n "${self_ns}" get pod "${self_pod}" -o jsonpath='{.spec.containers[?(@.name=="smoke")].image}' 2>/dev/null || true
+                    )"
+                  fi
+                  if [ -z "${tools_image}" ]; then
+                    tools_image="registry.example.internal/deploykube/bootstrap-tools:1.4"
+                  fi
+                  echo "[prep] using tools image for test workloads: ${tools_image}"
+
+                  tenant_id="smoke"
+
+                  project_id="demo"
+
+                  echo "[prep] determining baseDomain (from Gateway/public-gateway)"
+                  base_domain_host=""
+                  base_domain=""
+                  for _ in {1..30}; do
+                    base_domain_host="$(kubectl -n istio-system get gateway public-gateway -o jsonpath='{.spec.listeners[?(@.name=="https-argocd")].hostname}' 2>/dev/null || true)"
+                    base_domain="${base_domain_host#argocd.}"
+                    if [ -n "${base_domain_host}" ] && [ -n "${base_domain}" ] && [ "${base_domain}" != "${base_domain_host}" ]; then
+                      break
+                    fi
+
+                    base_domain_host="$(kubectl -n istio-system get gateway public-gateway -o jsonpath='{.spec.listeners[?(@.name=="https-forgejo")].hostname}' 2>/dev/null || true)"
+                    base_domain="${base_domain_host#forgejo.}"
+                    if [ -n "${base_domain_host}" ] && [ -n "${base_domain}" ] && [ "${base_domain}" != "${base_domain_host}" ]; then
+                      break
+                    fi
+
+                    sleep 2
+                  done
+                  if [ -z "${base_domain_host}" ] || [ -z "${base_domain}" ] || [ "${base_domain}" = "${base_domain_host}" ]; then
+                    echo "[prep] FAIL: could not determine baseDomain from Gateway/public-gateway listener hostnames" >&2
+                    kubectl -n istio-system get gateway public-gateway -o yaml >&2 || true
+                    exit 1
+                  fi
+                  echo "[prep] baseDomain=${base_domain}"
+
+                  echo "[prep] waiting for Kyverno admission controller readiness"
+                  kubectl -n policy-system rollout status deploy/kyverno-admission-controller --timeout=180s
+
+                  echo "[scope] verifying Kyverno webhook scope invariants"
+                  kyverno_vwc_count=0
+                  kyverno_mwc_count=0
+                  for attempt in {1..36}; do
+                    vwc_json="$(kubectl get validatingwebhookconfigurations -o json)"
+                    mwc_json="$(kubectl get mutatingwebhookconfigurations -o json)"
+                    kyverno_vwc_count="$(printf '%s' "${vwc_json}" | jq '[.items[] | select(.metadata.name | startswith("kyverno-"))] | length')"
+                    kyverno_mwc_count="$(printf '%s' "${mwc_json}" | jq '[.items[] | select(.metadata.name | startswith("kyverno-"))] | length')"
+                    if [ "${kyverno_vwc_count}" -ge 1 ] && [ "${kyverno_mwc_count}" -ge 1 ]; then
+                      break
+                    fi
+                    if [ "${attempt}" -lt 36 ]; then
+                      echo "[scope] waiting for Kyverno webhook configurations (validating=${kyverno_vwc_count}, mutating=${kyverno_mwc_count}, attempt ${attempt}/36)"
+                      sleep 5
+                    fi
+                  done
+                  if [ "${kyverno_vwc_count}" -lt 1 ] || [ "${kyverno_mwc_count}" -lt 1 ]; then
+                    echo "[scope] FAIL: expected Kyverno webhook configurations to exist (names starting with kyverno-)" >&2
+                    kubectl get validatingwebhookconfigurations,mutatingwebhookconfigurations | grep -E 'kyverno-' || true
+                    exit 1
+                  fi
+
+                  expected_ns_selector_key="darksite.cloud/rbac-profile"
+                  expected_ns_selector_value="tenant"
+                  expected_match_fragment='has(request.namespace) && request.namespace != ""'
+                  expected_match_fragment_ns='request.kind.kind == "Namespace"'
+                  expected_match_fragment_label='darksite.cloud/rbac-profile'
+
+                  check_resource_webhooks() {
+                    local kind="$1"
+                    local json="$2"
+                    local cfg="$3"
+                    local require_webhooks="${4:-true}"
+
+                    echo "[scope] ${kind}/${cfg}"
+                    cfg_json="$(printf '%s' "${json}" | jq -c --arg cfg "${cfg}" '.items[] | select(.metadata.name == $cfg)')"
+                    if [ -z "${cfg_json}" ]; then
+                      echo "[scope] FAIL: missing ${kind}/${cfg}" >&2
+                      exit 1
+                    fi
+
+                    webhook_count="$(printf '%s' "${cfg_json}" | jq -r '(.webhooks // []) | length')"
+                    if [ "${webhook_count}" -lt 1 ]; then
+                      if [ "${require_webhooks}" = "true" ]; then
+                        echo "[scope] FAIL: ${kind}/${cfg} has no webhooks" >&2
+                        exit 1
+                      fi
+                      echo "[scope] ${kind}/${cfg} has no webhooks; skipping selector checks"
+                      return 0
+                    fi
+
+                    # Resource admission webhooks must be tenant-scoped via namespaceSelector (blast radius).
+                    bad_ns_selector="$(printf '%s' "${cfg_json}" | jq -r --arg k "${expected_ns_selector_key}" --arg v "${expected_ns_selector_value}" '
+                      [.webhooks[]
+                        | select((((.namespaceSelector // {}) | .matchLabels[$k]) // "") != $v)
+                        | .name] | join(",")
+                    ')"
+                    if [ -n "${bad_ns_selector}" ]; then
+                      echo "[scope] FAIL: ${kind}/${cfg} webhook(s) missing namespaceSelector.matchLabels (${expected_ns_selector_key}=${expected_ns_selector_value}): ${bad_ns_selector}" >&2
+                      exit 1
+                    fi
+
+                    # Exclude kube-system and policy-system explicitly (upgrade safety).
+                    missing_excludes="$(printf '%s' "${cfg_json}" | jq -r '
+                      [.webhooks[]
+                        | ((.namespaceSelector // {}) | .matchExpressions // []) as $me
+                        | ([ $me[]
+                            | select(.key == "kubernetes.io/metadata.name" and .operator == "NotIn")
+                            | (.values // [])
+                            | .[] ] | unique) as $vals
+                        | (["kube-system","policy-system"] - $vals) as $missing
+                        | select($missing | length > 0)
+                        | "\(.name):\($missing|@json)"
+                      ] | join(";")
+                    ')"
+                    if [ -n "${missing_excludes}" ]; then
+                      echo "[scope] FAIL: ${kind}/${cfg} missing namespaceSelector exclusions: ${missing_excludes}" >&2
+                      exit 1
+                    fi
+
+                    # Keep cluster-scoped blast radius low: matchConditions must be present and tenant-gated.
+                    missing_mc="$(printf '%s' "${cfg_json}" | jq -r '[.webhooks[] | select((.matchConditions // []) | length == 0) | .name] | join(",")')"
+                    if [ -n "${missing_mc}" ]; then
+                      echo "[scope] FAIL: ${kind}/${cfg} webhook(s) missing matchConditions: ${missing_mc}" >&2
+                      exit 1
+                    fi
+
+                    bad_mc="$(printf '%s' "${cfg_json}" | jq -r --arg frag "${expected_match_fragment}" --arg frag2 "${expected_match_fragment_ns}" --arg frag3 "${expected_match_fragment_label}" '
+                      [.webhooks[]
+                        | select((.matchConditions // []) | length > 0)
+                        | select((.matchConditions[0].expression // "") | (contains($frag) | not) or (contains($frag2) | not) or (contains($frag3) | not))
+                        | .name] | join(",")
+                    ')"
+                    if [ -n "${bad_mc}" ]; then
+                      echo "[scope] FAIL: ${kind}/${cfg} webhook(s) matchConditions[0].expression missing required tenant-only gate fragments: ${bad_mc}" >&2
+                      exit 1
+                    fi
+                  }
+
+                  check_non_resource_webhooks_not_tenant_scoped() {
+                    local kind="$1"
+                    local json="$2"
+                    local cfg="$3"
+                    cfg_json="$(printf '%s' "${json}" | jq -c --arg cfg "${cfg}" '.items[] | select(.metadata.name == $cfg)')"
+                    [ -n "${cfg_json}" ] || return 0
+
+                    bad="$(printf '%s' "${cfg_json}" | jq -r --arg k "${expected_ns_selector_key}" --arg v "${expected_ns_selector_value}" '
+                      [.webhooks[]
+                        | select((((.namespaceSelector // {}) | .matchLabels[$k]) // "") == $v)
+                        | .name] | join(",")
+                    ')"
+                    if [ -n "${bad}" ]; then
+                      echo "[scope] FAIL: ${kind}/${cfg} unexpectedly tenant-scoped via namespaceSelector (would break Kyverno admin-plane): ${bad}" >&2
+                      exit 1
+                    fi
+                  }
+
+                  check_resource_webhooks "ValidatingWebhookConfiguration" "${vwc_json}" "kyverno-resource-validating-webhook-cfg" "true"
+                  check_resource_webhooks "MutatingWebhookConfiguration" "${mwc_json}" "kyverno-resource-mutating-webhook-cfg" "false"
+
+                  # Non-resource Kyverno webhooks must remain usable for cluster-scoped Kyverno objects (policies, exceptions, etc.).
+                  check_non_resource_webhooks_not_tenant_scoped "ValidatingWebhookConfiguration" "${vwc_json}" "kyverno-policy-validating-webhook-cfg"
+                  check_non_resource_webhooks_not_tenant_scoped "MutatingWebhookConfiguration" "${mwc_json}" "kyverno-policy-mutating-webhook-cfg"
+                  check_non_resource_webhooks_not_tenant_scoped "ValidatingWebhookConfiguration" "${vwc_json}" "kyverno-exception-validating-webhook-cfg"
+                  check_non_resource_webhooks_not_tenant_scoped "ValidatingWebhookConfiguration" "${vwc_json}" "kyverno-cel-exception-validating-webhook-cfg"
+                  check_non_resource_webhooks_not_tenant_scoped "ValidatingWebhookConfiguration" "${vwc_json}" "kyverno-global-context-validating-webhook-cfg"
+                  check_non_resource_webhooks_not_tenant_scoped "MutatingWebhookConfiguration" "${mwc_json}" "kyverno-verify-mutating-webhook-cfg"
+
+                  cleanup_namespace() {
+                    local ns="$1"
+                    kubectl delete namespace "${ns}" --ignore-not-found >/dev/null 2>&1 || true
+                    if kubectl get namespace "${ns}" >/dev/null 2>&1; then
+                      kubectl wait --for=delete "namespace/${ns}" --timeout=120s || {
+                        echo "[cleanup] FAIL: namespace ${ns} did not delete in time" >&2
+                        kubectl get namespace "${ns}" -o json | jq '.spec.finalizers, .metadata.finalizers' || true
+                        exit 1
+                      }
+                    fi
+                  }
+
+                  keep_namespaces="${SMOKE_KEEP_NAMESPACES:-false}"
+                  cleanup_on_exit() {
+                    local exit_code=$?
+                    set +e
+                    if [ "${keep_namespaces}" = "true" ]; then
+                      echo "[cleanup] SMOKE_KEEP_NAMESPACES=true; leaving smoke namespaces behind for debugging"
+                      exit "${exit_code}"
+                    fi
+
+                    if [ "${exit_code}" -ne 0 ]; then
+                      echo "[debug] smoke failed (exit ${exit_code}); dumping smoke namespaces before cleanup"
+                      for ns in "${bad_ns}" "${ns_a}" "${ns_b}"; do
+                        if kubectl get namespace "${ns}" >/dev/null 2>&1; then
+                          echo "[debug] namespace ${ns}"
+                          kubectl -n "${ns}" get all -o wide || true
+                          kubectl -n "${ns}" get networkpolicies,resourcequotas,limitranges,policyexceptions.kyverno.io 2>/dev/null || true
+                          kubectl -n "${ns}" get events --sort-by=.lastTimestamp | tail -n 30 || true
+                        fi
+                      done
+                    fi
+
+                    echo "[cleanup] deleting smoke namespaces"
+                    cleanup_namespace "${bad_ns}"
+                    cleanup_namespace "${ns_a}"
+                    cleanup_namespace "${ns_b}"
+                    cleanup_namespace "${ns_backup}"
+                    exit "${exit_code}"
+                  }
+                  trap cleanup_on_exit EXIT
+
+                  cleanup_stale_namespaces() {
+                    local ttl_s="${SMOKE_STALE_NAMESPACE_TTL_SECONDS:-7200}"
+                    echo "[janitor] deleting stale policy-smoke namespaces older than ${ttl_s}s"
+                    kubectl get namespaces -o json \
+                      | jq -r '.items[].metadata.name' \
+                      | while IFS= read -r ns; do
+                          epoch="$(printf '%s' "${ns}" | sed -nE 's/^policy-smoke-(a|b|bad|backup)-([0-9]{10})-.*/\2/p')"
+                          [ -n "${epoch}" ] || continue
+                          age="$((now_epoch - epoch))"
+                          if [ "${age}" -gt "${ttl_s}" ]; then
+                            echo "[janitor] deleting stale namespace ${ns} (age=${age}s)"
+                            cleanup_namespace "${ns}"
+                          fi
+                        done
+                  }
+                  cleanup_stale_namespaces
+
+                  apply_capture() {
+                    local namespace="${1:-}"
+                    if [ -n "${namespace}" ]; then
+                      kubectl -n "${namespace}" apply -f - 2>&1 || true
+                    else
+                      kubectl apply -f - 2>&1 || true
+                    fi
+                  }
+
+                  echo "[a2] deny: tenant namespace missing project-id"
+                  cleanup_namespace "${bad_project_ns}"
+                  out="$(cat <<EOF | apply_capture
+                  apiVersion: v1
+                  kind: Namespace
+                  metadata:
+                    name: ${bad_project_ns}
+                    labels:
+                      darksite.cloud/rbac-profile: tenant
+                      darksite.cloud/tenant-id: ${tenant_id}
+                      observability.grafana.com/tenant: ${tenant_id}
+                  EOF
+                  )"
+                  printf '%s\n' "${out}"
+                  if printf '%s\n' "${out}" | grep -Eq "Tenant namespaces.*must set darksite.cloud/project-id"; then
+                    echo "[a2] OK: VAP denied tenant namespace missing project-id"
+                  else
+                    echo "[a2] FAIL: expected VAP denial message for missing project-id" >&2
+                    kubectl get namespace "${bad_project_ns}" -o yaml >/dev/null 2>&1 || true
+                    exit 1
+                  fi
+                  if kubectl get namespace "${bad_project_ns}" >/dev/null 2>&1; then
+                    echo "[a2] FAIL: invalid namespace exists even though admission claimed denial" >&2
+                    cleanup_namespace "${bad_project_ns}"
+                    exit 1
+                  fi
+
+                  echo "[a2] deny: tenant namespace invalid project-id"
+                  cleanup_namespace "${bad_project_value_ns}"
+                  out="$(cat <<EOF | apply_capture
+                  apiVersion: v1
+                  kind: Namespace
+                  metadata:
+                    name: ${bad_project_value_ns}
+                    labels:
+                      darksite.cloud/rbac-profile: tenant
+                      darksite.cloud/tenant-id: ${tenant_id}
+                      observability.grafana.com/tenant: ${tenant_id}
+                      darksite.cloud/project-id: Payments
+                  EOF
+                  )"
+                  printf '%s\n' "${out}"
+                  if printf '%s\n' "${out}" | grep -Eq "darksite.cloud/project-id must be a DNS label"; then
+                    echo "[a2] OK: VAP denied tenant namespace with invalid project-id"
+                  else
+                    echo "[a2] FAIL: expected VAP denial message for invalid project-id" >&2
+                    kubectl get namespace "${bad_project_value_ns}" -o yaml >/dev/null 2>&1 || true
+                    exit 1
+                  fi
+                  if kubectl get namespace "${bad_project_value_ns}" >/dev/null 2>&1; then
+                    echo "[a2] FAIL: invalid namespace exists even though admission claimed denial" >&2
+                    cleanup_namespace "${bad_project_value_ns}"
+                    exit 1
+                  fi
+
+                  echo "[a1] deny: tenant namespace missing labels"
+                  cleanup_namespace "${bad_ns}"
+                  out="$(cat <<EOF | apply_capture
+                  apiVersion: v1
+                  kind: Namespace
+                  metadata:
+                    name: ${bad_ns}
+                    labels:
+                      darksite.cloud/rbac-profile: tenant
+                      darksite.cloud/project-id: ${project_id}
+                      # darksite.cloud/tenant-id missing on purpose
+                      observability.grafana.com/tenant: ${tenant_id}
+                  EOF
+                  )"
+                  printf '%s\n' "${out}"
+                  if printf '%s\n' "${out}" | grep -Eq "Tenant namespaces.*must set darksite.cloud/tenant-id"; then
+                    echo "[a1] OK: VAP denied invalid tenant namespace"
+                  else
+                    echo "[a1] FAIL: expected VAP denial message" >&2
+                    kubectl get namespace "${bad_ns}" -o yaml >/dev/null 2>&1 || true
+                    exit 1
+                  fi
+                  if kubectl get namespace "${bad_ns}" >/dev/null 2>&1; then
+                    echo "[a1] FAIL: invalid namespace exists even though admission claimed denial" >&2
+                    cleanup_namespace "${bad_ns}"
+                    exit 1
+                  fi
+
+                  echo "[setup] creating tenant namespaces (A/B)"
+                  cleanup_namespace "${ns_a}"
+                  cleanup_namespace "${ns_b}"
+                  cleanup_namespace "${ns_backup}"
+                  for ns in "${ns_a}" "${ns_b}"; do
+                    kubectl apply -f - <<EOF
+                  apiVersion: v1
+                  kind: Namespace
+                  metadata:
+                    name: ${ns}
+                    labels:
+                      darksite.cloud/rbac-profile: tenant
+                      darksite.cloud/tenant-id: ${tenant_id}
+                      darksite.cloud/project-id: ${project_id}
+                      observability.grafana.com/tenant: ${tenant_id}
+                      darksite.cloud/smoke-run: ${run_id}
+                      darksite.cloud/smoke-role: $( [ "${ns}" = "${ns_a}" ] && echo a || echo b )
+                      istio-injection: disabled
+                      sidecar.istio.io/inject: "false"
+                  EOF
+                  done
+
+                  kubectl apply -f - <<EOF
+                  apiVersion: v1
+                  kind: Namespace
+                  metadata:
+                    name: ${ns_backup}
+                    labels:
+                      darksite.cloud/rbac-profile: tenant
+                      darksite.cloud/tenant-id: ${tenant_id}
+                      darksite.cloud/project-id: ${project_id}
+                      observability.grafana.com/tenant: ${tenant_id}
+                      darksite.cloud/backup-scope: enabled
+                      darksite.cloud/smoke-run: ${run_id}
+                      darksite.cloud/smoke-role: backup
+                      istio-injection: disabled
+                      sidecar.istio.io/inject: "false"
+                  EOF
+
+                  echo "[a2] deny: tenant identity label mutation (set-once immutability)"
+                  out="$(kubectl label namespace "${ns_a}" darksite.cloud/project-id=other --overwrite 2>&1 || true)"
+                  printf '%s\n' "${out}"
+                  if printf '%s\n' "${out}" | grep -Eq "set-once"; then
+                    echo "[a2] OK: VAP denied project-id mutation"
+                  else
+                    echo "[a2] FAIL: expected set-once immutability denial for project-id mutation" >&2
+                    exit 1
+                  fi
+                  out="$(kubectl label namespace "${ns_a}" darksite.cloud/tenant-id=other observability.grafana.com/tenant=other --overwrite 2>&1 || true)"
+                  printf '%s\n' "${out}"
+                  if printf '%s\n' "${out}" | grep -Eq "set-once"; then
+                    echo "[a2] OK: VAP denied tenant-id mutation"
+                  else
+                    echo "[a2] FAIL: expected set-once immutability denial for tenant-id mutation" >&2
+                    exit 1
+                  fi
+
+                  echo "[backup-scope] verifying tenant backup-scope egress to Garage S3 (network baseline compatibility)"
+                  for _ in {1..30}; do
+                    if kubectl -n "${ns_backup}" get networkpolicy tenant-allow-garage-s3-egress >/dev/null 2>&1; then
+                      break
+                    fi
+                    sleep 2
+                  done
+                  if ! kubectl -n "${ns_backup}" get networkpolicy tenant-allow-garage-s3-egress >/dev/null 2>&1; then
+                    echo "[backup-scope] FAIL: missing NetworkPolicy/tenant-allow-garage-s3-egress in ${ns_backup}" >&2
+                    kubectl -n "${ns_backup}" get networkpolicy -o wide || true
+                    exit 1
+                  fi
+
+                  garage_job="garage-s3-egress-${run_id}"
+                  kubectl -n "${ns_backup}" apply -f - <<EOF
+                  apiVersion: batch/v1
+                  kind: Job
+                  metadata:
+                    name: ${garage_job}
+                  spec:
+                    backoffLimit: 0
+                    activeDeadlineSeconds: 120
+                    ttlSecondsAfterFinished: 600
+                    template:
+                      metadata:
+                        annotations:
+                          sidecar.istio.io/inject: "false"
+                      spec:
+                        restartPolicy: Never
+                        securityContext:
+                          runAsNonRoot: true
+                          runAsUser: 1000
+                          seccompProfile:
+                            type: RuntimeDefault
+                        containers:
+                          - name: smoke
+                            image: ${tools_image}
+                            imagePullPolicy: IfNotPresent
+                            securityContext:
+                              allowPrivilegeEscalation: false
+                              capabilities:
+                                drop: ["ALL"]
+                            command:
+                              - /bin/bash
+                              - -lc
+                              - |
+                                set -euo pipefail
+                                python3 - <<'PY'
+                                import socket
+
+                                host = "garage.garage.svc"
+                                port = 3900
+                                s = socket.create_connection((host, port), timeout=5)
+                                s.sendall(b"HEAD / HTTP/1.1\\r\\nHost: garage\\r\\nConnection: close\\r\\n\\r\\n")
+                                data = s.recv(128)
+                                line = data.decode("utf-8", errors="replace").splitlines()[0] if data else "no response"
+                                print(line)
+                                s.close()
+                                PY
+                  EOF
+                  kubectl -n "${ns_backup}" wait --for=condition=complete "job/${garage_job}" --timeout=120s
+                  kubectl -n "${ns_backup}" logs "job/${garage_job}"
+                  echo "[backup-scope] OK: tenant backup-scope can reach Garage S3"
+
+                  echo "[secrets] deny: tenant namespaces cannot create ESO CRDs (secret projection is platform-owned)"
+
+                  expect_eso_deny() {
+                    local kind="$1"
+                    local out="$2"
+                    printf '%s\n' "${out}"
+                    if printf '%s\n' "${out}" | grep -Eqi "tenant-deny-external-secrets|deny-eso-crds|Tenant namespaces may not create External Secrets Operator resources|Tenant namespaces may not create ExternalSecret resources"; then
+                      echo "[secrets] OK: ${kind} denied"
+                      return 0
+                    fi
+                    echo "[secrets] FAIL: expected ${kind} denial" >&2
+                    exit 1
+                  }
+
+                  if kubectl get crd externalsecrets.external-secrets.io >/dev/null 2>&1; then
+                    out="$(cat <<EOF | apply_capture "${ns_a}"
+                  apiVersion: external-secrets.io/v1
+                  kind: ExternalSecret
+                  metadata:
+                    name: deny-me
+                  spec:
+                    refreshInterval: 1h
+                    secretStoreRef:
+                      kind: ClusterSecretStore
+                      name: vault-core
+                    target:
+                      name: projected-secret
+                    data:
+                      - secretKey: value
+                        remoteRef:
+                          key: secret/somewhere
+                          property: value
+                  EOF
+                    )"
+                    expect_eso_deny "ExternalSecret" "${out}"
+                  else
+                    echo "[secrets] skip ExternalSecret (CRD externalsecrets.external-secrets.io not present)"
+                  fi
+
+                  if kubectl get crd secretstores.external-secrets.io >/dev/null 2>&1; then
+                    out="$(cat <<EOF | apply_capture "${ns_a}"
+                  apiVersion: external-secrets.io/v1
+                  kind: SecretStore
+                  metadata:
+                    name: deny-me
+                  spec:
+                    provider:
+                      vault:
+                        server: http://vault.vault-system.svc:8200
+                        path: secret
+                        version: v2
+                        auth:
+                          kubernetes:
+                            serviceAccountRef:
+                              name: default
+                            mountPath: kubernetes
+                            role: external-secrets
+                  EOF
+                    )"
+                    expect_eso_deny "SecretStore" "${out}"
+                  else
+                    echo "[secrets] skip SecretStore (CRD secretstores.external-secrets.io not present)"
+                  fi
+
+                  if kubectl get crd pushsecrets.external-secrets.io >/dev/null 2>&1; then
+                    out="$(cat <<EOF | apply_capture "${ns_a}"
+                  apiVersion: external-secrets.io/v1alpha1
+                  kind: PushSecret
+                  metadata:
+                    name: deny-me
+                  spec:
+                    secretStoreRefs:
+                      - kind: ClusterSecretStore
+                        name: vault-core
+                    selector:
+                      secret:
+                        name: dummy-secret
+                  EOF
+                    )"
+                    expect_eso_deny "PushSecret" "${out}"
+                  else
+                    echo "[secrets] skip PushSecret (CRD pushsecrets.external-secrets.io not present)"
+                  fi
+
+                  echo "[data] deny: tenant namespaces cannot create CNPG resources directly"
+
+                  expect_cnpg_deny() {
+                    local kind="$1"
+                    local out="$2"
+                    printf '%s\n' "${out}"
+                    if printf '%s\n' "${out}" | grep -Eqi "tenant-deny-cnpg|deny-cnpg-apis|Tenant namespaces may not create CloudNativePG resources directly"; then
+                      echo "[data] OK: ${kind} denied"
+                      return 0
+                    fi
+                    echo "[data] FAIL: expected ${kind} denial" >&2
+                    exit 1
+                  }
+
+                  if kubectl get crd clusters.postgresql.cnpg.io >/dev/null 2>&1; then
+                    out="$(cat <<EOF | apply_capture "${ns_a}"
+                  apiVersion: postgresql.cnpg.io/v1
+                  kind: Cluster
+                  metadata:
+                    name: deny-me
+                  spec:
+                    instances: 1
+                    storage:
+                      size: 1Gi
+                  EOF
+                    )"
+                    expect_cnpg_deny "Cluster" "${out}"
+                  else
+                    echo "[data] skip Cluster (CRD clusters.postgresql.cnpg.io not present)"
+                  fi
+
+                  wait_for_resource() {
+                    local ns="$1"
+                    local kind="$2"
+                    local name="$3"
+                    local timeout_s="$4"
+                    local start
+                    start="$(date -u +%s)"
+                    while true; do
+                      if kubectl -n "${ns}" get "${kind}" "${name}" >/dev/null 2>&1; then
+                        return 0
+                      fi
+                      local now
+                      now="$(date -u +%s)"
+                      if [ $((now - start)) -ge "${timeout_s}" ]; then
+                        echo "[wait] FAIL: ${kind}/${name} not present in ${ns} after ${timeout_s}s" >&2
+                        kubectl -n "${ns}" get all || true
+                        kubectl -n "${ns}" get networkpolicies,resourcequotas,limitranges || true
+                        exit 1
+                      fi
+                      sleep 2
+                    done
+                  }
+
+                  echo "[baseline] waiting for Kyverno-generated baseline resources (B/C)"
+                  for ns in "${ns_a}" "${ns_b}"; do
+                    wait_for_resource "${ns}" networkpolicy tenant-default-deny 120
+                    wait_for_resource "${ns}" networkpolicy tenant-allow-same-namespace 120
+                    wait_for_resource "${ns}" networkpolicy tenant-allow-dns-egress 120
+                    wait_for_resource "${ns}" resourcequota tenant-quota 120
+                    wait_for_resource "${ns}" limitrange tenant-default-limits 120
+                  done
+
+                  echo "[c1] deny: ResourceQuota requests.cpu=2 denies the 3rd pod with requests.cpu=1"
+                  kubectl -n "${ns_a}" delete pod quota-pod-1 quota-pod-2 quota-pod-3 --ignore-not-found --wait=true --timeout=60s || true
+                  for i in 1 2; do
+                    kubectl -n "${ns_a}" apply -f - <<EOF
+                  apiVersion: v1
+                  kind: Pod
+                  metadata:
+                    name: quota-pod-${i}
+                  spec:
+                    securityContext:
+                      runAsNonRoot: true
+                      runAsUser: 1000
+                      runAsGroup: 1000
+                      seccompProfile:
+                        type: RuntimeDefault
+                    containers:
+                      - name: c
+                        image: ${tools_image}
+                        imagePullPolicy: IfNotPresent
+                        command: ["/bin/bash","-lc","sleep 3600"]
+                        securityContext:
+                          allowPrivilegeEscalation: false
+                          capabilities:
+                            drop: ["ALL"]
+                        resources:
+                          requests:
+                            cpu: "1"
+                            memory: 128Mi
+                          limits:
+                            memory: 256Mi
+                  EOF
+                  done
+                  kubectl -n "${ns_a}" get pod quota-pod-1 quota-pod-2 >/dev/null
+                  out="$(cat <<EOF | apply_capture "${ns_a}"
+                  apiVersion: v1
+                  kind: Pod
+                  metadata:
+                    name: quota-pod-3
+                  spec:
+                    securityContext:
+                      runAsNonRoot: true
+                      runAsUser: 1000
+                      runAsGroup: 1000
+                      seccompProfile:
+                        type: RuntimeDefault
+                    containers:
+                      - name: c
+                        image: ${tools_image}
+                        imagePullPolicy: IfNotPresent
+                        command: ["/bin/bash","-lc","sleep 3600"]
+                        securityContext:
+                          allowPrivilegeEscalation: false
+                          capabilities:
+                            drop: ["ALL"]
+                        resources:
+                          requests:
+                            cpu: "1"
+                            memory: 128Mi
+                          limits:
+                            memory: 256Mi
+                  EOF
+                  )"
+                  printf '%s\n' "${out}"
+                  if printf '%s\n' "${out}" | grep -Eqi "exceeded quota|forbidden: exceeded quota"; then
+                    echo "[c1] OK: quota denied as expected"
+                  else
+                    echo "[c1] FAIL: expected quota denial" >&2
+                    exit 1
+                  fi
+                  kubectl -n "${ns_a}" delete pod quota-pod-1 quota-pod-2 --ignore-not-found --wait=true --timeout=120s
+
+                  echo "[c2] allow: pod without resources is defaulted by LimitRange"
+                  kubectl -n "${ns_a}" delete pod defaulted-pod --ignore-not-found --wait=true --timeout=60s || true
+                  kubectl -n "${ns_a}" apply -f - <<EOF
+                  apiVersion: v1
+                  kind: Pod
+                  metadata:
+                    name: defaulted-pod
+                  spec:
+                    securityContext:
+                      runAsNonRoot: true
+                      runAsUser: 1000
+                      runAsGroup: 1000
+                      seccompProfile:
+                        type: RuntimeDefault
+                    containers:
+                      - name: c
+                        image: ${tools_image}
+                        imagePullPolicy: IfNotPresent
+                        command: ["/bin/bash","-lc","sleep 3600"]
+                        securityContext:
+                          allowPrivilegeEscalation: false
+                          capabilities:
+                            drop: ["ALL"]
+                  EOF
+                  kubectl -n "${ns_a}" wait --for=condition=Ready pod/defaulted-pod --timeout=120s
+                  req_cpu="$(kubectl -n "${ns_a}" get pod defaulted-pod -o jsonpath='{.spec.containers[0].resources.requests.cpu}')"
+                  req_mem="$(kubectl -n "${ns_a}" get pod defaulted-pod -o jsonpath='{.spec.containers[0].resources.requests.memory}')"
+                  lim_cpu="$(kubectl -n "${ns_a}" get pod defaulted-pod -o jsonpath='{.spec.containers[0].resources.limits.cpu}')"
+                  lim_mem="$(kubectl -n "${ns_a}" get pod defaulted-pod -o jsonpath='{.spec.containers[0].resources.limits.memory}')"
+                  if [ "${req_cpu}" != "100m" ] || [ "${req_mem}" != "128Mi" ] || [ "${lim_mem}" != "512Mi" ] || [ -n "${lim_cpu}" ]; then
+                    echo "[c2] FAIL: expected LimitRange defaults req.cpu=100m req.mem=128Mi lim.mem=512Mi (no lim.cpu); got req.cpu=${req_cpu} req.mem=${req_mem} lim.cpu=${lim_cpu} lim.mem=${lim_mem}" >&2
+                    exit 1
+                  fi
+                  kubectl -n "${ns_a}" delete pod defaulted-pod --ignore-not-found --wait=true --timeout=120s
+
+                  echo "[workloads] creating server in ns_b (ClusterIP service)"
+                  kubectl -n "${ns_b}" apply -f - <<EOF
+                  apiVersion: v1
+                  kind: Pod
+                  metadata:
+                    name: smoke-server
+                    labels:
+                      app: smoke-server
+                  spec:
+                    securityContext:
+                      runAsNonRoot: true
+                      runAsUser: 1000
+                      runAsGroup: 1000
+                      seccompProfile:
+                        type: RuntimeDefault
+                    containers:
+                      - name: server
+                        image: ${tools_image}
+                        imagePullPolicy: IfNotPresent
+                        command: ["/bin/bash","-lc","python3 -m http.server 8080 --bind 0.0.0.0"]
+                        ports:
+                          - containerPort: 8080
+                        securityContext:
+                          allowPrivilegeEscalation: false
+                          capabilities:
+                            drop: ["ALL"]
+                        resources:
+                          requests:
+                            cpu: 100m
+                            memory: 128Mi
+                          limits:
+                            memory: 256Mi
+                  EOF
+                  kubectl -n "${ns_b}" wait --for=condition=Ready pod/smoke-server --timeout=120s
+
+                  kubectl -n "${ns_b}" apply -f - <<EOF
+                  apiVersion: v1
+                  kind: Service
+                  metadata:
+                    name: smoke-server
+                  spec:
+                    selector:
+                      app: smoke-server
+                    ports:
+                      - name: http
+                        port: 8080
+                        targetPort: 8080
+                  EOF
+
+                  echo "[workloads] creating clients (ns_a and ns_b)"
+                  for ns in "${ns_a}" "${ns_b}"; do
+                    kubectl -n "${ns}" apply -f - <<EOF
+                  apiVersion: v1
+                  kind: Pod
+                  metadata:
+                    name: smoke-client
+                    labels:
+                      app: smoke-client
+                  spec:
+                    securityContext:
+                      runAsNonRoot: true
+                      runAsUser: 1000
+                      runAsGroup: 1000
+                      seccompProfile:
+                        type: RuntimeDefault
+                    containers:
+                      - name: client
+                        image: ${tools_image}
+                        imagePullPolicy: IfNotPresent
+                        command: ["/bin/bash","-lc","sleep 3600"]
+                        securityContext:
+                          allowPrivilegeEscalation: false
+                          capabilities:
+                            drop: ["ALL"]
+                        resources:
+                          requests:
+                            cpu: 100m
+                            memory: 128Mi
+                          limits:
+                            memory: 256Mi
+                  EOF
+                    kubectl -n "${ns}" wait --for=condition=Ready pod/smoke-client --timeout=120s
+                  done
+
+                  server_fqdn="smoke-server.${ns_b}.svc.cluster.local"
+
+                  echo "[b1] allow: same-namespace curl must succeed"
+                  kubectl -n "${ns_b}" exec smoke-client -- curl -fsS "http://${server_fqdn}:8080/" >/dev/null
+
+                  echo "[b1] allow: DNS lookup must succeed (tenant-allow-dns-egress)"
+                  kubectl -n "${ns_b}" exec smoke-client -- /bin/bash -lc 'if command -v getent >/dev/null 2>&1; then getent hosts kubernetes.default.svc.cluster.local; elif command -v nslookup >/dev/null 2>&1; then nslookup kubernetes.default.svc.cluster.local; else echo missing-dns-tool >&2; exit 1; fi' | grep -Eq .
+
+                  echo "[egress] waiting for platform egress proxy (${tenant_id}/${project_id})"
+                  egress_ns="egress-${tenant_id}"
+                  egress_deploy="egress-proxy-p-${project_id}"
+                  if ! kubectl -n "${egress_ns}" get deploy "${egress_deploy}" >/dev/null 2>&1; then
+                    echo "[egress] FAIL: missing Deployment ${egress_ns}/${egress_deploy} (is components/networking/egress-proxy deployed?)" >&2
+                    kubectl -n "${egress_ns}" get all -o wide >&2 || true
+                    exit 1
+                  fi
+                  kubectl -n "${egress_ns}" rollout status "deploy/${egress_deploy}" --timeout=180s
+                  proxy_url="http://${egress_deploy}.${egress_ns}.svc.cluster.local:3128"
+
+                  echo "[b1] deny: direct internet egress must fail (default-deny)"
+                  if kubectl -n "${ns_b}" exec smoke-client -- curl -m 10 -fsS http://example.com >/dev/null 2>&1; then
+                    echo "[b1] FAIL: expected direct internet egress denial" >&2
+                    exit 1
+                  fi
+                  echo "[b1] OK: direct internet egress denied"
+
+                  echo "[b1] allow: apply tenant NetworkPolicy allowing egress to the proxy"
+                  out="$(cat <<EOF | apply_capture "${ns_b}"
+                  apiVersion: networking.k8s.io/v1
+                  kind: NetworkPolicy
+                  metadata:
+                    name: smoke-allow-egress-proxy
+                  spec:
+                    podSelector:
+                      matchLabels:
+                        app: smoke-client
+                    policyTypes: ["Egress"]
+                    egress:
+                      - to:
+                          - namespaceSelector:
+                              matchLabels:
+                                darksite.cloud/rbac-profile: platform
+                                darksite.cloud/tenant-id: ${tenant_id}
+                            podSelector:
+                              matchLabels:
+                                app.kubernetes.io/name: egress-proxy
+                                darksite.cloud/tenant-id: ${tenant_id}
+                                darksite.cloud/project-id: ${project_id}
+                          - namespaceSelector:
+                              matchLabels:
+                                darksite.cloud/rbac-profile: platform
+                                darksite.cloud/tenant-id: ${tenant_id}
+                            podSelector:
+                              matchLabels:
+                                app.kubernetes.io/name: egress-proxy
+                                deploykube.dev/tenant-id: ${tenant_id}
+                                deploykube.dev/project-id: ${project_id}
+                        ports:
+                          - protocol: TCP
+                            port: 3128
+                  EOF
+                  )"
+                  printf '%s\n' "${out}"
+                  wait_for_resource "${ns_b}" networkpolicy smoke-allow-egress-proxy 120
+
+                  echo "[b1] allow: internet egress via proxy to allowlisted domain must succeed"
+                  kubectl -n "${ns_b}" exec smoke-client -- curl -m 20 -fsS -x "${proxy_url}" http://example.com >/dev/null
+
+                  echo "[b1] deny: internet egress via proxy to non-allowlisted domain must fail"
+                  if kubectl -n "${ns_b}" exec smoke-client -- curl -m 20 -fsS -x "${proxy_url}" http://example.net >/dev/null 2>&1; then
+                    echo "[b1] FAIL: expected proxy allowlist to deny example.net" >&2
+                    exit 1
+                  fi
+                  echo "[b1] OK: proxy allowlist enforced"
+
+                  echo "[b1] deny: cross-namespace curl must fail (default-deny)"
+                  out="$(
+                    kubectl -n "${ns_a}" exec smoke-client -- curl -m 3 -fsS "http://${server_fqdn}:8080/" 2>&1 || true
+                  )"
+                  printf '%s\n' "${out}"
+                  if printf '%s\n' "${out}" | grep -Eq "Connection timed out|timed out|Could not resolve host|Failed to connect"; then
+                    echo "[b1] OK: cross-namespace denied"
+                  else
+                    echo "[b1] FAIL: expected cross-namespace traffic denial" >&2
+                    exit 1
+                  fi
+
+                  echo "[b1] deny: NetworkPolicy ipBlock is denied (tenant posture: no ipBlock)"
+                  out="$(cat <<EOF | apply_capture "${ns_a}"
+                  apiVersion: networking.k8s.io/v1
+                  kind: NetworkPolicy
+                  metadata:
+                    name: smoke-bad-ipblock
+                  spec:
+                    podSelector: {}
+                    policyTypes: ["Egress"]
+                    egress:
+                      - to:
+                          - ipBlock:
+                              cidr: 0.0.0.0/0
+                  EOF
+                  )"
+                  printf '%s\n' "${out}"
+                  if printf '%s\n' "${out}" | grep -Eqi "denied|forbidden|admission"; then
+                    echo "[b1] OK: ipBlock denied"
+                  else
+                    echo "[b1] FAIL: expected ipBlock admission denial" >&2
+                    exit 1
+                  fi
+                  if kubectl -n "${ns_a}" get networkpolicy smoke-bad-ipblock >/dev/null 2>&1; then
+                    echo "[b1] FAIL: NetworkPolicy/smoke-bad-ipblock exists even though admission claimed denial" >&2
+                    kubectl -n "${ns_a}" delete networkpolicy smoke-bad-ipblock --ignore-not-found >/dev/null 2>&1 || true
+                    exit 1
+                  fi
+
+                  echo "[b1] deny: NetworkPolicy empty peer {} is denied (matches all namespaces)"
+                  out="$(cat <<EOF | apply_capture "${ns_a}"
+                  apiVersion: networking.k8s.io/v1
+                  kind: NetworkPolicy
+                  metadata:
+                    name: smoke-bad-empty-peer
+                  spec:
+                    podSelector: {}
+                    policyTypes: ["Egress"]
+                    egress:
+                      - to:
+                          - {}
+                        ports:
+                          - protocol: TCP
+                            port: 8080
+                  EOF
+                  )"
+                  printf '%s\n' "${out}"
+                  if printf '%s\n' "${out}" | grep -Eqi "must specify a peer|empty peers|blocked due to the following policies|admission|denied|forbidden"; then
+                    echo "[b1] OK: empty peer denied"
+                  else
+                    echo "[b1] FAIL: expected empty peer rejection (API validation or admission denial)" >&2
+                    exit 1
+                  fi
+                  if kubectl -n "${ns_a}" get networkpolicy smoke-bad-empty-peer >/dev/null 2>&1; then
+                    echo "[b1] FAIL: NetworkPolicy/smoke-bad-empty-peer exists even though admission claimed denial" >&2
+                    kubectl -n "${ns_a}" delete networkpolicy smoke-bad-empty-peer --ignore-not-found >/dev/null 2>&1 || true
+                    exit 1
+                  fi
+
+                  echo "[b1] deny: NetworkPolicy namespaceSelector {} is denied (unbounded cross-namespace selector)"
+                  out="$(cat <<EOF | apply_capture "${ns_a}"
+                  apiVersion: networking.k8s.io/v1
+                  kind: NetworkPolicy
+                  metadata:
+                    name: smoke-bad-empty-nsselector
+                  spec:
+                    podSelector: {}
+                    policyTypes: ["Egress"]
+                    egress:
+                      - to:
+                          - namespaceSelector: {}
+                            podSelector:
+                              matchLabels:
+                                app: smoke-server
+                        ports:
+                          - protocol: TCP
+                            port: 8080
+                  EOF
+                  )"
+                  printf '%s\n' "${out}"
+                  if printf '%s\n' "${out}" | grep -Eqi "namespaceSelector|admission|denied"; then
+                    echo "[b1] OK: empty namespaceSelector denied"
+                  else
+                    echo "[b1] FAIL: expected empty namespaceSelector admission denial" >&2
+                    exit 1
+                  fi
+                  if kubectl -n "${ns_a}" get networkpolicy smoke-bad-empty-nsselector >/dev/null 2>&1; then
+                    echo "[b1] FAIL: NetworkPolicy/smoke-bad-empty-nsselector exists even though admission claimed denial" >&2
+                    kubectl -n "${ns_a}" delete networkpolicy smoke-bad-empty-nsselector --ignore-not-found >/dev/null 2>&1 || true
+                    exit 1
+                  fi
+
+                  echo "[b1] deny: NetworkPolicy cross-namespace peer missing tenant-id is denied"
+                  out="$(cat <<EOF | apply_capture "${ns_a}"
+                  apiVersion: networking.k8s.io/v1
+                  kind: NetworkPolicy
+                  metadata:
+                    name: smoke-bad-missing-tenant-id
+                  spec:
+                    podSelector:
+                      matchLabels:
+                        app: smoke-client
+                    policyTypes: ["Egress"]
+                    egress:
+                      - to:
+                          - namespaceSelector:
+                              matchLabels:
+                                darksite.cloud/smoke-run: ${run_id}
+                                darksite.cloud/smoke-role: b
+                            podSelector:
+                              matchLabels:
+                                app: smoke-server
+                        ports:
+                          - protocol: TCP
+                            port: 8080
+                  EOF
+                  )"
+                  printf '%s\n' "${out}"
+                  if printf '%s\n' "${out}" | grep -Eqi "tenant-id|tenant|admission|denied"; then
+                    echo "[b1] OK: missing tenant-id denied"
+                  else
+                    echo "[b1] FAIL: expected tenant-id scoping admission denial" >&2
+                    exit 1
+                  fi
+                  if kubectl -n "${ns_a}" get networkpolicy smoke-bad-missing-tenant-id >/dev/null 2>&1; then
+                    echo "[b1] FAIL: NetworkPolicy/smoke-bad-missing-tenant-id exists even though admission claimed denial" >&2
+                    kubectl -n "${ns_a}" delete networkpolicy smoke-bad-missing-tenant-id --ignore-not-found >/dev/null 2>&1 || true
+                    exit 1
+                  fi
+
+                  echo "[b1] deny: NetworkPolicy cross-namespace peer with other tenant-id is denied"
+                  out="$(cat <<EOF | apply_capture "${ns_a}"
+                  apiVersion: networking.k8s.io/v1
+                  kind: NetworkPolicy
+                  metadata:
+                    name: smoke-bad-other-tenant-id
+                  spec:
+                    podSelector:
+                      matchLabels:
+                        app: smoke-client
+                    policyTypes: ["Egress"]
+                    egress:
+                      - to:
+                          - namespaceSelector:
+                              matchLabels:
+                                darksite.cloud/tenant-id: other
+                                darksite.cloud/smoke-run: ${run_id}
+                                darksite.cloud/smoke-role: b
+                            podSelector:
+                              matchLabels:
+                                app: smoke-server
+                        ports:
+                          - protocol: TCP
+                            port: 8080
+                  EOF
+                  )"
+                  printf '%s\n' "${out}"
+                  if printf '%s\n' "${out}" | grep -Eqi "tenant-id|tenant|admission|denied"; then
+                    echo "[b1] OK: other tenant-id denied"
+                  else
+                    echo "[b1] FAIL: expected other-tenant-id admission denial" >&2
+                    exit 1
+                  fi
+                  if kubectl -n "${ns_a}" get networkpolicy smoke-bad-other-tenant-id >/dev/null 2>&1; then
+                    echo "[b1] FAIL: NetworkPolicy/smoke-bad-other-tenant-id exists even though admission claimed denial" >&2
+                    kubectl -n "${ns_a}" delete networkpolicy smoke-bad-other-tenant-id --ignore-not-found >/dev/null 2>&1 || true
+                    exit 1
+                  fi
+
+                  echo "[b1] deny: NetworkPolicy cross-namespace peer with empty podSelector is denied"
+                  out="$(cat <<EOF | apply_capture "${ns_a}"
+                  apiVersion: networking.k8s.io/v1
+                  kind: NetworkPolicy
+                  metadata:
+                    name: smoke-bad-empty-podselector
+                  spec:
+                    podSelector:
+                      matchLabels:
+                        app: smoke-client
+                    policyTypes: ["Egress"]
+                    egress:
+                      - to:
+                          - namespaceSelector:
+                              matchLabels:
+                                darksite.cloud/tenant-id: ${tenant_id}
+                                darksite.cloud/smoke-run: ${run_id}
+                                darksite.cloud/smoke-role: b
+                            podSelector: {}
+                        ports:
+                          - protocol: TCP
+                            port: 8080
+                  EOF
+                  )"
+                  printf '%s\n' "${out}"
+                  if printf '%s\n' "${out}" | grep -Eqi "podSelector|pod-scoped|admission|denied"; then
+                    echo "[b1] OK: empty podSelector denied"
+                  else
+                    echo "[b1] FAIL: expected empty podSelector admission denial" >&2
+                    exit 1
+                  fi
+                  if kubectl -n "${ns_a}" get networkpolicy smoke-bad-empty-podselector >/dev/null 2>&1; then
+                    echo "[b1] FAIL: NetworkPolicy/smoke-bad-empty-podselector exists even though admission claimed denial" >&2
+                    kubectl -n "${ns_a}" delete networkpolicy smoke-bad-empty-podselector --ignore-not-found >/dev/null 2>&1 || true
+                    exit 1
+                  fi
+
+                  echo "[b2] allow: apply explicit egress/ingress NetworkPolicies then cross-namespace curl must succeed"
+                  kubectl -n "${ns_a}" apply -f - <<EOF
+                  apiVersion: networking.k8s.io/v1
+                  kind: NetworkPolicy
+                  metadata:
+                    name: smoke-allow-cross-egress
+                  spec:
+                    podSelector:
+                      matchLabels:
+                        app: smoke-client
+                    policyTypes: ["Egress"]
+                    egress:
+                      - to:
+                          - namespaceSelector:
+                              matchLabels:
+                                darksite.cloud/tenant-id: ${tenant_id}
+                                darksite.cloud/project-id: ${project_id}
+                                darksite.cloud/smoke-run: ${run_id}
+                                darksite.cloud/smoke-role: b
+                            podSelector:
+                              matchLabels:
+                                app: smoke-server
+                        ports:
+                          - protocol: TCP
+                            port: 8080
+                  EOF
+                  kubectl -n "${ns_b}" apply -f - <<EOF
+                  apiVersion: networking.k8s.io/v1
+                  kind: NetworkPolicy
+                  metadata:
+                    name: smoke-allow-cross-ingress
+                  spec:
+                    podSelector:
+                      matchLabels:
+                        app: smoke-server
+                    policyTypes: ["Ingress"]
+                    ingress:
+                      - from:
+                          - namespaceSelector:
+                              matchLabels:
+                                darksite.cloud/tenant-id: ${tenant_id}
+                                darksite.cloud/project-id: ${project_id}
+                                darksite.cloud/smoke-run: ${run_id}
+                                darksite.cloud/smoke-role: a
+                            podSelector:
+                              matchLabels:
+                                app: smoke-client
+                        ports:
+                          - protocol: TCP
+                            port: 8080
+                  EOF
+
+                  kubectl -n "${ns_a}" exec smoke-client -- curl -m 5 -fsS "http://${server_fqdn}:8080/" >/dev/null
+
+                  echo "[c3] deny: pod exceeding per-container max is denied (LimitRange max memory=4Gi)"
+                  out="$(cat <<EOF | apply_capture "${ns_a}"
+                  apiVersion: v1
+                  kind: Pod
+                  metadata:
+                    name: maxcpu-pod
+                  spec:
+                    securityContext:
+                      runAsNonRoot: true
+                      runAsUser: 1000
+                      runAsGroup: 1000
+                      seccompProfile:
+                        type: RuntimeDefault
+                    containers:
+                      - name: c
+                        image: ${tools_image}
+                        imagePullPolicy: IfNotPresent
+                        command: ["/bin/bash","-lc","sleep 3600"]
+                        securityContext:
+                          allowPrivilegeEscalation: false
+                          capabilities:
+                            drop: ["ALL"]
+                        resources:
+                          limits:
+                            memory: 5Gi
+                  EOF
+                  )"
+                  printf '%s\n' "${out}"
+                  if printf '%s\n' "${out}" | grep -Eqi "maximum|LimitRange"; then
+                    echo "[c3] OK: limitrange denied as expected"
+                  else
+                    echo "[c3] FAIL: expected limitrange denial" >&2
+                    exit 1
+                  fi
+
+                  echo "[d1] deny: hostNetwork pod is denied (Kyverno and/or Pod Security Admission)"
+                  out="$(cat <<EOF | apply_capture "${ns_a}"
+                  apiVersion: v1
+                  kind: Pod
+                  metadata:
+                    name: hostnetwork-pod
+                  spec:
+                    hostNetwork: true
+                    securityContext:
+                      runAsNonRoot: true
+                      runAsUser: 1000
+                      runAsGroup: 1000
+                      seccompProfile:
+                        type: RuntimeDefault
+                    containers:
+                      - name: c
+                        image: ${tools_image}
+                        imagePullPolicy: IfNotPresent
+                        command: ["/bin/bash","-lc","sleep 3600"]
+                        securityContext:
+                          allowPrivilegeEscalation: false
+                          capabilities:
+                            drop: ["ALL"]
+                  EOF
+                  )"
+                  printf '%s\n' "${out}"
+                  if printf '%s\n' "${out}" | grep -Eqi "tenant-baseline-security|Pod Security Standards|PodSecurity"; then
+                    echo "[d1] OK: hostNetwork denied"
+                  else
+                    echo "[d1] FAIL: expected denial for hostNetwork" >&2
+                    exit 1
+                  fi
+
+                  echo "[d1] deny: Deployment-level enforcement is present (controller coverage)"
+                  out="$(cat <<EOF | apply_capture "${ns_a}"
+                  apiVersion: apps/v1
+                  kind: Deployment
+                  metadata:
+                    name: hostnetwork-deploy
+                  spec:
+                    replicas: 1
+                    selector:
+                      matchLabels:
+                        app: hostnetwork-deploy
+                    template:
+                      metadata:
+                        labels:
+                          app: hostnetwork-deploy
+                      spec:
+                        hostNetwork: true
+                        securityContext:
+                          runAsNonRoot: true
+                          runAsUser: 1000
+                          runAsGroup: 1000
+                          seccompProfile:
+                            type: RuntimeDefault
+                        containers:
+                          - name: c
+                            image: ${tools_image}
+                            imagePullPolicy: IfNotPresent
+                            command: ["/bin/bash","-lc","sleep 3600"]
+                            securityContext:
+                              allowPrivilegeEscalation: false
+                              capabilities:
+                                drop: ["ALL"]
+                            resources:
+                              requests:
+                                cpu: 100m
+                                memory: 128Mi
+                              limits:
+                                memory: 256Mi
+                  EOF
+                  )"
+                  printf '%s\n' "${out}"
+                  if printf '%s\n' "${out}" | grep -Eqi "tenant-baseline-security|Pod Security Standards"; then
+                    echo "[d1] OK: Kyverno enforced on Deployment"
+                  else
+                    echo "[d1] FAIL: expected Kyverno denial for Deployment hostNetwork (controller coverage)" >&2
+                    exit 1
+                  fi
+
+                  echo "[e1] deny: Service type LoadBalancer is denied"
+                  out="$(cat <<EOF | apply_capture "${ns_a}"
+                  apiVersion: v1
+                  kind: Service
+                  metadata:
+                    name: lb-service
+                  spec:
+                    type: LoadBalancer
+                    selector:
+                      app: smoke-client
+                    ports:
+                      - name: http
+                        port: 80
+                        targetPort: 8080
+                  EOF
+                  )"
+                  printf '%s\n' "${out}"
+                  if printf '%s\n' "${out}" | grep -Eqi "tenant-baseline-service-types|NodePort|LoadBalancer"; then
+                    echo "[e1] OK: Kyverno denied LoadBalancer"
+                  else
+                    echo "[e1] FAIL: expected Kyverno denial for LoadBalancer service" >&2
+                    exit 1
+                  fi
+
+                  echo "[ingress] deny: tenants cannot create Gateway resources"
+                  out="$(cat <<EOF | apply_capture "${ns_a}"
+                  apiVersion: gateway.networking.k8s.io/v1
+                  kind: Gateway
+                  metadata:
+                    name: tenant-gateway
+                  spec:
+                    gatewayClassName: istio
+                    listeners:
+                      - name: https
+                        port: 443
+                        protocol: HTTPS
+                        tls:
+                          mode: Terminate
+                          certificateRefs:
+                            - name: dummy-tls
+                        allowedRoutes:
+                          namespaces:
+                            from: Same
+                  EOF
+                  )"
+                  printf '%s\n' "${out}"
+                  if printf '%s\n' "${out}" | grep -Eqi "tenant-ingress-gateway-api-guardrails|Tenants may not create Gateway"; then
+                    echo "[ingress] OK: Gateway denied"
+                  else
+                    echo "[ingress] FAIL: expected Kyverno denial for Gateway" >&2
+                    exit 1
+                  fi
+
+                  echo "[ingress] deny: tenants cannot create ReferenceGrant (cross-namespace escape hatch)"
+                  out="$(cat <<EOF | apply_capture "${ns_a}"
+                  apiVersion: gateway.networking.k8s.io/v1beta1
+                  kind: ReferenceGrant
+                  metadata:
+                    name: tenant-refgrant
+                  spec:
+                    from:
+                      - group: gateway.networking.k8s.io
+                        kind: HTTPRoute
+                        namespace: ${ns_a}
+                    to:
+                      - group: ""
+                        kind: Service
+                  EOF
+                  )"
+                  printf '%s\n' "${out}"
+                  if printf '%s\n' "${out}" | grep -Eqi "tenant-ingress-gateway-api-guardrails|ReferenceGrant"; then
+                    echo "[ingress] OK: ReferenceGrant denied"
+                  else
+                    echo "[ingress] FAIL: expected Kyverno denial for ReferenceGrant" >&2
+                    exit 1
+                  fi
+
+                  echo "[ingress] deny: HTTPRoute attachment to Gateway/public-gateway is denied"
+                  out="$(cat <<EOF | apply_capture "${ns_a}"
+                  apiVersion: gateway.networking.k8s.io/v1
+                  kind: HTTPRoute
+                  metadata:
+                    name: hijack-public-gateway
+                  spec:
+                    hostnames:
+                      - app.${tenant_id}.workloads.${base_domain}
+                    parentRefs:
+                      - name: public-gateway
+                        namespace: istio-system
+                        sectionName: http
+                    rules:
+                      - backendRefs:
+                          - name: smoke-server
+                            port: 8080
+                  EOF
+                  )"
+                  printf '%s\n' "${out}"
+                  if printf '%s\n' "${out}" | grep -Eqi "tenant-ingress-gateway-api-guardrails|public-gateway"; then
+                    echo "[ingress] OK: public-gateway parentRef denied"
+                  else
+                    echo "[ingress] FAIL: expected Kyverno denial for HTTPRoute parentRef public-gateway" >&2
+                    exit 1
+                  fi
+
+                  echo "[ingress] deny: HTTPRoute attachment to other tenant gateways is denied"
+                  out="$(cat <<EOF | apply_capture "${ns_a}"
+                  apiVersion: gateway.networking.k8s.io/v1
+                  kind: HTTPRoute
+                  metadata:
+                    name: hijack-other-tenant-gateway
+                  spec:
+                    hostnames:
+                      - app.${tenant_id}.workloads.${base_domain}
+                    parentRefs:
+                      - name: tenant-other-gateway
+                        namespace: istio-system
+                        sectionName: http
+                    rules:
+                      - backendRefs:
+                          - name: smoke-server
+                            port: 8080
+                  EOF
+                  )"
+                  printf '%s\n' "${out}"
+                  if printf '%s\n' "${out}" | grep -Eqi "tenant-ingress-gateway-api-guardrails|tenant gateway"; then
+                    echo "[ingress] OK: other tenant gateway parentRef denied"
+                  else
+                    echo "[ingress] FAIL: expected Kyverno denial for HTTPRoute parentRef other tenant gateway" >&2
+                    exit 1
+                  fi
+
+                  echo "[ingress] deny: HTTPRoute cross-namespace backendRef is denied"
+                  out="$(cat <<EOF | apply_capture "${ns_a}"
+                  apiVersion: gateway.networking.k8s.io/v1
+                  kind: HTTPRoute
+                  metadata:
+                    name: cross-namespace-backendref
+                  spec:
+                    hostnames:
+                      - app.${tenant_id}.workloads.${base_domain}
+                    parentRefs:
+                      - name: tenant-${tenant_id}-gateway
+                        namespace: istio-system
+                        sectionName: http
+                    rules:
+                      - backendRefs:
+                          - name: smoke-server
+                            namespace: ${ns_b}
+                            port: 8080
+                  EOF
+                  )"
+                  printf '%s\n' "${out}"
+                  if printf '%s\n' "${out}" | grep -Eqi "tenant-ingress-gateway-api-guardrails|backendRefs"; then
+                    echo "[ingress] OK: cross-namespace backendRef denied"
+                  else
+                    echo "[ingress] FAIL: expected Kyverno denial for HTTPRoute cross-namespace backendRef" >&2
+                    exit 1
+                  fi
+
+                  echo "[ingress] deny: HTTPRoute hostname ownership is enforced"
+                  out="$(cat <<EOF | apply_capture "${ns_a}"
+                  apiVersion: gateway.networking.k8s.io/v1
+                  kind: HTTPRoute
+                  metadata:
+                    name: hostname-not-owned
+                  spec:
+                    hostnames:
+                      - app.not-owned.workloads.${base_domain}
+                    parentRefs:
+                      - name: tenant-${tenant_id}-gateway
+                        namespace: istio-system
+                        sectionName: http
+                    rules:
+                      - backendRefs:
+                          - name: smoke-server
+                            port: 8080
+                  EOF
+                  )"
+                  printf '%s\n' "${out}"
+                  if printf '%s\n' "${out}" | grep -Eqi "tenant-ingress-gateway-api-guardrails|owned hostnames|tenant-id"; then
+                    echo "[ingress] OK: hostname ownership denied"
+                  else
+                    echo "[ingress] FAIL: expected Kyverno denial for HTTPRoute hostname ownership" >&2
+                    exit 1
+                  fi
+
+                  echo "[ingress] allow: tenant HTTPRoute without forbidden parentRefs/backends is admitted"
+                  out="$(cat <<EOF | apply_capture "${ns_a}"
+                  apiVersion: gateway.networking.k8s.io/v1
+                  kind: HTTPRoute
+                  metadata:
+                    name: tenant-route-ok
+                  spec:
+                    hostnames:
+                      - app.${tenant_id}.workloads.${base_domain}
+                    parentRefs:
+                      - name: tenant-${tenant_id}-gateway
+                        namespace: istio-system
+                        sectionName: http
+                    rules:
+                      - backendRefs:
+                          - name: smoke-server
+                            port: 8080
+                  EOF
+                  )"
+                  printf '%s\n' "${out}"
+                  if printf '%s\n' "${out}" | grep -Eqi "denied the request|tenant-ingress-gateway-api-guardrails"; then
+                    echo "[ingress] FAIL: expected HTTPRoute admission to succeed" >&2
+                    exit 1
+                  fi
+
+                  echo "[ingress] allow: tenant gateway routes to tenant backend (out-of-mesh) end-to-end"
+                  echo "[ingress] setup: allow ingress from tenant gateway to smoke-server"
+                  kubectl -n "${ns_b}" apply -f - <<EOF
+                  apiVersion: networking.k8s.io/v1
+                  kind: NetworkPolicy
+                  metadata:
+                    name: smoke-allow-ingress-from-tenant-gateway
+                  spec:
+                    podSelector:
+                      matchLabels:
+                        app: smoke-server
+                    policyTypes: ["Ingress"]
+                    ingress:
+                      - from:
+                          - namespaceSelector:
+                              matchLabels:
+                                kubernetes.io/metadata.name: istio-system
+                            podSelector:
+                              matchLabels:
+                                gateway.networking.k8s.io/gateway-name: tenant-${tenant_id}-gateway
+                        ports:
+                          - protocol: TCP
+                            port: 8080
+                  EOF
+
+                  tenant_route_host="smoke-server.${tenant_id}.workloads.${base_domain}"
+                  tenant_route_name="tenant-route-smoke-server"
+                  kubectl -n "${ns_b}" apply -f - <<EOF
+                  apiVersion: gateway.networking.k8s.io/v1
+                  kind: HTTPRoute
+                  metadata:
+                    name: ${tenant_route_name}
+                  spec:
+                    hostnames:
+                      - ${tenant_route_host}
+                    parentRefs:
+                      - name: tenant-${tenant_id}-gateway
+                        namespace: istio-system
+                        sectionName: http
+                    rules:
+                      - backendRefs:
+                          - name: smoke-server
+                            port: 8080
+                  EOF
+
+                  echo "[ingress] wait: HTTPRoute status (Accepted=True, ResolvedRefs=True)"
+                  accepted="Missing"
+                  resolved="Missing"
+                  for _ in {1..30}; do
+                    route_json="$(kubectl -n "${ns_b}" get httproute "${tenant_route_name}" -o json 2>/dev/null || true)"
+                    if [ -n "${route_json}" ]; then
+                      accepted="$(
+                        echo "${route_json}" | jq -r '
+                          def cond_status($t):
+                            (
+                              [
+                                .status.parents[]?
+                                | select(.parentRef.name=="tenant-smoke-gateway" and (.parentRef.namespace? // "")=="istio-system")
+                                | .conditions[]?
+                                | select(.type==$t)
+                                | .status
+                              ] | first
+                            ) // "Missing";
+                          cond_status("Accepted")
+                        '
+                      )"
+                      resolved="$(
+                        echo "${route_json}" | jq -r '
+                          def cond_status($t):
+                            (
+                              [
+                                .status.parents[]?
+                                | select(.parentRef.name=="tenant-smoke-gateway" and (.parentRef.namespace? // "")=="istio-system")
+                                | .conditions[]?
+                                | select(.type==$t)
+                                | .status
+                              ] | first
+                            ) // "Missing";
+                          cond_status("ResolvedRefs")
+                        '
+                      )"
+                      if [ "${accepted}" = "True" ] && [ "${resolved}" = "True" ]; then
+                        break
+                      fi
+                    fi
+                    sleep 2
+                  done
+                  if [ "${accepted}" != "True" ] || [ "${resolved}" != "True" ]; then
+                    echo "[ingress] FAIL: expected HTTPRoute Accepted/ResolvedRefs True, got Accepted=${accepted} ResolvedRefs=${resolved}" >&2
+                    kubectl -n "${ns_b}" get httproute "${tenant_route_name}" -o yaml >&2 || true
+                    exit 1
+                  fi
+
+                  gw_svc="tenant-${tenant_id}-gateway-istio"
+                  if ! kubectl -n istio-system get svc "${gw_svc}" >/dev/null 2>&1; then
+                    gw_svc=""
+                    for candidate in istio-ingressgateway; do
+                      if kubectl -n istio-system get svc "${candidate}" >/dev/null 2>&1; then
+                        gw_svc="${candidate}"
+                        break
+                      fi
+                    done
+                  fi
+                  if [ -z "${gw_svc}" ]; then
+                    echo "[ingress] FAIL: could not find a tenant ingress Service (expected tenant-${tenant_id}-gateway-istio or istio-ingressgateway)" >&2
+                    kubectl -n istio-system get svc >&2 || true
+                    exit 1
+                  fi
+
+                  gw_fqdn="${gw_svc}.istio-system.svc.cluster.local"
+                  echo "[ingress] curl: http://${gw_fqdn}:80/ (Host: ${tenant_route_host})"
+                  success="false"
+                  last_code="000"
+                  for _ in {1..20}; do
+                    last_code="$(curl -sS -o /dev/null -w '%{http_code}' -H "Host: ${tenant_route_host}" "http://${gw_fqdn}:80/" || echo 000)"
+                    if [ "${last_code}" = "200" ]; then
+                      success="true"
+                      break
+                    fi
+                    sleep 2
+                  done
+                  if [ "${success}" != "true" ]; then
+                    echo "[ingress] FAIL: expected HTTP 200 via tenant gateway; last HTTP code: ${last_code}" >&2
+                    kubectl -n istio-system get gateway "tenant-${tenant_id}-gateway" -o yaml >&2 || true
+                    kubectl -n "${ns_b}" get networkpolicy smoke-allow-ingress-from-tenant-gateway -o yaml >&2 || true
+                    kubectl -n "${ns_b}" get pod smoke-server -o wide >&2 || true
+                    kubectl -n "${ns_b}" get httproute "${tenant_route_name}" -o yaml >&2 || true
+                    exit 1
+                  fi
+
+                  echo "[exceptions] deny: Kyverno-restricted pattern denied without PolicyException (PSA baseline must allow it)"
+                  out="$(cat <<EOF | apply_capture "${ns_a}"
+                  apiVersion: v1
+                  kind: Pod
+                  metadata:
+                    name: exception-pod
+                    labels:
+                      app: exception-test
+                  spec:
+                    securityContext:
+                      runAsNonRoot: true
+                      runAsUser: 1000
+                      runAsGroup: 1000
+                      seccompProfile:
+                        type: RuntimeDefault
+                    containers:
+                      - name: c
+                        image: ${tools_image}
+                        imagePullPolicy: IfNotPresent
+                        command: ["/bin/bash","-lc","sleep 3600"]
+                        securityContext:
+                          allowPrivilegeEscalation: true
+                          capabilities:
+                            drop: ["ALL"]
+                  EOF
+                  )"
+                  if ! printf '%s\n' "${out}" | grep -Eqi "tenant-baseline-security|Pod Security Standards"; then
+                    echo "[exceptions] FAIL: expected denial before applying PolicyException" >&2
+                    printf '%s\n' "${out}" >&2
+                    exit 1
+                  fi
+
+                  echo "[exceptions] allow: apply PolicyException and admit the same pod"
+                  future_expires="2099-01-01T00:00:00Z"
+                  kubectl -n "${ns_a}" apply -f - <<EOF
+                  apiVersion: kyverno.io/v2
+                  kind: PolicyException
+                  metadata:
+                    name: allow-privilege-escalation-smoke
+                    annotations:
+                      deploykube.gitops/expires-at: "${future_expires}"
+                  spec:
+                    exceptions:
+                      - policyName: tenant-baseline-security
+                        ruleNames:
+                          - enforce-pss-restricted
+                    match:
+                      any:
+                        - resources:
+                            kinds: ["Pod"]
+                            names: ["exception-pod"]
+                  EOF
+                  kubectl -n "${ns_a}" apply -f - <<EOF
+                  apiVersion: v1
+                  kind: Pod
+                  metadata:
+                    name: exception-pod
+                    labels:
+                      app: exception-test
+                  spec:
+                    securityContext:
+                      runAsNonRoot: true
+                      runAsUser: 1000
+                      runAsGroup: 1000
+                      seccompProfile:
+                        type: RuntimeDefault
+                    containers:
+                      - name: c
+                        image: ${tools_image}
+                        imagePullPolicy: IfNotPresent
+                        command: ["/bin/bash","-lc","sleep 3600"]
+                        securityContext:
+                          allowPrivilegeEscalation: true
+                          capabilities:
+                            drop: ["ALL"]
+                  EOF
+                  kubectl -n "${ns_a}" delete policyexception allow-privilege-escalation-smoke --ignore-not-found
+                  kubectl -n "${ns_a}" delete pod exception-pod --ignore-not-found
+
+                  echo "[exceptions] deny again: without PolicyException it must be denied"
+                  out="$(cat <<EOF | apply_capture "${ns_a}"
+                  apiVersion: v1
+                  kind: Pod
+                  metadata:
+                    name: exception-pod
+                  spec:
+                    securityContext:
+                      runAsNonRoot: true
+                      runAsUser: 1000
+                      runAsGroup: 1000
+                      seccompProfile:
+                        type: RuntimeDefault
+                    containers:
+                      - name: c
+                        image: ${tools_image}
+                        imagePullPolicy: IfNotPresent
+                        command: ["/bin/bash","-lc","sleep 3600"]
+                        securityContext:
+                          allowPrivilegeEscalation: true
+                          capabilities:
+                            drop: ["ALL"]
+                  EOF
+                  )"
+                  if ! printf '%s\n' "${out}" | grep -Eqi "tenant-baseline-security|Pod Security Standards"; then
+                    echo "[exceptions] FAIL: expected denial after PolicyException removal" >&2
+                    printf '%s\n' "${out}" >&2
+                    exit 1
+                  fi
+
+                  echo "[exceptions] asserting no expired PolicyExceptions exist cluster-wide"
+                  polex_json="$(kubectl get policyexceptions.kyverno.io -A -o json)"
+                  missing_expires="$(printf '%s' "${polex_json}" | jq -r '[.items[] | select((.metadata.annotations["deploykube.gitops/expires-at"] // "") == "") | "\(.metadata.namespace)/\(.metadata.name)"] | join(",")')"
+                  if [ -n "${missing_expires}" ]; then
+                    echo "[exceptions] FAIL: PolicyException(s) missing deploykube.gitops/expires-at: ${missing_expires}" >&2
+                    exit 1
+                  fi
+                  printf '%s' "${polex_json}" | jq -r '.items[] | [ .metadata.namespace, .metadata.name, (.metadata.annotations["deploykube.gitops/expires-at"] // "") ] | @tsv' \
+                    | while IFS=$'\t' read -r ns name expires; do
+                      exp_epoch="$(date -u -d "${expires}" +%s 2>/dev/null || true)"
+                      if [ -z "${exp_epoch}" ]; then
+                        echo "[exceptions] FAIL: invalid expires-at (expected RFC3339): ${ns}/${name} -> ${expires}" >&2
+                        exit 1
+                      fi
+                      if [ "${exp_epoch}" -lt "${now_epoch}" ]; then
+                        echo "[exceptions] FAIL: expired PolicyException: ${ns}/${name} (${expires})" >&2
+                        exit 1
+                      fi
+                    done
+
+                  echo "[metrics] probing Kyverno metrics endpoint"
+                  kubectl -n policy-system get svc kyverno-svc-metrics >/dev/null
+                  if ! curl -fsS http://kyverno-svc-metrics.policy-system.svc.cluster.local:8000/metrics | grep -E '^kyverno_admission_requests_total' >/dev/null; then
+                    echo "[metrics] FAIL: expected kyverno_admission_requests_total metric" >&2
+                    exit 1
+                  fi
+
+                  echo "[smoke] success"
