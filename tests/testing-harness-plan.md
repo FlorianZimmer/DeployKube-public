@@ -16,7 +16,7 @@
 ## Incremental Steps
 1. **Scaffold repo-level orchestration**
    - Add `Justfile` stubs (`just bootstrap-mac-orbstack`, `just test env=mac-orbstack`).
-   - Document usage in `README.md` and `agents.md`.
+   - Document usage in `README.md` and `AGENTS.md`.
 
 2. **Set up Go test workspace**
    - Introduce `tests/go.mod` with dependencies (`k8s.io/client-go`, `github.com/stretchr/testify`).
@@ -54,7 +54,7 @@
 
 10. **Documentation & maintenance**
     - Update component READMEs with test invocation instructions.
-    - Refresh `agents.md` testing doctrine with concrete commands.
+    - Refresh `AGENTS.md` testing doctrine with concrete commands.
     - Track follow-up work (e.g., load testing, chaos experiments) in this plan.
 
 ## Follow-ups

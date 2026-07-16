@@ -15,7 +15,7 @@ Scope/ground truth:
 Docs to check/update (only if relevant to this component):
 
 - target-stack.md
-- agents.md
+- AGENTS.md
 - Authoritative component doc: platform/gitops/components/<COMPONENT_PATH>/README.md
 - docs/component-issues/<COMPONENT_NAME>.md (open items live here; keep it consistent)
 - docs/design/** (component design docs for complex implementations; add/update only if warranted)

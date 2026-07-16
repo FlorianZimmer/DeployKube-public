@@ -25,7 +25,7 @@ This guide captures the *implementation details* of the macOS + OrbStack + kind 
    - Install the deployment contract + DSB helpers: `brew install yq sops age` (and ensure `age-keygen` is in `PATH`).
    - Confirm each binary responds to `--version`.
 4. **Repository**
-   - `git clone` the DeployKube repo and stay on the `main` branch, then review `README.md`, `agents.md`, and `docs/design/gitops-operating-model.md` for context.
+   - `git clone` the DeployKube repo and stay on the `main` branch, then review `README.md`, `AGENTS.md`, and `docs/design/gitops-operating-model.md` for context.
 5. **Docker context**
    - `eval "$(orb docker-env)"` (persist in your shell profile).  
    - Optional fallback: `export DOCKER_HOST=unix://$HOME/.orbstack/run/docker.sock`.

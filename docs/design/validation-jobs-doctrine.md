@@ -247,7 +247,7 @@ Repo requirements:
 - Update the component README Smoke Jobs / Test Coverage section with: what it proves, dependencies, how to run manually (create Job from CronJob if applicable).
 - Add/update docs/component-issues/<component>.md for any missing capabilities.
 - Add an evidence file under docs/evidence/YYYY-MM-DD-*.md with Argo status + smoke output.
-- Update `agents.md` if the validation-job workflow changes agent-facing repo rules.
+- Update `AGENTS.md` if the validation-job workflow changes agent-facing repo rules.
 
 Validation:
 - Run./tests/scripts/validate-validation-jobs.sh and fix any failures.

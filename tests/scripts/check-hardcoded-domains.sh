@@ -8,7 +8,7 @@
 #   - tests/**                         (test fixtures)
 #   - bootstrap/**                     (bootstrap inputs - to be migrated later)
 #   - .gemini/**                       (AI context files)
-#   - agents.md                        (AI context file at root)
+#   - AGENTS.md                        (AI context file at root)
 set -euo pipefail
 
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -35,7 +35,7 @@ allowed_globs=(
   "bootstrap/**"
   ".gemini/**"
   # Root-level files (ripgrep needs explicit path pattern)
-  "agents.md"
+  "AGENTS.md"
   "README.md"
 )
 
